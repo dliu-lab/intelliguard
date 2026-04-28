@@ -1,0 +1,29 @@
+allowed_tools:
+  - get_customer_profile
+  - get_customer_transactions
+  - search_customers
+  - update_contact_info
+
+blocked_tools: []
+
+max_records_returned: 100
+block_pii_in_response: true
+redact_pii_in_response: false
+
+blocked_patterns:
+  - ignore previous instructions
+  - reveal system prompt
+  - dump all data
+  - dump all customer data
+  - show all records
+  - bypass policy
+
+review_required_for:
+  - bulk_customer_search
+  - email_address_exposure
+  - high_value_transaction_access
+
+decision_thresholds:
+  review: 50
+  block: 80
+
