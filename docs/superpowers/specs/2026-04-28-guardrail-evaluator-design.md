@@ -61,6 +61,7 @@ Named evaluator types with default configuration. Seeded at startup with the fiv
 | `evaluator_id` | String PK | e.g. `eval_policy_compliance` |
 | `display_name` | String | |
 | `evaluator_type` | String | `policy_compliance` \| `tool_use_correctness` \| `pii_leakage` \| `workflow_completion` \| `response_quality` |
+| `scope` | String | `agent` \| `workflow` — determines whether this evaluator runs per session or once per workflow |
 | `description` | Text | |
 | `default_config` | JSONB | Type-specific defaults (e.g. `{"pass_threshold": 80}`) |
 | `llm_enabled` | Boolean | `false` for all rule-based evaluators; hook for future LLM evaluators |
@@ -159,14 +160,22 @@ POST   /v1/sessions/{session_id}/evaluate            trigger manual evaluation
 - `enforce` — existing behaviour, no change
 
 ### Evaluator execution
-After `check_final_response` completes, `EvaluatorEngine.run_for_session()` is called:
+
+**Agent-level** (`scope=agent`): After `check_final_response` completes, `EvaluatorEngine.run_for_session()` is called:
 
 1. Load `agent_evaluator_assignments` for `(agent_id, environment, trigger="after_run")`
-2. For each assignment, run the corresponding evaluator class
-3. Persist `EvaluationResult` rows
-4. Emit `EVALUATION_COMPLETE` workflow event with all scores as payload (visible in trace)
+2. Skip any assignment whose `evaluator_template.scope == "workflow"` — wrong level
+3. For each matching assignment, run the evaluator against the session's DB records
+4. Persist `EvaluationResult` rows (with `workflow_id=None`)
+5. Emit `EVALUATION_COMPLETE` workflow event with scores as payload
 
-`after_workflow` evaluations are triggered at the end of `run_customer_support_workflow` in `multi_agent.py`, once all sessions are complete.
+**Workflow-level** (`scope=workflow`): Triggered at the end of `run_customer_support_workflow` in `multi_agent.py`, once all agent sessions are complete:
+
+1. Load `agent_evaluator_assignments` for the lead agent `(lead_agent_id, environment, trigger="after_workflow")`
+2. Skip any assignment whose `evaluator_template.scope == "agent"`
+3. For each matching assignment, run the evaluator across all sessions in the workflow
+4. Persist `EvaluationResult` rows linked to both `session_id` (lead) and `workflow_id`
+5. Emit `WORKFLOW_EVALUATION_COMPLETE` event on the lead agent's session
 
 ### Full runtime flow
 ```
@@ -197,13 +206,20 @@ User runs workflow
 
 Five rule-based evaluators. All read from existing DB tables. LLM mode is a no-op stub (`llm_enabled=False`).
 
+**Agent-scoped** (`scope=agent`, trigger `after_run`) — run per agent session, measure individual agent behaviour:
+
 | Evaluator | Data source | Score logic |
 |---|---|---|
 | `policy_compliance` | `policy_decisions` for session | `(ALLOW count / total decisions) * 100` |
 | `tool_use_correctness` | `tool_calls` + agent `permissions.tools` | `(calls using granted tools / total calls) * 100` |
 | `pii_leakage` | `audit_events` where `risk_type` contains PII | Any PII audit event = 0; none = 100 |
-| `workflow_completion` | `agent_sessions.status` | `COMPLETED` = 100; `BLOCK` or `REVIEW` = 0; other = 50 |
-| `response_quality` | `workflow_events` of type `FINAL_RESPONSE_CHECK` | `ALLOW` status = 100; `BLOCK` = 0 |
+
+**Workflow-scoped** (`scope=workflow`, trigger `after_workflow`) — run once per workflow, measure overall outcome:
+
+| Evaluator | Data source | Score logic |
+|---|---|---|
+| `workflow_completion` | all `agent_sessions.status` in workflow | all COMPLETED = 100; any BLOCK = 0; any REVIEW = 50 |
+| `response_quality` | lead agent's `workflow_events` of type `FINAL_RESPONSE_CHECK` | `ALLOW` status = 100; `BLOCK` = 0 |
 
 Each evaluator returns:
 ```python
