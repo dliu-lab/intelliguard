@@ -24,15 +24,6 @@ const capabilities = [
   },
 ];
 
-const platformModules = [
-  "Agent and tool creation",
-  "Agentic workflow build and deployment",
-  "Unified gateway endpoint",
-  "Container runtime testing",
-  "RBAC authorization",
-  "Guardie onboarding assistant",
-];
-
 export function Capabilities() {
   return (
     <section id="governance" className="section-shell relative z-10 py-24">
@@ -50,17 +41,6 @@ export function Capabilities() {
       <div className="mt-12 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {capabilities.map((capability) => (
           <CapabilityCard key={capability.title} {...capability} />
-        ))}
-      </div>
-
-      <div className="mt-6 flex flex-wrap gap-2">
-        {platformModules.map((module) => (
-          <span
-            key={module}
-            className="rounded-full border border-line bg-white/[0.035] px-3 py-1.5 text-xs font-medium text-textSecondary"
-          >
-            {module}
-          </span>
         ))}
       </div>
     </section>
