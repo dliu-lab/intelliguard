@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import MouseTrail from "./components/MouseTrail.jsx";
 import {
   Activity,
   ArrowLeft,
@@ -708,6 +709,7 @@ export default function App() {
   if (!currentUser) {
     return (
       <>
+        <MouseTrail />
         <IntroTransition active={showIntro} />
         <LoginPage onLogin={login} />
       </>
@@ -716,6 +718,7 @@ export default function App() {
 
   return (
     <>
+      <MouseTrail />
       <IntroTransition active={showIntro} />
       <main className="app-shell">
         <aside className="sidebar">
