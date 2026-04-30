@@ -25,7 +25,7 @@ Services:
 
 - API: `http://localhost:8000`
 - API docs: `http://localhost:8000/docs`
-- Dashboard: `http://localhost:5173`
+- Dashboard: `http://localhost:5175`
 - Postgres: `localhost:55432`
 
 The API initializes tables and seed demo data on startup when `AUTO_INIT_DB=true`.

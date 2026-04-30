@@ -137,6 +137,60 @@ class UserCreateRequest(BaseModel):
     environment_access: list[UserEnvironmentGrant] = Field(default_factory=list)
 
 
+class GuardrailPolicyRequest(BaseModel):
+    policy_id: str
+    display_name: str
+    description: str = ""
+    environment: str = "demo"
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentGuardrailAssignmentRequest(BaseModel):
+    policy_id: str
+    mode: str = Field(pattern="^(enforce|review_only|disabled)$")
+    threshold_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentGuardrailAssignmentUpdateRequest(BaseModel):
+    mode: str = Field(pattern="^(enforce|review_only|disabled)$")
+    threshold_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluatorTemplateRequest(BaseModel):
+    evaluator_id: str
+    display_name: str
+    evaluator_type: str
+    scope: str = Field(pattern="^(agent|workflow)$")
+    description: str = ""
+    default_config: dict[str, Any] = Field(default_factory=dict)
+    llm_enabled: bool = False
+
+
+class AgentEvaluatorAssignmentRequest(BaseModel):
+    evaluator_id: str
+    trigger: str = Field(pattern="^(after_run|after_workflow|manual)$")
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeBaseRequest(BaseModel):
+    kb_id: str
+    display_name: str
+    description: str = ""
+    source_type: str = Field(pattern="^(vector_store|url|file)$")
+    source_config: dict[str, Any] = Field(default_factory=dict)
+    environment: str = "demo"
+
+
+class AgentKBAssignmentRequest(BaseModel):
+    kb_id: str
+    access_mode: str = Field(pattern="^(read|read_write)$", default="read")
+
+
+class KBQueryRequest(BaseModel):
+    query: str
+    top_k: int = Field(default=5, ge=1, le=50)
+
+
 def bearer_token(authorization: str | None = Header(default=None, alias="Authorization")) -> str:
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -161,15 +215,21 @@ def visible_environment(environment: str | None, user: dict[str, Any]) -> str | 
         return None if environment in (None, "all") else environment
     allowed = user["allowed_environments"]
     if not allowed:
-        raise HTTPException(status_code=403, detail="No environment access has been assigned to this user")
+        raise HTTPException(
+            status_code=403, detail="No environment access has been assigned to this user"
+        )
     if environment in (None, "all"):
         return allowed
     if environment not in allowed:
-        raise HTTPException(status_code=403, detail=f"Role {user['role']} cannot access {environment}")
+        raise HTTPException(
+            status_code=403, detail=f"Role {user['role']} cannot access {environment}"
+        )
     return environment
 
 
-def require_environment_access(user: dict[str, Any], environment: str | None, permission: str = "read") -> None:
+def require_environment_access(
+    user: dict[str, Any], environment: str | None, permission: str = "read"
+) -> None:
     if user["is_super_admin"]:
         return
     if not environment or not store.user_has_permission(user, environment, permission):
@@ -247,7 +307,9 @@ def users(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
 
 
 @app.post("/v1/users")
-def create_user(request: UserCreateRequest, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def create_user(
+    request: UserCreateRequest, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     require_super_admin(user)
     try:
         return store.create_user(
@@ -282,7 +344,9 @@ def policies(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
 
 
 @app.get("/v1/agents")
-def agents(environment: str | None = None, user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+def agents(
+    environment: str | None = None, user: dict[str, Any] = Depends(current_user)
+) -> list[dict[str, Any]]:
     return store.list_agents(environment=visible_environment(environment, user))
 
 
@@ -299,7 +363,9 @@ def me(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
 
 
 @app.get("/v1/agent-marketplace")
-def agent_marketplace(environment: str | None = None, user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+def agent_marketplace(
+    environment: str | None = None, user: dict[str, Any] = Depends(current_user)
+) -> list[dict[str, Any]]:
     return [
         {
             **agent,
@@ -318,13 +384,26 @@ def agent_identity(agent_id: str, user: dict[str, Any] = Depends(current_user)) 
 
 
 @app.post("/v1/agents")
-def create_agent(request: AgentCreateRequest, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def create_agent(
+    request: AgentCreateRequest, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     require_environment_access(user, request.environment, "agent:create")
     return store.upsert_agent_identity(request.model_dump())
 
 
+@app.delete("/v1/agents/{agent_id}")
+def delete_agent(agent_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, bool]:
+    require_super_admin(user)
+    deleted = store.delete_agent_identity(agent_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"ok": True}
+
+
 @app.post("/v1/tool-marketplace")
-def create_tool(request: ToolCreateRequest, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def create_tool(
+    request: ToolCreateRequest, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     require_environment_access(user, request.environment, "tool:create")
     if request.tool_name in registry.names():
         raise HTTPException(status_code=400, detail="Tool already exists")
@@ -351,7 +430,9 @@ def create_workflow_definition(
 
 
 @app.post("/v1/agents/{agent_id}/tool-grants")
-def grant_agent_tool(agent_id: str, request: AgentToolGrantRequest, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def grant_agent_tool(
+    agent_id: str, request: AgentToolGrantRequest, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     if request.tool_name not in registry.names():
         raise HTTPException(status_code=400, detail="Unknown tool")
     require_environment_access(user, store.agent_environment(agent_id), "tool:grant")
@@ -359,7 +440,9 @@ def grant_agent_tool(agent_id: str, request: AgentToolGrantRequest, user: dict[s
 
 
 @app.delete("/v1/agents/{agent_id}/tool-grants/{tool_name}")
-def revoke_agent_tool(agent_id: str, tool_name: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def revoke_agent_tool(
+    agent_id: str, tool_name: str, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     if tool_name not in registry.names():
         raise HTTPException(status_code=400, detail="Unknown tool")
     require_environment_access(user, store.agent_environment(agent_id), "tool:grant")
@@ -367,7 +450,9 @@ def revoke_agent_tool(agent_id: str, tool_name: str, user: dict[str, Any] = Depe
 
 
 @app.post("/v1/evaluate-tool-call")
-def evaluate_tool_call(request: ToolCallRequest, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def evaluate_tool_call(
+    request: ToolCallRequest, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     require_environment_access(user, store.agent_environment(request.agent_id), "agent:run")
     runner = build_runner(request.agent_id)
     result = runner.evaluate_tool_call(
@@ -388,7 +473,9 @@ def evaluate_tool_call(request: ToolCallRequest, user: dict[str, Any] = Depends(
 
 
 @app.post("/v1/governed-tool-call")
-def governed_tool_call(request: ToolCallRequest, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def governed_tool_call(
+    request: ToolCallRequest, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     require_environment_access(user, store.agent_environment(request.agent_id), "agent:run")
     runner = build_runner(request.agent_id)
     result = runner.call_tool(
@@ -411,14 +498,20 @@ def governed_tool_call(request: ToolCallRequest, user: dict[str, Any] = Depends(
 
 
 @app.post("/v1/agent-runs")
-def agent_run(request: AgentRunRequest, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def agent_run(
+    request: AgentRunRequest, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     require_environment_access(user, store.agent_environment(request.agent_id), "agent:run")
     runner = build_runner(request.agent_id)
-    return run_customer_support_agent(runner=runner, query=request.query, session_id=request.session_id)
+    return run_customer_support_agent(
+        runner=runner, query=request.query, session_id=request.session_id
+    )
 
 
 @app.post("/v1/multi-agent-runs")
-def multi_agent_run(request: MultiAgentRunRequest, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def multi_agent_run(
+    request: MultiAgentRunRequest, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     workflow_definition = None
     if request.workflow_definition_id:
         workflow_definition = store.get_workflow_definition(request.workflow_definition_id)
@@ -426,7 +519,9 @@ def multi_agent_run(request: MultiAgentRunRequest, user: dict[str, Any] = Depend
             raise HTTPException(status_code=404, detail="Workflow definition not found")
         require_environment_access(user, workflow_definition["environment"], "workflow:run")
     else:
-        require_environment_access(user, store.agent_environment("customer-support-lead-agent"), "workflow:run")
+        require_environment_access(
+            user, store.agent_environment("customer-support-lead-agent"), "workflow:run"
+        )
     return run_customer_support_workflow(
         database_url=settings.database_url,
         policy_path=settings.policy_path,
@@ -437,12 +532,18 @@ def multi_agent_run(request: MultiAgentRunRequest, user: dict[str, Any] = Depend
 
 
 @app.get("/v1/workflows")
-def workflows(limit: int = 50, environment: str | None = None, user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
-    return store.list_agent_workflows(limit=limit, environment=visible_environment(environment, user))
+def workflows(
+    limit: int = 50, environment: str | None = None, user: dict[str, Any] = Depends(current_user)
+) -> list[dict[str, Any]]:
+    return store.list_agent_workflows(
+        limit=limit, environment=visible_environment(environment, user)
+    )
 
 
 @app.get("/v1/workflows/{workflow_id}")
-def workflow_detail(workflow_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def workflow_detail(
+    workflow_id: str, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     detail = store.agent_workflow_detail(workflow_id)
     if not detail:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -465,12 +566,16 @@ def audit_events(
 
 
 @app.get("/v1/review-queue")
-def review_queue(limit: int = 100, environment: str | None = None, user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+def review_queue(
+    limit: int = 100, environment: str | None = None, user: dict[str, Any] = Depends(current_user)
+) -> list[dict[str, Any]]:
     return store.list_review_queue(limit=limit, environment=visible_environment(environment, user))
 
 
 @app.post("/v1/review-queue/{review_id}/resolve")
-def resolve_review(review_id: str, request: ResolveReviewRequest, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def resolve_review(
+    review_id: str, request: ResolveReviewRequest, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
     environment = store.review_environment(review_id)
     if environment is None:
         raise HTTPException(status_code=404, detail="Review item not found")
@@ -482,7 +587,9 @@ def resolve_review(review_id: str, request: ResolveReviewRequest, user: dict[str
 
 
 @app.get("/v1/sessions")
-def sessions(limit: int = 50, environment: str | None = None, user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+def sessions(
+    limit: int = 50, environment: str | None = None, user: dict[str, Any] = Depends(current_user)
+) -> list[dict[str, Any]]:
     return store.list_sessions(limit=limit, environment=visible_environment(environment, user))
 
 
@@ -493,3 +600,313 @@ def workflow(session_id: str, user: dict[str, Any] = Depends(current_user)) -> l
         raise HTTPException(status_code=404, detail="Session not found")
     require_environment_access(user, environment, "read")
     return store.workflow_for_session(session_id)
+
+
+@app.get("/v1/guardrail-policies")
+def list_guardrail_policies(
+    environment: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    return store.list_guardrail_policies(environment=visible_environment(environment, user))
+
+
+@app.post("/v1/guardrail-policies")
+def create_guardrail_policy(
+    request: GuardrailPolicyRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    require_environment_access(user, request.environment, "agent:create")
+    return store.upsert_guardrail_policy(request.model_dump())
+
+
+@app.get("/v1/guardrail-policies/{policy_id}")
+def get_guardrail_policy(
+    policy_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    policy = store.get_guardrail_policy(policy_id)
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    require_environment_access(user, policy.get("environment"), "read")
+    return policy
+
+
+@app.put("/v1/guardrail-policies/{policy_id}")
+def update_guardrail_policy(
+    policy_id: str,
+    request: GuardrailPolicyRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    require_environment_access(user, request.environment, "agent:create")
+    payload = request.model_dump()
+    payload["policy_id"] = policy_id
+    return store.upsert_guardrail_policy(payload)
+
+
+@app.get("/v1/agents/{agent_id}/guardrails")
+def list_agent_guardrails(
+    agent_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    identity = store.get_agent_identity(agent_id)
+    require_environment_access(user, identity.get("environment"), "read")
+    return store.list_agent_guardrail_assignments(agent_id)
+
+
+@app.post("/v1/agents/{agent_id}/guardrails")
+def assign_agent_guardrail(
+    agent_id: str,
+    request: AgentGuardrailAssignmentRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    agent_environment = store.agent_environment(agent_id)
+    require_environment_access(user, agent_environment, "agent:create")
+    policy = store.get_guardrail_policy(request.policy_id)
+    if not policy:
+        raise HTTPException(status_code=400, detail="Policy not found")
+    if policy.get("environment") != agent_environment:
+        raise HTTPException(
+            status_code=400,
+            detail="Guardrail policy environment must match the agent environment",
+        )
+    return store.upsert_agent_guardrail_assignment(
+        agent_id=agent_id,
+        environment=agent_environment,
+        policy_id=request.policy_id,
+        mode=request.mode,
+        threshold_overrides=request.threshold_overrides,
+    )
+
+
+@app.put("/v1/agents/{agent_id}/guardrails/{assignment_id}")
+def update_agent_guardrail(
+    agent_id: str,
+    assignment_id: str,
+    request: AgentGuardrailAssignmentUpdateRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    require_environment_access(user, store.agent_environment(agent_id), "agent:create")
+    assignments = store.list_agent_guardrail_assignments(agent_id)
+    assignment = next((a for a in assignments if a["assignment_id"] == assignment_id), None)
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    return store.upsert_agent_guardrail_assignment(
+        agent_id=agent_id,
+        environment=assignment["environment"],
+        policy_id=assignment["policy_id"],
+        mode=request.mode,
+        threshold_overrides=request.threshold_overrides,
+    )
+
+
+@app.delete("/v1/agents/{agent_id}/guardrails/{assignment_id}")
+def delete_agent_guardrail(
+    agent_id: str,
+    assignment_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, bool]:
+    require_environment_access(user, store.agent_environment(agent_id), "agent:create")
+    deleted = store.delete_agent_guardrail_assignment(assignment_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    return {"ok": True}
+
+
+@app.get("/v1/evaluator-templates")
+def list_evaluator_templates(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+    return store.list_evaluator_templates()
+
+
+@app.post("/v1/evaluator-templates")
+def create_evaluator_template(
+    request: EvaluatorTemplateRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    if not user.get("is_super_admin"):
+        raise HTTPException(
+            status_code=403, detail="Only super admins can create evaluator templates"
+        )
+    return store.upsert_evaluator_template(request.model_dump())
+
+
+@app.get("/v1/agents/{agent_id}/evaluators")
+def list_agent_evaluators(
+    agent_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    identity = store.get_agent_identity(agent_id)
+    require_environment_access(user, identity.get("environment"), "read")
+    return store.list_agent_evaluator_assignments(agent_id)
+
+
+@app.post("/v1/agents/{agent_id}/evaluators")
+def assign_agent_evaluator(
+    agent_id: str,
+    request: AgentEvaluatorAssignmentRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    require_environment_access(user, store.agent_environment(agent_id), "agent:create")
+    if not store.get_evaluator_template(request.evaluator_id):
+        raise HTTPException(status_code=400, detail="Evaluator template not found")
+    return store.upsert_agent_evaluator_assignment(
+        agent_id=agent_id,
+        environment=store.agent_environment(agent_id),
+        evaluator_id=request.evaluator_id,
+        trigger=request.trigger,
+        config=request.config,
+    )
+
+
+@app.delete("/v1/agents/{agent_id}/evaluators/{assignment_id}")
+def delete_agent_evaluator(
+    agent_id: str,
+    assignment_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, bool]:
+    require_environment_access(user, store.agent_environment(agent_id), "agent:create")
+    deleted = store.delete_agent_evaluator_assignment(assignment_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    return {"ok": True}
+
+
+@app.get("/v1/evaluation-results")
+def evaluation_results(
+    limit: int = 100,
+    environment: str | None = None,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    return store.list_evaluation_results(
+        environment=visible_environment(environment, user),
+        agent_id=agent_id,
+        session_id=session_id,
+        limit=limit,
+    )
+
+
+@app.get("/v1/sessions/{session_id}/evaluation-results")
+def session_evaluation_results(
+    session_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    environment = store.session_environment(session_id)
+    if environment is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    require_environment_access(user, environment, "read")
+    return store.list_session_evaluation_results(session_id)
+
+
+@app.post("/v1/sessions/{session_id}/evaluate")
+def trigger_session_evaluation(
+    session_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    from agent_governance.evaluators import EvaluatorEngine
+
+    environment = store.session_environment(session_id)
+    if environment is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    require_environment_access(user, environment, "agent:run")
+    sessions = store.list_sessions(limit=1000)
+    session = next((s for s in sessions if s["session_id"] == session_id), None)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    engine = EvaluatorEngine(store)
+    results = engine.run_for_session(session_id, session["agent_id"], environment)
+    return [
+        {
+            "evaluator_id": r.evaluator_id,
+            "score": r.score,
+            "passed": r.passed,
+            "findings": r.findings,
+        }
+        for r in results
+    ]
+
+
+# ── Knowledge Base endpoints ──────────────────────────────────────────────────
+
+@app.get("/v1/knowledge-bases")
+def list_knowledge_bases(
+    environment: str = "all",
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    return store.list_knowledge_bases(environment=environment if environment != "all" else None)
+
+
+@app.post("/v1/knowledge-bases")
+def create_knowledge_base(
+    body: KnowledgeBaseRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    require_environment_access(user, body.environment, "agent:create")
+    return store.upsert_knowledge_base(body.model_dump())
+
+
+@app.get("/v1/agents/{agent_id}/knowledge-bases")
+def list_agent_kb_assignments(
+    agent_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    agent = store.get_agent_identity(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_environment_access(user, agent["environment"], "read")
+    return store.list_agent_kb_assignments(agent_id)
+
+
+@app.post("/v1/agents/{agent_id}/knowledge-bases")
+def assign_kb_to_agent(
+    agent_id: str,
+    body: AgentKBAssignmentRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    agent = store.get_agent_identity(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_environment_access(user, agent["environment"], "agent:create")
+    kb = store.get_knowledge_base(body.kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    return store.upsert_agent_kb_assignment(
+        agent_id=agent_id, kb_id=body.kb_id, access_mode=body.access_mode
+    )
+
+
+@app.delete("/v1/agents/{agent_id}/knowledge-bases/{assignment_id}")
+def delete_agent_kb_assignment(
+    agent_id: str,
+    assignment_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    agent = store.get_agent_identity(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_environment_access(user, agent["environment"], "agent:create")
+    deleted = store.delete_agent_kb_assignment(assignment_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    return {"deleted": True}
+
+
+@app.post("/v1/knowledge-bases/{kb_id}/query")
+def query_knowledge_base(
+    kb_id: str,
+    body: KBQueryRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "read")
+    try:
+        from agent_governance.knowledge import KBRetrieval
+        from agent_governance.advisor import AdvisorRAG  # type: ignore[import]
+
+        retrieval = KBRetrieval(AdvisorRAG(store))
+        docs = retrieval.query(kb_id, body.query, kb["environment"], top_k=body.top_k)
+        return [{"content": d.content, "score": d.score, "metadata": d.metadata} for d in docs]
+    except ImportError:
+        return []

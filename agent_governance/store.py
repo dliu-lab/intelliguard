@@ -10,10 +10,17 @@ from sqlalchemy.orm import Session, sessionmaker
 from agent_governance.auth import hash_password, hash_token, new_session_token, verify_password
 from agent_governance.db import build_session_factory, seed_demo_data
 from agent_governance.models import (
+    AgentEvaluatorAssignment,
+    AgentGuardrailAssignment,
     AgentIdentity,
+    AgentKBAssignment,
     AgentSession,
     AgentWorkflow,
     AuditEvent,
+    EvaluationResult,
+    EvaluatorTemplate,
+    GuardrailPolicy,
+    KnowledgeBase,
     PolicyDecision,
     ReviewQueueItem,
     ToolCall,
@@ -21,8 +28,8 @@ from agent_governance.models import (
     UserSession,
     UserEnvironmentAccess,
     WorkflowDefinition,
-    WorkflowSessionLink,
     WorkflowEvent,
+    WorkflowSessionLink,
     new_id,
     utc_now,
 )
@@ -33,6 +40,23 @@ DEFAULT_AGENT_PERMISSIONS = {
     "actions": ["read_customer_profile", "read_transactions"],
     "scopes": {"customer_access": "customer_id", "pii_exposure": "blocked_by_default"},
 }
+
+DEFAULT_AGENT_LLM_CONFIG = {
+    "gateway": "litellm",
+    "endpoint": "/llm/v1",
+    "model": "ollama/qwen3.5:9b",
+    "temperature": 0.2,
+}
+
+
+def metadata_with_default_llm(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    next_metadata = dict(metadata or {})
+    next_metadata["llm"] = {
+        **DEFAULT_AGENT_LLM_CONFIG,
+        **(next_metadata.get("llm") or {}),
+    }
+    return next_metadata
+
 
 SIGNUP_ROLE_ACCESS = {
     "Governance Reviewer": {
@@ -46,14 +70,39 @@ SIGNUP_ROLE_ACCESS = {
         "is_super_admin": False,
         "access": {
             "demo": ["read", "agent:run", "workflow:run", "tool:grant", "review:resolve"],
-            "staging": ["read", "agent:create", "agent:run", "workflow:create", "workflow:run", "tool:create", "tool:grant", "review:resolve"],
+            "staging": [
+                "read",
+                "agent:create",
+                "agent:run",
+                "workflow:create",
+                "workflow:run",
+                "tool:create",
+                "tool:grant",
+                "review:resolve",
+            ],
         },
     },
     "Agent Developer": {
         "is_super_admin": False,
         "access": {
-            "local": ["read", "agent:create", "agent:run", "workflow:create", "workflow:run", "tool:create", "tool:grant"],
-            "staging": ["read", "agent:create", "agent:run", "workflow:create", "workflow:run", "tool:create", "tool:grant"],
+            "local": [
+                "read",
+                "agent:create",
+                "agent:run",
+                "workflow:create",
+                "workflow:run",
+                "tool:create",
+                "tool:grant",
+            ],
+            "staging": [
+                "read",
+                "agent:create",
+                "agent:run",
+                "workflow:create",
+                "workflow:run",
+                "tool:create",
+                "tool:grant",
+            ],
         },
     },
 }
@@ -81,9 +130,16 @@ class GovernanceStore:
 
     def has_password_users(self) -> bool:
         with self.session() as db:
-            return bool(db.scalar(select(func.count()).select_from(User).where(User.password_hash.is_not(None))) or 0)
+            return bool(
+                db.scalar(
+                    select(func.count()).select_from(User).where(User.password_hash.is_not(None))
+                )
+                or 0
+            )
 
-    def register_user(self, *, email: str, password: str, display_name: str, role: str) -> dict[str, Any]:
+    def register_user(
+        self, *, email: str, password: str, display_name: str, role: str
+    ) -> dict[str, Any]:
         email = email.strip().lower()
         with self.session() as db:
             existing_auth_users = db.scalar(
@@ -248,7 +304,10 @@ class GovernanceStore:
                     environment="local",
                     purpose="Auto-registered agent. Review and grant permissions before production use.",
                     permissions=DEFAULT_AGENT_PERMISSIONS,
-                    metadata_json={"identity_provider": "auto-registered"},
+                    metadata_json={
+                        "identity_provider": "auto-registered",
+                        "llm": {**DEFAULT_AGENT_LLM_CONFIG},
+                    },
                 )
                 db.add(identity)
                 db.flush()
@@ -292,7 +351,7 @@ class GovernanceStore:
                     environment=payload["environment"],
                     purpose=payload["purpose"],
                     permissions=payload.get("permissions") or {},
-                    metadata_json=payload.get("metadata") or {},
+                    metadata_json=metadata_with_default_llm(payload.get("metadata")),
                 )
                 db.add(identity)
             else:
@@ -302,12 +361,34 @@ class GovernanceStore:
                 identity.environment = payload["environment"]
                 identity.purpose = payload["purpose"]
                 identity.permissions = payload.get("permissions") or {}
-                identity.metadata_json = payload.get("metadata") or {}
+                identity.metadata_json = metadata_with_default_llm(payload.get("metadata"))
                 identity.updated_at = utc_now()
             db.flush()
             return self._agent_identity_to_dict(identity)
 
-    def list_workflow_definitions(self, environment: str | list[str] | None = None) -> list[dict[str, Any]]:
+    def delete_agent_identity(self, agent_id: str) -> bool:
+        with self.session() as db:
+            identity = db.get(AgentIdentity, agent_id)
+            if not identity:
+                return False
+            for assignment in db.scalars(
+                select(AgentGuardrailAssignment).where(
+                    AgentGuardrailAssignment.agent_id == agent_id
+                )
+            ).all():
+                db.delete(assignment)
+            for assignment in db.scalars(
+                select(AgentEvaluatorAssignment).where(
+                    AgentEvaluatorAssignment.agent_id == agent_id
+                )
+            ).all():
+                db.delete(assignment)
+            db.delete(identity)
+            return True
+
+    def list_workflow_definitions(
+        self, environment: str | list[str] | None = None
+    ) -> list[dict[str, Any]]:
         with self.session() as db:
             stmt = select(WorkflowDefinition).order_by(WorkflowDefinition.name)
             if isinstance(environment, list):
@@ -356,6 +437,391 @@ class GovernanceStore:
             db.flush()
             return self._workflow_definition_to_dict(definition)
 
+    def list_guardrail_policies(
+        self, environment: str | list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            stmt = select(GuardrailPolicy).order_by(GuardrailPolicy.display_name)
+            if isinstance(environment, list):
+                stmt = stmt.where(GuardrailPolicy.environment.in_(environment))
+            elif environment and environment != "all":
+                stmt = stmt.where(GuardrailPolicy.environment == environment)
+            return [self._guardrail_policy_to_dict(row) for row in db.scalars(stmt).all()]
+
+    def get_guardrail_policy(self, policy_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(GuardrailPolicy, policy_id)
+            return self._guardrail_policy_to_dict(row) if row else None
+
+    def upsert_guardrail_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.get(GuardrailPolicy, payload["policy_id"])
+            if not row:
+                row = GuardrailPolicy(
+                    policy_id=payload["policy_id"],
+                    display_name=payload["display_name"],
+                    description=payload.get("description") or "",
+                    environment=payload["environment"],
+                    config=payload.get("config") or {},
+                )
+                db.add(row)
+            else:
+                row.display_name = payload["display_name"]
+                row.description = payload.get("description") or ""
+                row.environment = payload["environment"]
+                row.config = payload.get("config") or {}
+                row.updated_at = utc_now()
+            db.flush()
+            return self._guardrail_policy_to_dict(row)
+
+    @staticmethod
+    def _guardrail_policy_to_dict(row: GuardrailPolicy | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "policy_id": row.policy_id,
+            "display_name": row.display_name,
+            "description": row.description,
+            "environment": row.environment,
+            "config": row.config or {},
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    def get_agent_guardrail_assignment(
+        self, agent_id: str, environment: str
+    ) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.scalar(
+                select(AgentGuardrailAssignment).where(
+                    AgentGuardrailAssignment.agent_id == agent_id,
+                    AgentGuardrailAssignment.environment == environment,
+                )
+            )
+            return self._guardrail_assignment_to_dict(row) if row else None
+
+    def list_agent_guardrail_assignments(self, agent_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(AgentGuardrailAssignment)
+                .where(AgentGuardrailAssignment.agent_id == agent_id)
+                .order_by(AgentGuardrailAssignment.environment)
+            ).all()
+            return [self._guardrail_assignment_to_dict(row) for row in rows]
+
+    def upsert_agent_guardrail_assignment(
+        self,
+        *,
+        agent_id: str,
+        environment: str,
+        policy_id: str,
+        mode: str,
+        threshold_overrides: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.scalar(
+                select(AgentGuardrailAssignment).where(
+                    AgentGuardrailAssignment.agent_id == agent_id,
+                    AgentGuardrailAssignment.environment == environment,
+                )
+            )
+            if not row:
+                row = AgentGuardrailAssignment(
+                    assignment_id=new_id("gra"),
+                    agent_id=agent_id,
+                    environment=environment,
+                    policy_id=policy_id,
+                    mode=mode,
+                    threshold_overrides=threshold_overrides or {},
+                )
+                db.add(row)
+            else:
+                row.policy_id = policy_id
+                row.mode = mode
+                row.threshold_overrides = threshold_overrides or {}
+                row.updated_at = utc_now()
+            db.flush()
+            return self._guardrail_assignment_to_dict(row)
+
+    def delete_agent_guardrail_assignment(self, assignment_id: str) -> bool:
+        with self.session() as db:
+            row = db.get(AgentGuardrailAssignment, assignment_id)
+            if not row:
+                return False
+            db.delete(row)
+            return True
+
+    def get_sessions_for_workflow(self, workflow_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            links = db.scalars(
+                select(WorkflowSessionLink).where(WorkflowSessionLink.workflow_id == workflow_id)
+            ).all()
+            result = []
+            for link in links:
+                session = db.get(AgentSession, link.session_id)
+                if session:
+                    result.append(
+                        {
+                            "session_id": session.session_id,
+                            "agent_id": session.agent_id,
+                            "status": session.status,
+                        }
+                    )
+            return result
+
+    def get_policy_decisions_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(PolicyDecision).where(PolicyDecision.session_id == session_id)
+            ).all()
+            return [{"decision": row.decision, "tool_name": row.tool_name} for row in rows]
+
+    def get_tool_calls_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(select(ToolCall).where(ToolCall.session_id == session_id)).all()
+            return [
+                {
+                    "agent_id": row.agent_id,
+                    "tool_name": row.tool_name,
+                    "decision": row.decision,
+                }
+                for row in rows
+            ]
+
+    def get_audit_events_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(select(AuditEvent).where(AuditEvent.session_id == session_id)).all()
+            return [{"risk_type": row.risk_type, "decision": row.decision} for row in rows]
+
+    @staticmethod
+    def _guardrail_assignment_to_dict(row: AgentGuardrailAssignment | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "assignment_id": row.assignment_id,
+            "agent_id": row.agent_id,
+            "environment": row.environment,
+            "policy_id": row.policy_id,
+            "mode": row.mode,
+            "threshold_overrides": row.threshold_overrides or {},
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    def list_evaluator_templates(self) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(EvaluatorTemplate).order_by(EvaluatorTemplate.display_name)
+            ).all()
+            return [self._evaluator_template_to_dict(row) for row in rows]
+
+    def get_evaluator_template(self, evaluator_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(EvaluatorTemplate, evaluator_id)
+            return self._evaluator_template_to_dict(row) if row else None
+
+    def upsert_evaluator_template(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.get(EvaluatorTemplate, payload["evaluator_id"])
+            if not row:
+                row = EvaluatorTemplate(
+                    evaluator_id=payload["evaluator_id"],
+                    display_name=payload["display_name"],
+                    evaluator_type=payload["evaluator_type"],
+                    scope=payload["scope"],
+                    description=payload.get("description") or "",
+                    default_config=payload.get("default_config") or {},
+                    llm_enabled=bool(payload.get("llm_enabled", False)),
+                )
+                db.add(row)
+            else:
+                row.display_name = payload["display_name"]
+                row.evaluator_type = payload["evaluator_type"]
+                row.scope = payload["scope"]
+                row.description = payload.get("description") or ""
+                row.default_config = payload.get("default_config") or {}
+                row.llm_enabled = bool(payload.get("llm_enabled", False))
+                row.updated_at = utc_now()
+            db.flush()
+            return self._evaluator_template_to_dict(row)
+
+    def list_agent_evaluator_assignments(self, agent_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(AgentEvaluatorAssignment)
+                .where(AgentEvaluatorAssignment.agent_id == agent_id)
+                .order_by(
+                    AgentEvaluatorAssignment.environment, AgentEvaluatorAssignment.evaluator_id
+                )
+            ).all()
+            return [self._evaluator_assignment_to_dict(row) for row in rows]
+
+    def get_agent_evaluator_assignments_for_trigger(
+        self, agent_id: str, environment: str, trigger: str
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(AgentEvaluatorAssignment).where(
+                    AgentEvaluatorAssignment.agent_id == agent_id,
+                    AgentEvaluatorAssignment.environment == environment,
+                    AgentEvaluatorAssignment.trigger == trigger,
+                )
+            ).all()
+            return [self._evaluator_assignment_to_dict(row) for row in rows]
+
+    def upsert_agent_evaluator_assignment(
+        self,
+        *,
+        agent_id: str,
+        environment: str,
+        evaluator_id: str,
+        trigger: str,
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.scalar(
+                select(AgentEvaluatorAssignment).where(
+                    AgentEvaluatorAssignment.agent_id == agent_id,
+                    AgentEvaluatorAssignment.environment == environment,
+                    AgentEvaluatorAssignment.evaluator_id == evaluator_id,
+                )
+            )
+            if not row:
+                row = AgentEvaluatorAssignment(
+                    assignment_id=new_id("eva"),
+                    agent_id=agent_id,
+                    environment=environment,
+                    evaluator_id=evaluator_id,
+                    trigger=trigger,
+                    config=config or {},
+                )
+                db.add(row)
+            else:
+                row.trigger = trigger
+                row.config = config or {}
+                row.updated_at = utc_now()
+            db.flush()
+            return self._evaluator_assignment_to_dict(row)
+
+    def delete_agent_evaluator_assignment(self, assignment_id: str) -> bool:
+        with self.session() as db:
+            row = db.get(AgentEvaluatorAssignment, assignment_id)
+            if not row:
+                return False
+            db.delete(row)
+            return True
+
+    @staticmethod
+    def _evaluator_template_to_dict(row: EvaluatorTemplate | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "evaluator_id": row.evaluator_id,
+            "display_name": row.display_name,
+            "evaluator_type": row.evaluator_type,
+            "scope": row.scope,
+            "description": row.description,
+            "default_config": row.default_config or {},
+            "llm_enabled": bool(row.llm_enabled),
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _evaluator_assignment_to_dict(row: AgentEvaluatorAssignment | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "assignment_id": row.assignment_id,
+            "agent_id": row.agent_id,
+            "environment": row.environment,
+            "evaluator_id": row.evaluator_id,
+            "trigger": row.trigger,
+            "config": row.config or {},
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    def add_evaluation_result(
+        self,
+        *,
+        session_id: str,
+        workflow_id: str | None,
+        agent_id: str,
+        evaluator_id: str,
+        score: int,
+        passed: bool,
+        findings: list[dict[str, Any]],
+        trigger: str,
+    ) -> dict[str, Any]:
+        result_id = new_id("evr")
+        with self.session() as db:
+            row = EvaluationResult(
+                result_id=result_id,
+                session_id=session_id,
+                workflow_id=workflow_id,
+                agent_id=agent_id,
+                evaluator_id=evaluator_id,
+                score=score,
+                passed=passed,
+                findings=findings,
+                trigger=trigger,
+            )
+            db.add(row)
+            db.flush()
+            return self._evaluation_result_to_dict(row)
+
+    def list_session_evaluation_results(self, session_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(EvaluationResult)
+                .where(EvaluationResult.session_id == session_id)
+                .order_by(EvaluationResult.created_at)
+            ).all()
+            return [self._evaluation_result_to_dict(row) for row in rows]
+
+    def list_evaluation_results(
+        self,
+        environment: str | list[str] | None = None,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            stmt = select(EvaluationResult).order_by(desc(EvaluationResult.created_at)).limit(limit)
+            if agent_id:
+                stmt = stmt.where(EvaluationResult.agent_id == agent_id)
+            if session_id:
+                stmt = stmt.where(EvaluationResult.session_id == session_id)
+            rows = db.scalars(stmt).all()
+            results = []
+            for row in rows:
+                if environment:
+                    identity = db.get(AgentIdentity, row.agent_id)
+                    if not self._environment_matches(
+                        identity.environment if identity else None, environment
+                    ):
+                        continue
+                results.append(self._evaluation_result_to_dict(row))
+            return results
+
+    @staticmethod
+    def _evaluation_result_to_dict(row: EvaluationResult | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "result_id": row.result_id,
+            "session_id": row.session_id,
+            "workflow_id": row.workflow_id,
+            "agent_id": row.agent_id,
+            "evaluator_id": row.evaluator_id,
+            "score": row.score,
+            "passed": bool(row.passed),
+            "findings": row.findings or [],
+            "trigger": row.trigger,
+            "created_at": row.created_at.isoformat(),
+        }
+
     def grant_agent_tool(self, agent_id: str, tool_name: str) -> dict[str, Any]:
         with self.session() as db:
             identity = db.get(AgentIdentity, agent_id)
@@ -368,7 +834,10 @@ class GovernanceStore:
                     environment="local",
                     purpose="Auto-registered agent.",
                     permissions=DEFAULT_AGENT_PERMISSIONS,
-                    metadata_json={"identity_provider": "auto-registered"},
+                    metadata_json={
+                        "identity_provider": "auto-registered",
+                        "llm": {**DEFAULT_AGENT_LLM_CONFIG},
+                    },
                 )
                 db.add(identity)
 
@@ -392,12 +861,17 @@ class GovernanceStore:
                     environment="local",
                     purpose="Auto-registered agent.",
                     permissions=DEFAULT_AGENT_PERMISSIONS,
-                    metadata_json={"identity_provider": "auto-registered"},
+                    metadata_json={
+                        "identity_provider": "auto-registered",
+                        "llm": {**DEFAULT_AGENT_LLM_CONFIG},
+                    },
                 )
                 db.add(identity)
 
             permissions = dict(identity.permissions or {})
-            permissions["tools"] = [tool for tool in permissions.get("tools", []) if tool != tool_name]
+            permissions["tools"] = [
+                tool for tool in permissions.get("tools", []) if tool != tool_name
+            ]
             identity.permissions = permissions
             identity.updated_at = utc_now()
             db.flush()
@@ -655,7 +1129,9 @@ class GovernanceStore:
         with self.session() as db:
             return int(
                 db.scalar(
-                    select(func.count()).select_from(ToolCall).where(
+                    select(func.count())
+                    .select_from(ToolCall)
+                    .where(
                         ToolCall.session_id == session_id,
                         ToolCall.decision.in_(["BLOCK", "REVIEW"]),
                     )
@@ -670,36 +1146,44 @@ class GovernanceStore:
         workflow_only: bool = False,
     ) -> list[dict[str, Any]]:
         with self.session() as db:
-            rows = db.scalars(select(AuditEvent).order_by(desc(AuditEvent.created_at)).limit(limit)).all()
+            rows = db.scalars(
+                select(AuditEvent).order_by(desc(AuditEvent.created_at)).limit(limit)
+            ).all()
             events = []
             for row in rows:
                 identity = db.get(AgentIdentity, row.agent_id)
-                if not self._environment_matches(identity.environment if identity else None, environment):
+                if not self._environment_matches(
+                    identity.environment if identity else None, environment
+                ):
                     continue
                 workflow_link = db.scalar(
-                    select(WorkflowSessionLink).where(WorkflowSessionLink.session_id == row.session_id).limit(1)
+                    select(WorkflowSessionLink)
+                    .where(WorkflowSessionLink.session_id == row.session_id)
+                    .limit(1)
                 )
                 if workflow_only and not workflow_link:
                     continue
                 events.append(
                     {
-                    "event_id": row.event_id,
-                    "session_id": row.session_id,
-                    "workflow_id": workflow_link.workflow_id if workflow_link else None,
-                    "agent_id": row.agent_id,
-                    "agent_environment": identity.environment if identity else None,
-                    "risk_type": row.risk_type,
-                    "decision": row.decision,
-                    "reason": row.reason,
-                    "tool_name": row.tool_name,
-                    "risk_score": row.risk_score,
-                    "metadata": row.metadata_json,
-                    "created_at": row.created_at.isoformat(),
+                        "event_id": row.event_id,
+                        "session_id": row.session_id,
+                        "workflow_id": workflow_link.workflow_id if workflow_link else None,
+                        "agent_id": row.agent_id,
+                        "agent_environment": identity.environment if identity else None,
+                        "risk_type": row.risk_type,
+                        "decision": row.decision,
+                        "reason": row.reason,
+                        "tool_name": row.tool_name,
+                        "risk_score": row.risk_score,
+                        "metadata": row.metadata_json,
+                        "created_at": row.created_at.isoformat(),
                     }
                 )
             return events
 
-    def list_review_queue(self, limit: int = 100, environment: str | list[str] | None = None) -> list[dict[str, Any]]:
+    def list_review_queue(
+        self, limit: int = 100, environment: str | list[str] | None = None
+    ) -> list[dict[str, Any]]:
         with self.session() as db:
             rows = db.scalars(
                 select(ReviewQueueItem)
@@ -710,22 +1194,24 @@ class GovernanceStore:
             reviews = []
             for row in rows:
                 identity = db.get(AgentIdentity, row.agent_id)
-                if not self._environment_matches(identity.environment if identity else None, environment):
+                if not self._environment_matches(
+                    identity.environment if identity else None, environment
+                ):
                     continue
                 reviews.append(
                     {
-                    "review_id": row.review_id,
-                    "session_id": row.session_id,
-                    "agent_id": row.agent_id,
-                    "agent_environment": identity.environment if identity else None,
-                    "tool_name": row.tool_name,
-                    "tool_args": row.tool_args,
-                    "user_query": row.user_query,
-                    "risk_score": row.risk_score,
-                    "risk_types": row.risk_types,
-                    "reason": row.reason,
-                    "status": row.status,
-                    "created_at": row.created_at.isoformat(),
+                        "review_id": row.review_id,
+                        "session_id": row.session_id,
+                        "agent_id": row.agent_id,
+                        "agent_environment": identity.environment if identity else None,
+                        "tool_name": row.tool_name,
+                        "tool_args": row.tool_args,
+                        "user_query": row.user_query,
+                        "risk_score": row.risk_score,
+                        "risk_types": row.risk_types,
+                        "reason": row.reason,
+                        "status": row.status,
+                        "created_at": row.created_at.isoformat(),
                     }
                 )
             return reviews
@@ -748,19 +1234,27 @@ class GovernanceStore:
             identity = db.get(AgentIdentity, item.agent_id)
             return identity.environment if identity else None
 
-    def list_sessions(self, limit: int = 50, environment: str | list[str] | None = None) -> list[dict[str, Any]]:
+    def list_sessions(
+        self, limit: int = 50, environment: str | list[str] | None = None
+    ) -> list[dict[str, Any]]:
         with self.session() as db:
-            rows = db.scalars(select(AgentSession).order_by(desc(AgentSession.created_at)).limit(limit)).all()
+            rows = db.scalars(
+                select(AgentSession).order_by(desc(AgentSession.created_at)).limit(limit)
+            ).all()
             sessions = []
             for row in rows:
                 identity = db.get(AgentIdentity, row.agent_id)
-                if not self._environment_matches(identity.environment if identity else None, environment):
+                if not self._environment_matches(
+                    identity.environment if identity else None, environment
+                ):
                     continue
                 sessions.append(
                     {
                         "session_id": row.session_id,
                         "agent_id": row.agent_id,
-                        "agent_identity": self._agent_identity_to_dict(identity) if identity else None,
+                        "agent_identity": self._agent_identity_to_dict(identity)
+                        if identity
+                        else None,
                         "user_query": row.user_query,
                         "status": row.status,
                         "created_at": row.created_at.isoformat(),
@@ -769,7 +1263,9 @@ class GovernanceStore:
                 )
             return sessions
 
-    def list_agent_workflows(self, limit: int = 50, environment: str | list[str] | None = None) -> list[dict[str, Any]]:
+    def list_agent_workflows(
+        self, limit: int = 50, environment: str | list[str] | None = None
+    ) -> list[dict[str, Any]]:
         with self.session() as db:
             rows = db.scalars(
                 select(AgentWorkflow).order_by(desc(AgentWorkflow.created_at)).limit(limit)
@@ -777,12 +1273,14 @@ class GovernanceStore:
             workflows = []
             for row in rows:
                 lead_identity = db.get(AgentIdentity, row.lead_agent_id)
-                if not self._environment_matches(lead_identity.environment if lead_identity else None, environment):
+                if not self._environment_matches(
+                    lead_identity.environment if lead_identity else None, environment
+                ):
                     continue
                 session_count = db.scalar(
-                    select(func.count()).select_from(WorkflowSessionLink).where(
-                        WorkflowSessionLink.workflow_id == row.workflow_id
-                    )
+                    select(func.count())
+                    .select_from(WorkflowSessionLink)
+                    .where(WorkflowSessionLink.workflow_id == row.workflow_id)
                 )
                 workflows.append(
                     {
@@ -865,7 +1363,9 @@ class GovernanceStore:
                 "name": workflow.name,
                 "user_goal": workflow.user_goal,
                 "lead_agent_id": workflow.lead_agent_id,
-                "lead_agent": self._agent_identity_to_dict(db.get(AgentIdentity, workflow.lead_agent_id)),
+                "lead_agent": self._agent_identity_to_dict(
+                    db.get(AgentIdentity, workflow.lead_agent_id)
+                ),
                 "status": workflow.status,
                 "decision": workflow.decision,
                 "summary": workflow.summary,
@@ -939,7 +1439,9 @@ class GovernanceStore:
             .where(UserEnvironmentAccess.user_id == user.user_id)
             .order_by(UserEnvironmentAccess.environment)
         ).all()
-        permissions_by_environment = {row.environment: sorted(row.permissions or []) for row in rows}
+        permissions_by_environment = {
+            row.environment: sorted(row.permissions or []) for row in rows
+        }
         allowed_environments = sorted(permissions_by_environment)
         return {
             "email": user.email,
@@ -988,12 +1490,125 @@ class GovernanceStore:
         if not environment:
             return False
         permissions = user.get("permissions_by_environment", {}).get(environment, [])
-        return "*" in permissions or permission in permissions or "read" in permissions and permission == "read"
+        return (
+            "*" in permissions
+            or permission in permissions
+            or "read" in permissions
+            and permission == "read"
+        )
 
     @staticmethod
-    def _environment_matches(row_environment: str | None, requested: str | list[str] | None) -> bool:
+    def _environment_matches(
+        row_environment: str | None, requested: str | list[str] | None
+    ) -> bool:
         if not requested or requested == "all":
             return True
         if isinstance(requested, list):
             return row_environment in requested
         return row_environment == requested
+
+    def list_knowledge_bases(
+        self, environment: str | list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            stmt = select(KnowledgeBase).order_by(KnowledgeBase.display_name)
+            if isinstance(environment, list):
+                stmt = stmt.where(KnowledgeBase.environment.in_(environment))
+            elif environment and environment != "all":
+                stmt = stmt.where(KnowledgeBase.environment == environment)
+            return [self._kb_to_dict(row) for row in db.scalars(stmt).all()]
+
+    def get_knowledge_base(self, kb_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(KnowledgeBase, kb_id)
+            return self._kb_to_dict(row) if row else None
+
+    def upsert_knowledge_base(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.get(KnowledgeBase, payload["kb_id"])
+            if not row:
+                row = KnowledgeBase(
+                    kb_id=payload["kb_id"],
+                    display_name=payload["display_name"],
+                    description=payload.get("description") or "",
+                    source_type=payload["source_type"],
+                    source_config=payload.get("source_config") or {},
+                    environment=payload["environment"],
+                )
+                db.add(row)
+            else:
+                row.display_name = payload["display_name"]
+                row.description = payload.get("description") or ""
+                row.source_type = payload["source_type"]
+                row.source_config = payload.get("source_config") or {}
+                row.environment = payload["environment"]
+                row.updated_at = utc_now()
+            db.flush()
+            return self._kb_to_dict(row)
+
+    def list_agent_kb_assignments(self, agent_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(AgentKBAssignment)
+                .where(AgentKBAssignment.agent_id == agent_id)
+                .order_by(AgentKBAssignment.kb_id)
+            ).all()
+            return [self._kb_assignment_to_dict(row) for row in rows]
+
+    def upsert_agent_kb_assignment(
+        self, *, agent_id: str, kb_id: str, access_mode: str
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.scalar(
+                select(AgentKBAssignment).where(
+                    AgentKBAssignment.agent_id == agent_id,
+                    AgentKBAssignment.kb_id == kb_id,
+                )
+            )
+            if not row:
+                row = AgentKBAssignment(
+                    assignment_id=new_id("kba"),
+                    agent_id=agent_id,
+                    kb_id=kb_id,
+                    access_mode=access_mode,
+                )
+                db.add(row)
+            else:
+                row.access_mode = access_mode
+            db.flush()
+            return self._kb_assignment_to_dict(row)
+
+    def delete_agent_kb_assignment(self, assignment_id: str) -> bool:
+        with self.session() as db:
+            row = db.get(AgentKBAssignment, assignment_id)
+            if not row:
+                return False
+            db.delete(row)
+            return True
+
+    @staticmethod
+    def _kb_to_dict(row: KnowledgeBase | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "kb_id": row.kb_id,
+            "display_name": row.display_name,
+            "description": row.description,
+            "source_type": row.source_type,
+            "source_config": row.source_config or {},
+            "environment": row.environment,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _kb_assignment_to_dict(row: AgentKBAssignment | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "assignment_id": row.assignment_id,
+            "agent_id": row.agent_id,
+            "kb_id": row.kb_id,
+            "access_mode": row.access_mode,
+            "created_at": row.created_at.isoformat(),
+        }

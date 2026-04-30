@@ -21,4 +21,3 @@ def load_settings() -> Settings:
         policy_path=os.getenv("POLICY_PATH", DEFAULT_POLICY_PATH),
         auto_init_db=os.getenv("AUTO_INIT_DB", "true").lower() == "true",
     )
-

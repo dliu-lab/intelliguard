@@ -10,8 +10,11 @@ from agent_governance.models import (
     Base,
     Customer,
     CustomerTransaction,
+    EvaluatorTemplate,
+    GuardrailPolicy,
     SupportCase,
 )
+from agent_governance.policy import load_policy
 from agent_governance.settings import DEFAULT_DATABASE_URL
 
 
@@ -50,7 +53,82 @@ def ensure_runtime_schema(engine) -> None:
             )
 
 
+def seed_guardrail_defaults(session: Session) -> None:
+    from agent_governance.settings import DEFAULT_POLICY_PATH
+
+    if not session.get(GuardrailPolicy, "pol_default"):
+        policy = load_policy(DEFAULT_POLICY_PATH)
+        session.add(
+            GuardrailPolicy(
+                policy_id="pol_default",
+                display_name="Default Policy",
+                description="Seeded from the default policy.yaml. Edit to create custom policies.",
+                environment="demo",
+                config={
+                    "allowed_tools": list(policy.allowed_tools),
+                    "blocked_tools": list(policy.blocked_tools),
+                    "max_records_returned": policy.max_records_returned,
+                    "block_pii_in_response": policy.block_pii_in_response,
+                    "redact_pii_in_response": policy.redact_pii_in_response,
+                    "blocked_patterns": list(policy.blocked_patterns),
+                    "review_required_for": list(policy.review_required_for),
+                    "decision_thresholds": {
+                        "review": policy.decision_thresholds.review,
+                        "block": policy.decision_thresholds.block,
+                    },
+                },
+            )
+        )
+
+    built_in = [
+        EvaluatorTemplate(
+            evaluator_id="eval_policy_compliance",
+            display_name="Policy Compliance",
+            evaluator_type="policy_compliance",
+            scope="agent",
+            description="Scores the fraction of policy decisions that were ALLOW in session.",
+            default_config={"pass_threshold": 80},
+        ),
+        EvaluatorTemplate(
+            evaluator_id="eval_tool_use_correctness",
+            display_name="Tool Use Correctness",
+            evaluator_type="tool_use_correctness",
+            scope="agent",
+            description="Checks that the agent only called tools it was explicitly granted.",
+            default_config={"pass_threshold": 100},
+        ),
+        EvaluatorTemplate(
+            evaluator_id="eval_pii_leakage",
+            display_name="PII Leakage",
+            evaluator_type="pii_leakage",
+            scope="agent",
+            description="Fails if any PII-related audit event was recorded for the session.",
+            default_config={"pass_threshold": 100},
+        ),
+        EvaluatorTemplate(
+            evaluator_id="eval_workflow_completion",
+            display_name="Workflow Completion",
+            evaluator_type="workflow_completion",
+            scope="workflow",
+            description="Scores overall workflow outcome: all COMPLETED=100, any BLOCK=0, any REVIEW=50.",
+            default_config={"pass_threshold": 80},
+        ),
+        EvaluatorTemplate(
+            evaluator_id="eval_response_quality",
+            display_name="Response Quality",
+            evaluator_type="response_quality",
+            scope="workflow",
+            description="Checks the lead agent's FINAL_RESPONSE_CHECK event status.",
+            default_config={"pass_threshold": 80},
+        ),
+    ]
+    for template in built_in:
+        if not session.get(EvaluatorTemplate, template.evaluator_id):
+            session.add(template)
+
+
 def seed_demo_data(session: Session) -> None:
+    seed_guardrail_defaults(session)
     seed_agent_identities(session)
 
     existing = session.scalar(select(Customer).limit(1))
@@ -150,6 +228,14 @@ def seed_demo_data(session: Session) -> None:
     session.commit()
 
 
+DEFAULT_AGENT_LLM_CONFIG = {
+    "gateway": "litellm",
+    "endpoint": "/llm/v1",
+    "model": "ollama/qwen3.5:9b",
+    "temperature": 0.2,
+}
+
+
 def seed_agent_identities(session: Session) -> None:
     defaults = [
         AgentIdentity(
@@ -182,6 +268,7 @@ def seed_agent_identities(session: Session) -> None:
                 "framework": "custom-python-agent",
                 "data_domain": "customer_support",
                 "identity_provider": "local-demo",
+                "llm": {**DEFAULT_AGENT_LLM_CONFIG},
             },
         ),
         AgentIdentity(
@@ -203,6 +290,7 @@ def seed_agent_identities(session: Session) -> None:
                 "framework": "multi-agent-orchestrator",
                 "data_domain": "customer_support",
                 "identity_provider": "local-demo",
+                "llm": {**DEFAULT_AGENT_LLM_CONFIG},
             },
         ),
         AgentIdentity(
@@ -224,6 +312,7 @@ def seed_agent_identities(session: Session) -> None:
                 "framework": "multi-agent-specialist",
                 "data_domain": "customer_profile",
                 "identity_provider": "local-demo",
+                "llm": {**DEFAULT_AGENT_LLM_CONFIG},
             },
         ),
         AgentIdentity(
@@ -245,6 +334,7 @@ def seed_agent_identities(session: Session) -> None:
                 "framework": "multi-agent-specialist",
                 "data_domain": "transactions",
                 "identity_provider": "local-demo",
+                "llm": {**DEFAULT_AGENT_LLM_CONFIG},
             },
         ),
         AgentIdentity(
@@ -266,6 +356,7 @@ def seed_agent_identities(session: Session) -> None:
                 "framework": "multi-agent-specialist",
                 "data_domain": "governance",
                 "identity_provider": "local-demo",
+                "llm": {**DEFAULT_AGENT_LLM_CONFIG},
             },
         ),
         AgentIdentity(
@@ -277,7 +368,11 @@ def seed_agent_identities(session: Session) -> None:
             purpose="Run the governed customer support demo from a terminal.",
             permissions={
                 "tools": ["get_customer_profile", "get_customer_transactions", "search_customers"],
-                "actions": ["read_customer_profile", "read_transactions", "filtered_customer_search"],
+                "actions": [
+                    "read_customer_profile",
+                    "read_transactions",
+                    "filtered_customer_search",
+                ],
                 "scopes": {
                     "customer_access": "customer_id_or_filtered_search",
                     "max_search_limit": 10,
@@ -288,6 +383,7 @@ def seed_agent_identities(session: Session) -> None:
                 "framework": "cli",
                 "data_domain": "customer_support",
                 "identity_provider": "local-demo",
+                "llm": {**DEFAULT_AGENT_LLM_CONFIG},
             },
         ),
     ]

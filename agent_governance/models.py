@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -144,7 +153,9 @@ class WorkflowSessionLink(Base):
     )
 
     link_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    workflow_id: Mapped[str] = mapped_column(ForeignKey("agent_workflows.workflow_id"), nullable=False)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_workflows.workflow_id"), nullable=False
+    )
     session_id: Mapped[str] = mapped_column(ForeignKey("agent_sessions.session_id"), nullable=False)
     agent_id: Mapped[str] = mapped_column(String(120), nullable=False)
     role: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -228,7 +239,9 @@ class ReviewQueueItem(Base):
 
 class WorkflowEvent(Base):
     __tablename__ = "workflow_events"
-    __table_args__ = (UniqueConstraint("session_id", "sequence", name="uq_workflow_session_sequence"),)
+    __table_args__ = (
+        UniqueConstraint("session_id", "sequence", name="uq_workflow_session_sequence"),
+    )
 
     event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     session_id: Mapped[str] = mapped_column(ForeignKey("agent_sessions.session_id"), nullable=False)
@@ -238,4 +251,105 @@ class WorkflowEvent(Base):
     label: Mapped[str] = mapped_column(String(160), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class GuardrailPolicy(Base):
+    __tablename__ = "guardrail_policies"
+
+    policy_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AgentGuardrailAssignment(Base):
+    __tablename__ = "agent_guardrail_assignments"
+    __table_args__ = (UniqueConstraint("agent_id", "environment", name="uq_agent_guardrail_env"),)
+
+    assignment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agent_identities.agent_id"), nullable=False)
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    policy_id: Mapped[str] = mapped_column(
+        ForeignKey("guardrail_policies.policy_id"), nullable=False
+    )
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="enforce")
+    threshold_overrides: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EvaluatorTemplate(Base):
+    __tablename__ = "evaluator_templates"
+
+    evaluator_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    evaluator_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    default_config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    llm_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AgentEvaluatorAssignment(Base):
+    __tablename__ = "agent_evaluator_assignments"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "environment", "evaluator_id", name="uq_agent_evaluator_env"),
+    )
+
+    assignment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agent_identities.agent_id"), nullable=False)
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    evaluator_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluator_templates.evaluator_id"), nullable=False
+    )
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False, default="after_run")
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EvaluationResult(Base):
+    __tablename__ = "evaluation_results"
+
+    result_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("agent_sessions.session_id"), nullable=False)
+    workflow_id: Mapped[str | None] = mapped_column(String(64))
+    agent_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    evaluator_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluator_templates.evaluator_id"), nullable=False
+    )
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    findings: Mapped[list] = mapped_column(JSONB, default=list)
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class KnowledgeBase(Base):
+    __tablename__ = "knowledge_bases"
+
+    kb_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_type: Mapped[str] = mapped_column(String(40), nullable=False)  # "vector_store"|"url"|"file"
+    source_config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AgentKBAssignment(Base):
+    __tablename__ = "agent_kb_assignments"
+    __table_args__ = (UniqueConstraint("agent_id", "kb_id", name="uq_agent_kb"),)
+
+    assignment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agent_identities.agent_id"), nullable=False)
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.kb_id"), nullable=False)
+    access_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="read")  # "read"|"read_write"
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

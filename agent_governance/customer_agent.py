@@ -98,4 +98,3 @@ def _result_payload(
         "audit_event_id": result.audit_event_id,
         "raw_result": raw_result,
     }
-

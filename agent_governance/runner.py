@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any
 
 from agent_governance.detectors import (
@@ -10,7 +10,8 @@ from agent_governance.detectors import (
     assess_tool_result,
     redact_pii,
 )
-from agent_governance.policy import PolicyConfig, load_policy
+from agent_governance.evaluators import EvaluatorEngine
+from agent_governance.policy import DecisionThresholds, PolicyConfig, load_policy
 from agent_governance.store import GovernanceStore
 from agent_governance.tools import ToolRegistry
 
@@ -38,9 +39,52 @@ class GovernedToolRunner:
         tools: ToolRegistry,
     ) -> None:
         self.agent_id = agent_id
-        self.policy: PolicyConfig = load_policy(policy_path)
         self.store = GovernanceStore(database_url)
         self.tools = tools
+        self.guardrail_mode, self.policy = self._resolve_policy(policy_path)
+        self.evaluator_engine = EvaluatorEngine(self.store)
+
+    def _resolve_policy(self, policy_path: str) -> tuple[str, PolicyConfig]:
+        identity = self.store.get_agent_identity(self.agent_id)
+        environment = identity.get("environment", "local")
+        assignment = self.store.get_agent_guardrail_assignment(self.agent_id, environment)
+        if not assignment:
+            return "enforce", load_policy(policy_path)
+        mode = assignment["mode"]
+        if mode == "disabled":
+            return "disabled", load_policy(policy_path)
+        policy_row = self.store.get_guardrail_policy(assignment["policy_id"])
+        if not policy_row:
+            return mode, load_policy(policy_path)
+        config = dict(policy_row["config"])
+        overrides = assignment.get("threshold_overrides") or {}
+        thresholds = dict(config.get("decision_thresholds") or {})
+        if "block" in overrides:
+            thresholds["block"] = int(overrides["block"])
+        if "review" in overrides:
+            thresholds["review"] = int(overrides["review"])
+        return mode, PolicyConfig(
+            allowed_tools=list(config.get("allowed_tools") or []),
+            blocked_tools=list(config.get("blocked_tools") or []),
+            max_records_returned=int(config.get("max_records_returned", 100)),
+            block_pii_in_response=bool(config.get("block_pii_in_response", True)),
+            redact_pii_in_response=bool(config.get("redact_pii_in_response", False)),
+            blocked_patterns=list(config.get("blocked_patterns") or []),
+            review_required_for=list(config.get("review_required_for") or []),
+            decision_thresholds=DecisionThresholds(
+                review=int(thresholds.get("review", 50)),
+                block=int(thresholds.get("block", 80)),
+            ),
+        )
+
+    def _apply_mode(self, assessment: RiskAssessment) -> RiskAssessment:
+        if self.guardrail_mode == "review_only" and assessment.decision == "BLOCK":
+            return dataclass_replace(
+                assessment,
+                decision="REVIEW",
+                reason=f"[review_only mode] {assessment.reason}",
+            )
+        return assessment
 
     def evaluate_tool_call(
         self,
@@ -53,6 +97,15 @@ class GovernedToolRunner:
         self.store.ensure_agent_session(session_id, self.agent_id, user_query)
         agent_identity = self.store.get_agent_identity(self.agent_id)
         self._emit_user_and_agent_events(session_id, user_query)
+
+        if self.guardrail_mode == "disabled":
+            return GovernedToolResult(
+                decision="ALLOW",
+                risk_score=0,
+                risk_types=[],
+                reason="Guardrails disabled for this agent in this environment.",
+            )
+
         self.store.add_workflow_event(
             session_id=session_id,
             agent_id=self.agent_id,
@@ -76,6 +129,7 @@ class GovernedToolRunner:
             agent_identity=agent_identity,
             repeated_failures=self.store.count_failed_tool_calls(session_id),
         )
+        assessment = self._apply_mode(assessment)
         return self._record_pre_tool_decision(
             session_id=session_id,
             user_query=user_query,
@@ -115,6 +169,7 @@ class GovernedToolRunner:
             result = tool(db, **tool_args)
 
         result_assessment = assess_tool_result(self.policy, tool_name, result)
+        result_assessment = self._apply_mode(result_assessment)
         self.store.add_workflow_event(
             session_id=session_id,
             agent_id=self.agent_id,
@@ -164,7 +219,20 @@ class GovernedToolRunner:
         session_id: str,
         response_text: str,
     ) -> GovernedToolResult:
+        if self.guardrail_mode == "disabled":
+            self.store.update_session_status(session_id, "COMPLETED")
+            self._run_post_session_evaluators(session_id)
+            return GovernedToolResult(
+                decision="ALLOW",
+                risk_score=0,
+                risk_types=[],
+                reason="Guardrails disabled.",
+                response_text=response_text,
+            )
+
         assessment = assess_final_response(self.policy, response_text)
+        assessment = self._apply_mode(assessment)
+
         final_text = response_text
         final_decision = assessment.decision
 
@@ -207,6 +275,7 @@ class GovernedToolRunner:
             payload={"response_preview": final_text[:500]},
         )
         self.store.update_session_status(session_id, "COMPLETED")
+        self._run_post_session_evaluators(session_id)
         return GovernedToolResult(
             decision=final_decision,
             risk_score=assessment.risk_score,
@@ -214,6 +283,30 @@ class GovernedToolRunner:
             reason=assessment.reason,
             response_text=final_text,
         )
+
+    def _run_post_session_evaluators(self, session_id: str) -> None:
+        identity = self.store.get_agent_identity(self.agent_id)
+        environment = identity.get("environment", "local")
+        results = self.evaluator_engine.run_for_session(session_id, self.agent_id, environment)
+        if results:
+            self.store.add_workflow_event(
+                session_id=session_id,
+                agent_id=self.agent_id,
+                event_type="EVALUATION_COMPLETE",
+                label="Evaluation complete",
+                status="COMPLETED",
+                payload={
+                    "results": [
+                        {
+                            "evaluator_id": r.evaluator_id,
+                            "score": r.score,
+                            "passed": r.passed,
+                            "findings": r.findings,
+                        }
+                        for r in results
+                    ]
+                },
+            )
 
     def _record_pre_tool_decision(
         self,

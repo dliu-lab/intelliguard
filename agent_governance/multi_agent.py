@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from uuid import uuid4
 
+from agent_governance.evaluators import EvaluatorEngine
 from agent_governance.customer_agent import format_tool_response
 from agent_governance.runner import GovernedToolRunner
 from agent_governance.store import GovernanceStore
@@ -66,10 +67,15 @@ def run_customer_support_workflow(
         user_goal=query,
         lead_agent_id=lead_agent_id,
         metadata={
-            "workflow_type": workflow_definition.get("workflow_definition_id", "multi_agent_customer_support"),
+            "workflow_type": workflow_definition.get(
+                "workflow_definition_id", "multi_agent_customer_support"
+            ),
             "workflow_definition_id": workflow_definition.get("workflow_definition_id"),
             "customer_id": customer_id,
-            "agents_expected": [lead_agent_id, *[step.get("agent_id") for step in steps if step.get("agent_id")]],
+            "agents_expected": [
+                lead_agent_id,
+                *[step.get("agent_id") for step in steps if step.get("agent_id")],
+            ],
         },
     )
 
@@ -159,7 +165,9 @@ def run_customer_support_workflow(
             )
             result = runner.call_tool(
                 session_id=session_id,
-                user_query=_render_template(step.get("task") or step.get("label") or query, customer_id),
+                user_query=_render_template(
+                    step.get("task") or step.get("label") or query, customer_id
+                ),
                 tool_name=tool_name,
                 tool_args=_render_value(step.get("tool_args") or {}, customer_id),
             )
@@ -170,7 +178,9 @@ def run_customer_support_workflow(
                 )
         else:
             decisions = [item["decision"] for item in step_results]
-            decision = "BLOCK" if "BLOCK" in decisions else "REVIEW" if "REVIEW" in decisions else "ALLOW"
+            decision = (
+                "BLOCK" if "BLOCK" in decisions else "REVIEW" if "REVIEW" in decisions else "ALLOW"
+            )
             store.add_workflow_event(
                 session_id=session_id,
                 agent_id=agent_id,
@@ -179,7 +189,9 @@ def run_customer_support_workflow(
                 status=decision,
                 payload={"step_results": step_results, "final_recommendation": decision},
             )
-            result = _StepResult(decision=decision, reason=f"{step.get('label', step_id)} completed.")
+            result = _StepResult(
+                decision=decision, reason=f"{step.get('label', step_id)} completed."
+            )
         store.update_session_status(session_id, "COMPLETED")
         step_results.append(
             {
@@ -193,8 +205,12 @@ def run_customer_support_workflow(
         )
 
     decisions = [item["decision"] for item in step_results]
-    final_decision = "BLOCK" if "BLOCK" in decisions else "REVIEW" if "REVIEW" in decisions else "ALLOW"
-    summary = _workflow_summary(customer_id=customer_id, step_results=step_results, final_decision=final_decision)
+    final_decision = (
+        "BLOCK" if "BLOCK" in decisions else "REVIEW" if "REVIEW" in decisions else "ALLOW"
+    )
+    summary = _workflow_summary(
+        customer_id=customer_id, step_results=step_results, final_decision=final_decision
+    )
     store.add_workflow_event(
         session_id=lead_session_id,
         agent_id=lead_agent_id,
@@ -210,13 +226,37 @@ def run_customer_support_workflow(
         decision=final_decision,
         summary=summary,
         metadata={
-            "workflow_type": workflow_definition.get("workflow_definition_id", "multi_agent_customer_support"),
+            "workflow_type": workflow_definition.get(
+                "workflow_definition_id", "multi_agent_customer_support"
+            ),
             "workflow_definition_id": workflow_definition.get("workflow_definition_id"),
             "customer_id": customer_id,
             "lead_session_id": lead_session_id,
             "sub_agent_session_ids": list(step_session_ids.values()),
         },
     )
+
+    # Workflow-level evaluation (after_workflow evaluators on the lead agent)
+    lead_identity = store.get_agent_identity(lead_agent_id)
+    environment = lead_identity.get("environment", "demo")
+    evaluator_engine = EvaluatorEngine(store)
+    eval_results = evaluator_engine.run_for_workflow(
+        workflow_id, lead_session_id, lead_agent_id, environment
+    )
+    if eval_results:
+        store.add_workflow_event(
+            session_id=lead_session_id,
+            agent_id=lead_agent_id,
+            event_type="WORKFLOW_EVALUATION_COMPLETE",
+            label="Workflow evaluation complete",
+            status="COMPLETED",
+            payload={
+                "results": [
+                    {"evaluator_id": r.evaluator_id, "score": r.score, "passed": r.passed}
+                    for r in eval_results
+                ]
+            },
+        )
 
     return {
         "workflow_id": workflow_id,
@@ -234,10 +274,7 @@ def _workflow_summary(
     final_decision: str,
 ) -> str:
     step_text = ". ".join(f"{item['step_id']}: {item['decision']}" for item in step_results)
-    return (
-        f"Workflow for {customer_id} completed with {final_decision}. "
-        f"{step_text}."
-    )
+    return f"Workflow for {customer_id} completed with {final_decision}. {step_text}."
 
 
 class _StepResult:
