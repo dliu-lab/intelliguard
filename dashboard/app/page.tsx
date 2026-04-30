@@ -7,7 +7,6 @@ import { FacilitatorBot } from "@/components/FacilitatorBot";
 import { Footer } from "@/components/Footer";
 import { Hero } from "@/components/Hero";
 import { Navbar } from "@/components/Navbar";
-import { TrustStrip } from "@/components/TrustStrip";
 import { UseCases } from "@/components/UseCases";
 
 export default function Home() {
@@ -17,7 +16,6 @@ export default function Home() {
       <div className="grid-overlay pointer-events-none fixed inset-0 -z-10 opacity-60" />
       <Navbar />
       <Hero />
-      <TrustStrip />
       <Capabilities />
       <Architecture />
       <UseCases />
