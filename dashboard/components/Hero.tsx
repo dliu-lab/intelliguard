@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { ArrowRight, Play, ShieldCheck } from "lucide-react";
 import { useState } from "react";
+import { openAuthModal } from "@/components/AuthModal";
 
 const controlNodes = [
   { label: "Policy", top: "18%", left: "14%" },
@@ -68,13 +69,14 @@ export function Hero() {
             >
               View Platform
             </a>
-            <a
-              href="#contact"
+            <button
+              type="button"
+              onClick={() => openAuthModal("signup")}
               className="inline-flex items-center justify-center gap-2 rounded-full bg-accent px-6 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90 focus:outline-none focus:ring-2 focus:ring-accent/60"
             >
-              Request Demo
+              Try IntelliGuard
               <ArrowRight size={17} aria-hidden="true" />
-            </a>
+            </button>
           </div>
         </motion.div>
 
