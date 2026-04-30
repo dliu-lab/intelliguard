@@ -1,4 +1,5 @@
 import { Architecture } from "@/components/Architecture";
+import { AuthModal } from "@/components/AuthModal";
 import { CTA } from "@/components/CTA";
 import { Capabilities } from "@/components/Capabilities";
 import { DeveloperSection } from "@/components/DeveloperSection";
@@ -24,6 +25,7 @@ export default function Home() {
       <CTA />
       <Footer />
       <FacilitatorBot />
+      <AuthModal />
     </main>
   );
 }

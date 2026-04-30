@@ -2,6 +2,8 @@
 
 import { ShieldCheck } from "lucide-react";
 import { motion } from "framer-motion";
+import { openAuthModal } from "@/components/AuthModal";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const navLinks = ["Platform", "Governance", "Use Cases", "Developers", "Contact"];
 
@@ -34,6 +36,21 @@ export function Navbar() {
         </div>
 
         <div className="flex items-center gap-3">
+          <ThemeToggle />
+          <button
+            type="button"
+            onClick={() => openAuthModal("login")}
+            className="hidden text-sm font-medium text-textSecondary transition hover:text-textPrimary sm:inline"
+          >
+            Login
+          </button>
+          <button
+            type="button"
+            onClick={() => openAuthModal("signup")}
+            className="hidden rounded-full border border-line bg-white/[0.04] px-4 py-2 text-sm font-semibold text-textPrimary transition hover:border-accent/50 hover:bg-accent/10 sm:inline-flex"
+          >
+            Sign Up
+          </button>
           <a
             href="#contact"
             className="shrink-0 rounded-full border border-accent/40 bg-accent px-4 py-2 text-sm font-semibold text-ink transition hover:bg-accent/90 focus:outline-none focus:ring-2 focus:ring-accent/60"
