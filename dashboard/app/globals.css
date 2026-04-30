@@ -4,13 +4,13 @@
 
 :root {
   color-scheme: dark;
-  --color-ink: 11 15 20;
-  --color-panel: 17 22 28;
-  --color-text-primary: 230 237 243;
-  --color-text-secondary: 155 163 175;
+  --color-ink: 21 27 34;
+  --color-panel: 30 38 47;
+  --color-text-primary: 244 248 250;
+  --color-text-secondary: 180 190 201;
   --color-accent: 0 200 150;
   --color-line: 255 255 255;
-  --color-line-alpha: 0.08;
+  --color-line-alpha: 0.13;
   --hero-base: #071015;
   --hero-glow-strong: rgba(0, 200, 150, 0.42);
   --hero-glow-soft: rgba(0, 200, 150, 0.16);
@@ -20,13 +20,13 @@
 
 html[data-theme="light"] {
   color-scheme: light;
-  --color-ink: 241 247 246;
-  --color-panel: 255 255 255;
+  --color-ink: 235 243 242;
+  --color-panel: 250 253 252;
   --color-text-primary: 12 20 24;
-  --color-text-secondary: 79 91 99;
+  --color-text-secondary: 48 61 70;
   --color-accent: 0 148 117;
   --color-line: 10 30 38;
-  --color-line-alpha: 0.12;
+  --color-line-alpha: 0.18;
   --hero-base: #eff8f6;
   --hero-glow-strong: rgba(0, 148, 117, 0.28);
   --hero-glow-soft: rgba(0, 148, 117, 0.1);
@@ -75,9 +75,9 @@ html.has-mouse-trail * {
 .glass-card {
   border: 1px solid rgb(var(--color-line) / var(--color-line-alpha));
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
-    rgb(var(--color-panel) / 0.72);
-  box-shadow: 0 24px 80px rgb(0 0 0 / 0.28);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.05)),
+    rgb(var(--color-panel) / 0.86);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 0.22);
   backdrop-filter: blur(18px);
 }
 
@@ -92,10 +92,71 @@ html.has-mouse-trail * {
   margin-inline: auto;
 }
 
+@layer components {
+  .field-input {
+    @apply w-full rounded-2xl border border-line bg-ink/70 px-4 py-3 text-sm normal-case tracking-normal text-textPrimary outline-none transition focus:border-accent/50 focus:ring-2 focus:ring-accent/20;
+  }
+
+  .designer-action {
+    @apply inline-flex items-center gap-2 rounded-full border border-line bg-white/[0.04] px-4 py-2 text-sm font-semibold transition hover:border-accent/40 hover:bg-accent/10;
+  }
+
+  .agent-count-tag {
+    @apply rounded-full border px-3 py-1 text-xs font-semibold;
+  }
+
+  .agent-count-tool {
+    border-color: rgb(var(--color-accent) / 0.45);
+    background: rgb(var(--color-accent) / 0.16);
+    color: rgb(var(--color-accent));
+  }
+
+  .agent-count-guardrail {
+    border-color: rgb(96 165 250 / 0.55);
+    background: rgb(59 130 246 / 0.18);
+    color: rgb(191 219 254);
+  }
+
+  .agent-count-evaluator {
+    border-color: rgb(167 139 250 / 0.55);
+    background: rgb(124 58 237 / 0.2);
+    color: rgb(221 214 254);
+  }
+
+  .agent-count-knowledge {
+    border-color: rgb(245 158 11 / 0.58);
+    background: rgb(217 119 6 / 0.18);
+    color: rgb(254 243 199);
+  }
+}
+
+html[data-theme="light"] .agent-count-tool {
+  color: rgb(0 95 75);
+}
+
+html[data-theme="light"] .agent-count-guardrail {
+  border-color: rgb(29 78 216 / 0.42);
+  background: rgb(37 99 235 / 0.12);
+  color: rgb(30 64 175);
+}
+
+html[data-theme="light"] .agent-count-evaluator {
+  border-color: rgb(109 40 217 / 0.42);
+  background: rgb(124 58 237 / 0.12);
+  color: rgb(91 33 182);
+}
+
+html[data-theme="light"] .agent-count-knowledge {
+  border-color: rgb(180 83 9 / 0.42);
+  background: rgb(217 119 6 / 0.13);
+  color: rgb(120 53 15);
+}
+
 .app-backdrop {
   background:
-    radial-gradient(circle at 50% 0%, rgba(0, 200, 150, 0.16), transparent 32%),
-    radial-gradient(circle at 15% 20%, rgba(49, 102, 255, 0.12), transparent 30%),
+    radial-gradient(circle at 50% 0%, rgba(0, 200, 150, 0.2), transparent 34%),
+    radial-gradient(circle at 15% 20%, rgba(69, 127, 255, 0.16), transparent 31%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 42%),
     rgb(var(--color-ink));
 }
 

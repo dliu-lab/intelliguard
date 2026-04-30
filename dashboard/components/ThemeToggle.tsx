@@ -21,7 +21,7 @@ function readInitialTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
-export function ThemeToggle() {
+export function ThemeToggle({ compact = false }: { compact?: boolean } = {}) {
   const [theme, setTheme] = useState<Theme>("dark");
 
   useEffect(() => {
@@ -44,7 +44,11 @@ export function ThemeToggle() {
       type="button"
       onClick={toggleTheme}
       aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-      className="grid h-10 w-10 place-items-center rounded-full border border-line bg-white/[0.04] text-textSecondary transition hover:border-accent/50 hover:bg-accent/10 hover:text-textPrimary focus:outline-none focus:ring-2 focus:ring-accent/45"
+      className={
+        compact
+          ? "grid h-10 w-10 place-items-center rounded-xl text-textSecondary transition hover:bg-accent/10 hover:text-textPrimary focus:outline-none focus:ring-2 focus:ring-accent/45"
+          : "grid h-10 w-10 place-items-center rounded-full border border-line bg-white/[0.04] text-textSecondary transition hover:border-accent/50 hover:bg-accent/10 hover:text-textPrimary focus:outline-none focus:ring-2 focus:ring-accent/45"
+      }
     >
       {theme === "dark" ? <Sun size={17} aria-hidden="true" /> : <Moon size={17} aria-hidden="true" />}
     </button>

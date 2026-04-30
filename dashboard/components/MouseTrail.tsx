@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { usePathname } from "next/navigation";
 
 type TrailVariant = "default" | "landing";
 
@@ -110,6 +111,8 @@ function drawOrb(ctx: CanvasRenderingContext2D, x: number, y: number, variant: T
 }
 
 export function MouseTrail({ variant = "landing" }: { variant?: TrailVariant }) {
+  const pathname = usePathname();
+  const enabled = !pathname?.startsWith("/platform");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const particles = useRef<Particle[]>([]);
   const mouse = useRef<Point>({ x: -200, y: -200 });
@@ -118,6 +121,11 @@ export function MouseTrail({ variant = "landing" }: { variant?: TrailVariant }) 
   const lastEmit = useRef(0);
 
   useEffect(() => {
+    if (!enabled) {
+      document.documentElement.classList.remove("has-mouse-trail");
+      return undefined;
+    }
+
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -202,7 +210,7 @@ export function MouseTrail({ variant = "landing" }: { variant?: TrailVariant }) 
       }
       document.documentElement.classList.remove("has-mouse-trail");
     };
-  }, [variant]);
+  }, [enabled, variant]);
 
-  return <canvas ref={canvasRef} aria-hidden="true" className="mouse-trail-canvas" />;
+  return enabled ? <canvas ref={canvasRef} aria-hidden="true" className="mouse-trail-canvas" /> : null;
 }

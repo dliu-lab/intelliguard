@@ -21,8 +21,10 @@ export type ApiRecord = Record<string, unknown>;
 
 export type PlatformData = {
   agents: ApiRecord[];
+  agentAssignmentCounts: Record<string, { guardrails: number; evaluators: number; knowledge: number }>;
   workflowDefinitions: ApiRecord[];
   workflows: ApiRecord[];
+  workflowDetails: ApiRecord[];
   sessions: ApiRecord[];
   reviewQueue: ApiRecord[];
   auditEvents: ApiRecord[];
@@ -123,6 +125,12 @@ export function listWorkflows(token: string, limit = 50, environment = "all") {
   });
 }
 
+export function getWorkflowDetail(token: string, workflowId: string) {
+  return request<ApiRecord>(`/v1/workflows/${encodeURIComponent(workflowId)}`, {
+    headers: authHeaders(token),
+  });
+}
+
 export function listWorkflowMarketplace(token: string, environment = "all") {
   return request<ApiRecord[]>(withParams("/v1/workflow-marketplace", { environment }), {
     headers: authHeaders(token),
@@ -185,6 +193,13 @@ export function createAgent(token: string, payload: ApiRecord) {
   });
 }
 
+export function deleteAgent(token: string, agentId: string) {
+  return request<{ ok: boolean }>(`/v1/agents/${encodeURIComponent(agentId)}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+}
+
 export function createTool(token: string, payload: ApiRecord) {
   return request<ApiRecord>("/v1/tool-marketplace", {
     method: "POST",
@@ -211,6 +226,25 @@ export function createEvaluatorTemplate(token: string, payload: ApiRecord) {
 
 export function createKnowledgeBase(token: string, payload: ApiRecord) {
   return request<ApiRecord>("/v1/knowledge-bases", {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createWorkflowDefinition(token: string, payload: ApiRecord) {
+  return request<ApiRecord>("/v1/workflow-marketplace", {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function runMultiAgentWorkflow(
+  token: string,
+  payload: { query: string; workflow_definition_id?: string },
+) {
+  return request<ApiRecord>("/v1/multi-agent-runs", {
     method: "POST",
     headers: authHeaders(token),
     body: JSON.stringify(payload),
@@ -298,46 +332,72 @@ export function deleteAgentKnowledgeBase(token: string, agentId: string, assignm
   );
 }
 
-export function platformOverview(token: string): Promise<PlatformData> {
-  return Promise.all([
-    listAgents(token),
-    listWorkflowMarketplace(token),
-    listWorkflows(token),
-    listSessions(token),
-    listReviewQueue(token),
-    listAuditEvents(token),
-    listGuardrailPolicies(token),
+export async function platformOverview(token: string, environment = "all"): Promise<PlatformData> {
+  const [
+    agents,
+    workflowDefinitions,
+    workflows,
+    sessions,
+    reviewQueue,
+    auditEvents,
+    guardrailPolicies,
+    evaluatorTemplates,
+    knowledgeBases,
+    tools,
+    environments,
+  ] = await Promise.all([
+    listAgents(token, environment),
+    listWorkflowMarketplace(token, environment),
+    listWorkflows(token, 50, environment),
+    listSessions(token, 50, environment),
+    listReviewQueue(token, 100, environment),
+    listAuditEvents(token, 100, environment),
+    listGuardrailPolicies(token, environment),
     listEvaluatorTemplates(token),
-    listKnowledgeBases(token),
+    listKnowledgeBases(token, environment),
     listToolMarketplace(token),
     listEnvironments(token),
-  ]).then(
-    ([
-      agents,
-      workflowDefinitions,
-      workflows,
-      sessions,
-      reviewQueue,
-      auditEvents,
-      guardrailPolicies,
-      evaluatorTemplates,
-      knowledgeBases,
-      tools,
-      environments,
-    ]) => ({
-      agents,
-      workflowDefinitions,
-      workflows,
-      sessions,
-      reviewQueue,
-      auditEvents,
-      guardrailPolicies,
-      evaluatorTemplates,
-      knowledgeBases,
-      tools,
-      environments,
+  ]);
+
+  const workflowDetails = await Promise.all(
+    workflows.map((workflow) => {
+      const workflowId = typeof workflow.workflow_id === "string" ? workflow.workflow_id : "";
+      return workflowId ? getWorkflowDetail(token, workflowId).catch(() => workflow) : Promise.resolve(workflow);
     }),
   );
+  const agentAssignmentEntries = await Promise.all(
+    agents.map(async (agent) => {
+      const agentId = typeof agent.agent_id === "string" ? agent.agent_id : "";
+      if (!agentId) {
+        return ["", { guardrails: 0, evaluators: 0, knowledge: 0 }] as const;
+      }
+
+      const [guardrails, evaluators, knowledge] = await Promise.all([
+        listAgentGuardrails(token, agentId).catch(() => []),
+        listAgentEvaluators(token, agentId).catch(() => []),
+        listAgentKnowledgeBases(token, agentId).catch(() => []),
+      ]);
+
+      return [agentId, { guardrails: guardrails.length, evaluators: evaluators.length, knowledge: knowledge.length }] as const;
+    }),
+  );
+  const agentAssignmentCounts = Object.fromEntries(agentAssignmentEntries.filter(([agentId]) => agentId));
+
+  return {
+    agents,
+    agentAssignmentCounts,
+    workflowDefinitions,
+    workflows,
+    workflowDetails,
+    sessions,
+    reviewQueue,
+    auditEvents,
+    guardrailPolicies,
+    evaluatorTemplates,
+    knowledgeBases,
+    tools,
+    environments,
+  };
 }
 
 export function saveSession(session: AuthSession) {

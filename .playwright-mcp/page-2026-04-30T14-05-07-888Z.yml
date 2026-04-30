@@ -1,0 +1,205 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - navigation "Primary navigation" [ref=e4]:
+      - link "IntelliGuard home" [ref=e5]:
+        - /url: "#"
+        - img [ref=e7]
+        - generic [ref=e10]: IntelliGuard
+      - generic [ref=e11]:
+        - link "Platform" [ref=e12]:
+          - /url: "#platform"
+        - link "Governance" [ref=e13]:
+          - /url: "#governance"
+        - link "Use Cases" [ref=e14]:
+          - /url: "#use-cases"
+        - link "Developers" [ref=e15]:
+          - /url: "#developers"
+        - link "Contact" [ref=e16]:
+          - /url: "#contact"
+      - generic [ref=e17]:
+        - button "Switch to dark mode" [ref=e18]:
+          - img [ref=e19]
+        - button "Login" [ref=e21]
+        - button "Sign Up" [ref=e22]
+        - link "Request Demo" [ref=e23]:
+          - /url: "#contact"
+    - generic [ref=e25]:
+      - generic [ref=e26]:
+        - generic [ref=e27]: AI runtime control plane
+        - heading "Governance wired into AI runtime" [level=1] [ref=e29]
+        - paragraph [ref=e30]: Monitor agent actions. Evaluate risk. Enforce controls. Protect trust.
+        - generic [ref=e31]:
+          - link "View Platform" [ref=e32]:
+            - /url: "#architecture"
+          - button "Try IntelliGuard" [ref=e33]:
+            - text: Try IntelliGuard
+            - img [ref=e34]
+      - generic "Cinematic frame showing Human plus AI flowing into governed runtime" [ref=e36]:
+        - generic [ref=e38]:
+          - generic [ref=e39]:
+            - generic [ref=e40]:
+              - img [ref=e41]
+              - text: runtime-preview
+            - generic [ref=e43]: governed runtime
+          - generic [ref=e44]:
+            - generic [ref=e46]: Policy
+            - generic [ref=e47]: Risk
+            - generic [ref=e48]: Audit
+            - generic [ref=e49]: RBAC
+            - generic [ref=e50]:
+              - generic [ref=e53]:
+                - strong [ref=e54]: Human
+                - text: intent
+              - generic [ref=e55]:
+                - generic [ref=e56]: +
+                - img [ref=e58]
+                - generic [ref=e61]: IntelliGuard
+              - generic [ref=e64]:
+                - strong [ref=e65]: AI
+                - text: agent action
+            - generic [ref=e67]:
+              - generic [ref=e68]: Human + AI
+              - generic [ref=e69]: Governed Runtime
+    - generic [ref=e72]:
+      - generic [ref=e73]:
+        - text: Platform capabilities
+        - heading "Control surfaces for the full agent platform." [level=2] [ref=e74]
+        - paragraph [ref=e75]: "IntelliGuard is the platform shell around agentic execution: create agents and tools, route models through one gateway, authorize access, and govern runtime behavior."
+      - generic [ref=e76]:
+        - article [ref=e77]:
+          - img [ref=e79]
+          - heading "Monitor agent actions" [level=3] [ref=e81]
+          - paragraph [ref=e82]: Observe autonomous workflows, tool calls, context usage, and decision paths.
+        - article [ref=e83]:
+          - img [ref=e85]
+          - heading "Evaluate risk" [level=3] [ref=e88]
+          - paragraph [ref=e89]: Score actions against policy, business rules, safety frameworks, and operational thresholds.
+        - article [ref=e90]:
+          - img [ref=e92]
+          - heading "Enforce controls" [level=3] [ref=e95]
+          - paragraph [ref=e96]: Block, approve, route, or escalate actions before they impact production systems.
+        - article [ref=e97]:
+          - img [ref=e99]
+          - heading "Audit decisions" [level=3] [ref=e103]
+          - paragraph [ref=e104]: Preserve evidence across prompts, outputs, tool executions, policies, and approvals.
+    - generic [ref=e105]:
+      - generic [ref=e106]:
+        - text: Architecture
+        - heading "The execution plane runs. The control plane governs." [level=2] [ref=e107]
+        - paragraph [ref=e108]: Agentic workflows are the execution plane. IntelliGuard governs them through policy, authorization, evaluation, approval, model routing, and evidence capture.
+      - generic [ref=e111]:
+        - generic [ref=e112]:
+          - generic [ref=e113]:
+            - heading "Control Plane" [level=3] [ref=e114]
+            - generic [ref=e115]: governs
+          - generic [ref=e116]:
+            - generic [ref=e117]: Policy Engine
+            - generic [ref=e118]: Risk Scoring
+            - generic [ref=e119]: Approval Workflow
+            - generic [ref=e120]: Audit Trail
+            - generic [ref=e121]: RBAC
+            - generic [ref=e122]: Unified Gateway
+            - generic [ref=e123]: Guardie
+            - generic [ref=e124]: Model Routing
+        - generic [ref=e129]:
+          - generic [ref=e130]:
+            - heading "Execution Plane" [level=3] [ref=e131]
+            - generic [ref=e132]: executes
+          - generic [ref=e133]:
+            - generic [ref=e134]: Agentic Workflows
+            - generic [ref=e135]: Agents
+            - generic [ref=e136]: Tools
+            - generic [ref=e137]: APIs
+            - generic [ref=e138]: Knowledge Bases
+            - generic [ref=e139]: LLMs
+            - generic [ref=e140]: Container Runtime
+            - generic [ref=e141]: Runtime Sessions
+    - generic [ref=e142]:
+      - generic [ref=e143]:
+        - text: Use cases
+        - heading "Governance where agentic work happens." [level=2] [ref=e144]
+      - generic [ref=e145]:
+        - article [ref=e146]:
+          - heading "AI code review governance" [level=3] [ref=e147]
+          - generic [ref=e148]:
+            - generic [ref=e149]:
+              - term [ref=e150]: Problem
+              - definition [ref=e151]: Autonomous code agents can approve changes without enough policy context.
+            - generic [ref=e152]:
+              - term [ref=e153]: How IntelliGuard helps
+              - definition [ref=e154]: IntelliGuard scores agent actions against engineering controls, ownership rules, and release policy.
+            - generic [ref=e155]:
+              - term [ref=e156]: Outcome
+              - definition [ref=e157]: High-risk changes route to review before they merge or deploy.
+        - article [ref=e158]:
+          - heading "Agent runtime monitoring" [level=3] [ref=e159]
+          - generic [ref=e160]:
+            - generic [ref=e161]:
+              - term [ref=e162]: Problem
+              - definition [ref=e163]: Teams cannot see how agents use tools, context, prompts, and delegated steps.
+            - generic [ref=e164]:
+              - term [ref=e165]: How IntelliGuard helps
+              - definition [ref=e166]: IntelliGuard captures runtime traces and links decisions to agent identity, permissions, and policies.
+            - generic [ref=e167]:
+              - term [ref=e168]: Outcome
+              - definition [ref=e169]: Operations teams get searchable evidence for every autonomous workflow.
+        - article [ref=e170]:
+          - heading "Enterprise LLM risk controls" [level=3] [ref=e171]
+          - generic [ref=e172]:
+            - generic [ref=e173]:
+              - term [ref=e174]: Problem
+              - definition [ref=e175]: Model outputs and tool calls need enforcement before they touch customer or production systems.
+            - generic [ref=e176]:
+              - term [ref=e177]: How IntelliGuard helps
+              - definition [ref=e178]: IntelliGuard blocks, approves, escalates, or audits actions through runtime governance hooks.
+            - generic [ref=e179]:
+              - term [ref=e180]: Outcome
+              - definition [ref=e181]: Risk teams get enforceable control without slowing engineering delivery.
+    - generic [ref=e183]:
+      - generic [ref=e184]:
+        - text: Developers
+        - heading "Built for engineers, trusted by risk teams." [level=2] [ref=e185]
+        - generic [ref=e186]:
+          - generic [ref=e191]: runtime-governance.ts
+          - code [ref=e193]: "const decision = await intelliguard.evaluate({ agentId: \"claims-agent\", action: \"approve_refund\", context: { customerTier: \"enterprise\", refundAmount: 4200, policyVersion: \"v3.2\" } }); if (decision.status === \"blocked\") { await intelliguard.escalate(decision); }"
+      - complementary [ref=e194]:
+        - heading "Runtime control without heavy lift." [level=3] [ref=e195]
+        - list [ref=e196]:
+          - listitem [ref=e197]:
+            - img [ref=e198]
+            - generic [ref=e201]: API-first governance hooks
+          - listitem [ref=e202]:
+            - img [ref=e203]
+            - generic [ref=e206]: Policy-as-code ready
+          - listitem [ref=e207]:
+            - img [ref=e208]
+            - generic [ref=e211]: Works with agent frameworks
+          - listitem [ref=e212]:
+            - img [ref=e213]
+            - generic [ref=e216]: Built for runtime evidence
+    - generic [ref=e220]:
+      - heading "Bring control to autonomous AI." [level=2] [ref=e221]
+      - paragraph [ref=e222]: IntelliGuard helps teams monitor, evaluate, and govern AI actions before they become business risk.
+      - generic [ref=e223]:
+        - link "Explore Developer Hooks" [ref=e224]:
+          - /url: "#developers"
+          - text: Explore Developer Hooks
+          - img [ref=e225]
+        - link "View Architecture" [ref=e227]:
+          - /url: "#architecture"
+    - generic [ref=e229]:
+      - generic [ref=e230]:
+        - strong [ref=e231]: IntelliGuard
+        - paragraph [ref=e232]: Governance wired into AI runtime.
+      - generic [ref=e233]:
+        - link "Platform" [ref=e234]:
+          - /url: "#platform"
+        - link "Governance" [ref=e235]:
+          - /url: "#governance"
+        - link "Developers" [ref=e236]:
+          - /url: "#developers"
+        - link "Contact" [ref=e237]:
+          - /url: "#contact"
+      - paragraph [ref=e238]: Copyright 2026 IntelliGuard. All rights reserved.
+    - button "Open Guardie assistant" [ref=e240]
+  - alert [ref=e245]
