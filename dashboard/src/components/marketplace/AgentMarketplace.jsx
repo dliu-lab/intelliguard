@@ -15,9 +15,9 @@ import { userCan } from "../../lib/permissions";
 import AgentGovernanceCard from "./AgentGovernanceCard";
 
 const defaultLlmConfig = {
-  gateway: "litellm",
+  gateway: "unified",
   endpoint: "/llm/v1",
-  model: "ollama/qwen3.5:9b",
+  model: "local/default-9b",
   temperature: 0.2,
 };
 
@@ -225,7 +225,7 @@ export default function AgentMarketplace({
           a.metadata?.llm?.endpoint,
           a.metadata?.llm?.model,
           "LLM",
-          "LiteLLM",
+          "Unified Gateway",
           ...(a.permissions?.tools || []),
           summary.guardrails ? `${summary.guardrails} guardrail guardrails` : "",
           summary.evaluators ? `${summary.evaluators} evaluator evaluators` : "",
@@ -709,8 +709,8 @@ function SelectedAgentPanel({
                   />
                 </label>
                 <div className="profile-field-wide agent-profile-subsection">
-                  <strong>LLM Gateway</strong>
-                  <span>Agents call models through a single LiteLLM-compatible endpoint.</span>
+                  <strong>Unified Gateway</strong>
+                  <span>Agents call models through a single governed endpoint.</span>
                 </div>
                 <label>
                   <span>Gateway</span>

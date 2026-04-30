@@ -187,9 +187,9 @@ const controlTemplates: Record<"agent" | "tool" | "guardrail" | "evaluator" | "k
       framework: "custom-agent",
       data_domain: "customer_support",
       llm: {
-        gateway: "litellm",
+        gateway: "unified",
         endpoint: "/llm/v1",
-        model: "ollama/qwen3.5:9b",
+        model: "local/default-9b",
         temperature: 0.2,
       },
     },
@@ -1267,7 +1267,7 @@ function SelectedAgentModal({
                     Agent Type
                     <input className="rounded-2xl border border-line bg-white/[0.04] px-4 py-3 text-sm normal-case tracking-normal text-textPrimary" value={form.agent_type} onChange={(event) => setForm({ ...form, agent_type: event.target.value })} />
                   </label>
-                  <InfoTile label="Model" value={readNestedText(agent, ["metadata", "llm", "model"]) || "ollama/qwen3.5:9b"} />
+                  <InfoTile label="Model" value={readNestedText(agent, ["metadata", "llm", "model"]) || "local/default-9b"} />
                 </div>
                 <label className="grid gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
                   Purpose
@@ -1800,7 +1800,7 @@ function PlatformTransition() {
     },
     {
       title: "Execution Plane",
-      description: "Agentic workflows, tools, APIs, LLM gateway, and deployment paths.",
+      description: "Agentic workflows, tools, APIs, unified gateway, and deployment paths.",
       icon: GitBranch,
     },
     {
@@ -1814,8 +1814,8 @@ function PlatformTransition() {
     { label: "Agents", icon: Bot, className: "left-[6%] top-[18%]" },
     { label: "Tools", icon: TerminalSquare, className: "right-[8%] top-[20%]" },
     { label: "RBAC", icon: LockKeyhole, className: "left-[12%] bottom-[17%]" },
-    { label: "LLM Gateway", icon: Network, className: "right-[4%] bottom-[22%]" },
-    { label: "Data Sources", icon: Database, className: "left-1/2 top-[4%] -translate-x-1/2" },
+    { label: "Unified Gateway", icon: Network, className: "right-[4%] bottom-[22%]" },
+    { label: "Knowledge Bases", icon: Database, className: "left-1/2 top-[4%] -translate-x-1/2" },
   ];
 
   return (

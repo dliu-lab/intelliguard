@@ -27,8 +27,8 @@ const capabilities = [
 const platformModules = [
   "Agent and tool creation",
   "Agentic workflow build and deployment",
-  "LiteLLM single endpoint",
-  "Ollama qwen3.5:9b testing default",
+  "Unified gateway endpoint",
+  "Container runtime testing",
   "RBAC authorization",
   "Guardie onboarding assistant",
 ];

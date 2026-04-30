@@ -12,7 +12,7 @@ export default function AgentGovernanceCard({
 }) {
   const grantedTools = agent.permissions?.tools || [];
   const llm = agent.metadata?.llm || {};
-  const llmModel = llm.model || "LLM via LiteLLM";
+  const llmModel = llm.model || "LLM via Unified Gateway";
   const assignmentTags = [
     {
       key: "guardrails",

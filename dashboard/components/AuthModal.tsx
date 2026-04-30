@@ -187,7 +187,7 @@ export function AuthModal() {
                   <ul className="mt-4 grid gap-3 text-sm text-textSecondary">
                     <li>RBAC-aware workspace authorization</li>
                     <li>Agent, tool, policy, and audit visibility</li>
-                    <li>LiteLLM gateway and governed model routing</li>
+                    <li>Unified gateway and governed model routing</li>
                   </ul>
                 </div>
               </div>

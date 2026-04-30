@@ -112,9 +112,9 @@ const loginRoles = [
 const governanceLeadEnvironmentOptions = ["all", "demo", "staging", "production", "local"];
 
 const defaultAgentLlm = {
-  gateway: "litellm",
+  gateway: "unified",
   endpoint: "/llm/v1",
-  model: "ollama/qwen3.5:9b",
+  model: "local/default-9b",
   temperature: 0.2,
 };
 
@@ -1766,7 +1766,7 @@ function LoginPage({ onLogin }) {
     },
   ];
   const controlPlane = ["Policy Engine", "Risk Scoring", "Approval Workflow", "Audit Trail"];
-  const executionPlane = ["Agentic Workflows", "Agents", "Tools", "APIs", "Data Sources", "LLMs"];
+  const executionPlane = ["Agentic Workflows", "Agents", "Tools", "APIs", "Knowledge Bases", "LLMs"];
   const developerBullets = [
     "API-first governance hooks",
     "Policy-as-code ready",
@@ -2154,7 +2154,7 @@ if (decision.status === "blocked") {
                   <ul>
                     <li>RBAC-aware workspace authorization</li>
                     <li>Agent, tool, policy, and audit visibility</li>
-                    <li>LiteLLM gateway and governed model routing</li>
+                    <li>Unified gateway and governed model routing</li>
                   </ul>
                 </div>
               </div>

@@ -8,7 +8,7 @@ const controlPlane = [
   "Approval Workflow",
   "Audit Trail",
   "RBAC",
-  "LiteLLM Gateway",
+  "Unified Gateway",
   "Guardie",
   "Model Routing",
 ];
@@ -17,9 +17,9 @@ const executionPlane = [
   "Agents",
   "Tools",
   "APIs",
-  "Data Sources",
+  "Knowledge Bases",
   "LLMs",
-  "Ollama Models",
+  "Container Runtime",
   "Runtime Sessions",
 ];
 
