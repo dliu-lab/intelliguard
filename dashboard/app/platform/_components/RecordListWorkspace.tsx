@@ -727,6 +727,17 @@ function ReviewEvidenceBlock({ label, monospace = false, value }: { label: strin
   );
 }
 
+const STAGE_LABELS: Record<string, string> = {
+  pre_tool: "Pre-tool",
+  post_tool_result: "Post-tool",
+  final_response: "Final",
+  runtime: "Runtime",
+};
+
+function stageShort(stage: string): string {
+  return STAGE_LABELS[stage] ?? stage.replace(/_/g, " ");
+}
+
 function AuditEventRow({
   event,
   expanded,
@@ -740,57 +751,71 @@ function AuditEventRow({
   const decision = readText(event, ["decision"]) || "RECORDED";
   const metadata = objectValue(event, "metadata");
   const stage = eventStage(event);
-  const toolOrStage = readText(event, ["tool_name"]) || stage;
+  const toolName = readText(event, ["tool_name"]);
+  const agentId = readText(event, ["agent_id"]);
+  const riskType = readText(event, ["risk_type"]);
   const policyHash = readText(event, ["policy_snapshot_hash"]) || readNestedText(event, ["metadata", "policy_snapshot_hash"]);
   const policyId = readText(event, ["policy_id"]);
+  const eventId = readText(event, ["event_id"]);
 
   return (
     <div className="border-b border-line last:border-b-0">
       <button
         type="button"
         onClick={onToggle}
-        className="grid w-full gap-4 px-5 py-4 text-left transition hover:bg-white/[0.035] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-accent/35 xl:grid-cols-[1fr_110px_110px_1.3fr] xl:items-start"
+        className="grid w-full gap-x-4 gap-y-2 px-5 py-4 text-left transition hover:bg-white/[0.035] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-accent/35 xl:grid-cols-[1fr_96px_108px_1.5fr] xl:items-start"
       >
+        {/* Col 1: decision + time */}
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <EvidenceBadge tone={decisionBadgeTone(decision, riskScore)}>{decision}</EvidenceBadge>
             <span className="text-xs text-textSecondary">{formatTimestamp(readText(event, ["created_at"]))}</span>
           </div>
-          <p className="mt-2 break-words text-xs text-textSecondary">{readText(event, ["event_id"])}</p>
         </div>
-        <div className="flex flex-wrap gap-2 xl:block">
+
+        {/* Col 2: risk score + risk type */}
+        <div className="min-w-0">
           <EvidenceBadge tone={decisionBadgeTone(undefined, riskScore)}>{`risk ${riskScore}`}</EvidenceBadge>
-          <p className="mt-2 text-xs text-textSecondary xl:mt-1">{readText(event, ["risk_type"]) || "NONE"}</p>
+          {riskType && riskType !== "none" && (
+            <p className="mt-1.5 truncate text-xs text-textSecondary" title={riskType}>{riskType.replace(/_/g, " ")}</p>
+          )}
         </div>
-        <div className="flex flex-wrap gap-2 xl:block">
-          <EvidenceBadge>{stage}</EvidenceBadge>
-          <p className="mt-2 break-words text-xs text-textSecondary xl:mt-1">{toolOrStage}</p>
+
+        {/* Col 3: stage */}
+        <div className="min-w-0">
+          <EvidenceBadge>{stageShort(stage)}</EvidenceBadge>
+          {toolName && (
+            <p className="mt-1.5 truncate text-xs text-textSecondary" title={toolName}>{toolName}</p>
+          )}
         </div>
+
+        {/* Col 4: agent, reason, chevron */}
         <div className="min-w-0">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="break-words text-sm font-semibold text-textPrimary">
-                {joinParts([readText(event, ["agent_id"]), toolOrStage]) || "Audit evidence"}
+              <p className="truncate text-sm font-semibold text-textPrimary" title={agentId ?? undefined}>
+                {agentId || "Unknown agent"}
               </p>
-              <p className="mt-1 line-clamp-2 text-sm leading-6 text-textSecondary">{readText(event, ["reason"]) || "Runtime evidence."}</p>
+              <p className="mt-1 line-clamp-2 text-sm leading-5 text-textSecondary">
+                {readText(event, ["reason"]) || "Runtime evidence."}
+              </p>
             </div>
-            <ChevronDown className={`mt-1 shrink-0 text-textSecondary transition ${expanded ? "rotate-180" : ""}`} size={18} aria-hidden="true" />
+            <ChevronDown
+              className={`mt-0.5 shrink-0 text-textSecondary transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
+              size={18}
+              aria-hidden="true"
+            />
           </div>
-          <p className="mt-2 break-words text-xs text-textSecondary">
-            {joinParts([
-              readText(event, ["workflow_id"]),
-              readText(event, ["session_id"]),
-              policyId ? `policy ${policyId}` : policyHash ? `hash ${policyHash.slice(0, 8)}` : undefined,
-            ])}
-          </p>
         </div>
       </button>
 
-      {expanded ? (
+      {expanded && (
         <div className="grid gap-4 border-t border-line bg-ink/30 px-5 py-5 lg:grid-cols-[1fr_1fr]">
           <div className="grid gap-3">
-            <ReviewField label="Agent" value={readText(event, ["agent_id"]) || "Unknown agent"} />
-            <ReviewField label="Workflow/session" value={joinParts([readText(event, ["workflow_id"]), readText(event, ["session_id"])]) || "No workflow link"} />
+            <ReviewField label="Agent" value={agentId || "Unknown agent"} />
+            <ReviewField label="Tool" value={toolName || stage || "—"} />
+            <ReviewField label="Workflow / session" value={joinParts([readText(event, ["workflow_id"]), readText(event, ["session_id"])]) || "No workflow link"} />
+            <ReviewField label="Event ID" value={eventId || "—"} />
             <ReviewField label="Policy" value={policyId || "Not recorded"} />
             <ReviewField label="Policy snapshot hash" value={policyHash || "Not recorded"} />
           </div>
@@ -804,7 +829,7 @@ function AuditEventRow({
             </pre>
           </div>
         </div>
-      ) : null}
+      )}
     </div>
   );
 }
@@ -974,11 +999,11 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
       </section>
 
       <section className="glass-card overflow-hidden rounded-3xl">
-        <div className="grid grid-cols-[1fr_110px_110px_1.3fr] gap-3 border-b border-line px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary max-xl:hidden">
-          <span>Time and decision</span>
+        <div className="grid grid-cols-[1fr_96px_108px_1.5fr] gap-x-4 border-b border-line px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary max-xl:hidden">
+          <span>Decision &amp; time</span>
           <span>Risk</span>
           <span>Stage</span>
-          <span>Agent, tool, and reason</span>
+          <span>Agent &amp; reason</span>
         </div>
         <div className="grid">
           {filteredEvents.length ? (
