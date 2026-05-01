@@ -46,22 +46,23 @@ class GovernedToolRunner:
         self.agent_id = agent_id
         self.store = GovernanceStore(database_url)
         self.tools = tools
-        self.guardrail_mode, self.policy = self._resolve_policy(policy_path)
+        self.guardrail_mode, self.policy, self.policy_id = self._resolve_policy(policy_path)
         self.policy_hash = policy_snapshot_hash(self.policy)
         self.evaluator_engine = EvaluatorEngine(self.store)
 
-    def _resolve_policy(self, policy_path: str) -> tuple[str, PolicyConfig]:
+    def _resolve_policy(self, policy_path: str) -> tuple[str, PolicyConfig, str | None]:
         identity = self.store.get_agent_identity(self.agent_id)
         environment = identity.get("environment", "local")
         assignment = self.store.get_agent_guardrail_assignment(self.agent_id, environment)
         if not assignment:
-            return "enforce", load_policy(policy_path)
+            return "enforce", load_policy(policy_path), None
         mode = assignment["mode"]
+        policy_id: str | None = assignment["policy_id"]
         if mode == "disabled":
-            return "disabled", load_policy(policy_path)
-        policy_row = self.store.get_guardrail_policy(assignment["policy_id"])
+            return "disabled", load_policy(policy_path), policy_id
+        policy_row = self.store.get_guardrail_policy(policy_id)
         if not policy_row:
-            return mode, load_policy(policy_path)
+            return mode, load_policy(policy_path), policy_id
         config = dict(policy_row["config"])
         overrides = assignment.get("threshold_overrides") or {}
         thresholds = dict(config.get("decision_thresholds") or {})
@@ -70,7 +71,7 @@ class GovernedToolRunner:
         if "review" in overrides:
             thresholds["review"] = int(overrides["review"])
         config["decision_thresholds"] = thresholds
-        return mode, policy_from_dict(config)
+        return mode, policy_from_dict(config), policy_id
 
     def _apply_mode(self, assessment: RiskAssessment) -> RiskAssessment:
         if self.guardrail_mode == "review_only" and assessment.decision == "BLOCK":
@@ -187,7 +188,7 @@ class GovernedToolRunner:
                 session_id=session_id,
                 tool_name=tool_name,
                 assessment=result_assessment,
-                metadata={"stage": "post_tool_result"},
+                stage="post_tool_result",
             )
             self.store.update_session_status(session_id, "BLOCK")
             return GovernedToolResult(
@@ -249,7 +250,7 @@ class GovernedToolRunner:
                 session_id=session_id,
                 tool_name=None,
                 assessment=assessment,
-                metadata={"stage": "final_response"},
+                stage="final_response",
             )
             self.store.update_session_status(session_id, "BLOCK")
             return GovernedToolResult(
@@ -349,8 +350,8 @@ class GovernedToolRunner:
             session_id=session_id,
             tool_name=tool_name,
             assessment=assessment,
+            stage="pre_tool",
             metadata={
-                "stage": "pre_tool",
                 "tool_args": tool_args,
                 "agent_identity": agent_identity,
                 "requested_action": self._action_for_tool(tool_name),
@@ -462,11 +463,11 @@ class GovernedToolRunner:
         session_id: str,
         tool_name: str | None,
         assessment: RiskAssessment,
-        metadata: dict[str, Any],
+        stage: str,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
-        stage = str(metadata.get("stage") or "runtime")
         enriched_metadata = {
-            **metadata,
+            **(metadata or {}),
             "stage": stage,
             "guardrail_mode": self.guardrail_mode,
             "policy_snapshot_hash": self.policy_hash,
@@ -499,6 +500,8 @@ class GovernedToolRunner:
             reason=assessment.reason,
             tool_name=tool_name,
             risk_score=assessment.risk_score,
+            policy_id=self.policy_id,
+            stage=stage,
             metadata=enriched_metadata,
         )
         self.store.add_workflow_event(
