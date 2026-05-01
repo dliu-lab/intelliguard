@@ -618,7 +618,7 @@ function ReviewEvidenceCard({
         </div>
         <div className="grid gap-1 text-xs text-textSecondary xl:text-right">
           <span>{formatTimestamp(readText(review, ["created_at"]))}</span>
-          <span>{readText(review, ["environment", "agent_environment"]) || "environment unknown"}</span>
+          <span>{readText(review, ["environment"]) || "environment unknown"}</span>
           <span>{reviewId}</span>
         </div>
       </div>
