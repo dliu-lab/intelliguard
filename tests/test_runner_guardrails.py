@@ -104,6 +104,31 @@ def test_review_only_mode_downgrades_block(store):
 
 
 def test_audit_events_include_policy_snapshot_and_stage(store):
+    store.upsert_guardrail_policy(
+        {
+            "policy_id": "pol_audit_test",
+            "display_name": "Audit Test Policy",
+            "description": "",
+            "environment": "demo",
+            "config": {
+                "allowed_tools": [],
+                "blocked_tools": [],
+                "max_records_returned": 100,
+                "block_pii_in_response": True,
+                "redact_pii_in_response": False,
+                "blocked_patterns": [],
+                "review_required_for": [],
+                "decision_thresholds": {"review": 50, "block": 80},
+            },
+        }
+    )
+    store.upsert_agent_guardrail_assignment(
+        agent_id="customer-support-agent",
+        environment="demo",
+        policy_id="pol_audit_test",
+        mode="enforce",
+        threshold_overrides={},
+    )
     session_id = new_id("sess")
     runner = _make_runner(store)
     result = runner.evaluate_tool_call(
@@ -118,8 +143,12 @@ def test_audit_events_include_policy_snapshot_and_stage(store):
     event = next(item for item in events if item["event_id"] == result.audit_event_id)
     assert event["stage"] == "pre_tool"
     assert event["policy_snapshot_hash"]
+    assert event["policy_id"] is not None  # runner must wire policy_id through
     assert event["metadata"]["guardrail_mode"] == "enforce"
     assert event["metadata"]["decision_thresholds"] == {"review": 50, "block": 80}
+    # cleanup
+    assignment = store.get_agent_guardrail_assignment("customer-support-agent", "demo")
+    store.delete_agent_guardrail_assignment(assignment["assignment_id"])
 
 
 def test_missing_required_tool_argument_is_blocked(store):

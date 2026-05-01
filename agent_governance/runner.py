@@ -46,6 +46,7 @@ class GovernedToolRunner:
         self.agent_id = agent_id
         self.store = GovernanceStore(database_url)
         self.tools = tools
+        self.policy_id: str | None
         self.guardrail_mode, self.policy, self.policy_id = self._resolve_policy(policy_path)
         self.policy_hash = policy_snapshot_hash(self.policy)
         self.evaluator_engine = EvaluatorEngine(self.store)
@@ -468,7 +469,7 @@ class GovernedToolRunner:
     ) -> str:
         enriched_metadata = {
             **(metadata or {}),
-            "stage": stage,
+            "stage": stage,  # also stored as first-class column; kept here for metadata query convenience
             "guardrail_mode": self.guardrail_mode,
             "policy_snapshot_hash": self.policy_hash,
             "decision_thresholds": {
