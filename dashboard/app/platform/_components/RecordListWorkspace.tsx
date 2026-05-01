@@ -880,7 +880,7 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
   const query = searchQuery.trim().toLowerCase();
   const stages = ["ALL", ...Array.from(new Set(data.auditEvents.map(eventStage).filter(Boolean)))];
   const decisions = ["ALL", ...Array.from(new Set(data.auditEvents.map((event) => readText(event, ["decision"])).filter(Boolean) as string[]))];
-  const riskTypes = [
+  const riskTypeOptions = [
     "ALL",
     ...Array.from(
       new Set(
@@ -893,6 +893,7 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
   const filteredEvents = data.auditEvents.filter((event) => {
     const decision = readText(event, ["decision"]) || "";
     const stage = eventStage(event);
+    // events with no risk_type or "none" are excluded when a specific type filter is active
     const riskType = readText(event, ["risk_type"]) || "";
     return (
       (decisionFilter === "ALL" || decision === decisionFilter)
@@ -924,7 +925,7 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
             />
           </label>
           <FilterSelect label="Decision" value={decisionFilter} options={decisions} onChange={setDecisionFilter} />
-          <FilterSelect label="Risk type" value={riskTypeFilter} options={riskTypes} onChange={setRiskTypeFilter} />
+          <FilterSelect label="Risk type" value={riskTypeFilter} options={riskTypeOptions} onChange={setRiskTypeFilter} />
           <FilterSelect label="Stage" value={stageFilter} options={stages} onChange={setStageFilter} />
         </div>
       </section>
