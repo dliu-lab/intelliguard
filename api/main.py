@@ -191,6 +191,42 @@ class KBQueryRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=50)
 
 
+class AuditEventResponse(BaseModel):
+    event_id: str
+    session_id: str
+    workflow_id: str | None
+    agent_id: str
+    environment: str | None
+    risk_type: str
+    decision: str
+    reason: str
+    tool_name: str | None
+    risk_score: int
+    policy_id: str | None
+    stage: str | None
+    policy_snapshot_hash: str | None
+    metadata: dict[str, Any]
+    created_at: str
+
+
+class ReviewQueueItemResponse(BaseModel):
+    review_id: str
+    session_id: str
+    workflow_id: str | None
+    agent_id: str
+    environment: str | None
+    tool_name: str
+    tool_args: dict[str, Any]
+    user_query: str
+    risk_score: int
+    risk_types: list[str]
+    reason: str
+    status: str
+    reviewer_note: str | None
+    resolved_at: str | None
+    created_at: str
+
+
 def bearer_token(authorization: str | None = Header(default=None, alias="Authorization")) -> str:
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -557,7 +593,7 @@ def audit_events(
     environment: str | None = None,
     workflow_only: bool = False,
     user: dict[str, Any] = Depends(current_user),
-) -> list[dict[str, Any]]:
+) -> list[AuditEventResponse]:
     return store.list_audit_events(
         limit=limit,
         environment=visible_environment(environment, user),
@@ -571,7 +607,7 @@ def review_queue(
     limit: int = 100,
     environment: str = "all",
     user: dict[str, Any] = Depends(current_user),
-) -> list[dict[str, Any]]:
+) -> list[ReviewQueueItemResponse]:
     return store.list_review_queue(
         limit=limit,
         environment=visible_environment(environment, user),
