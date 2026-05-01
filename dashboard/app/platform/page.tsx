@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { clearSession, getSession, me, platformOverview, type AuthUser, type PlatformData } from "@/lib/api";
 import { emptyPlatformData } from "./_components/config";
 import { PlatformFrame } from "./_components/PlatformFrame";
-import { PlatformTransition } from "./_components/PlatformTransition";
 import { WorkspaceShell } from "./_components/WorkspaceShell";
 import type { BackendComponentKey, DataStatus, WorkspaceView } from "./_components/types";
 import { isBackendComponentKey, workspaceViewForComponent, workspaceViewFromUrl } from "./_components/utils";
@@ -19,6 +18,12 @@ export default function PlatformPage() {
   const [activeView, setActiveView] = useState<WorkspaceView>("overview");
   const [selectedEnvironment, setSelectedEnvironment] = useState("all");
   const [selectedTraceWorkflowId, setSelectedTraceWorkflowId] = useState("");
+
+  useEffect(() => {
+    if (status === "public") {
+      window.location.replace("/?auth=login");
+    }
+  }, [status]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -125,7 +130,7 @@ export default function PlatformPage() {
   }
 
   if (status === "public") {
-    return <PlatformTransition />;
+    return <PlatformFrame message="Redirecting to login..." />;
   }
 
   return (

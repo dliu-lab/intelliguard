@@ -1,6 +1,6 @@
 "use client";
 
-import type { CSSProperties, ChangeEvent, FormEvent, PointerEvent, ReactNode } from "react";
+import type { CSSProperties, ChangeEvent, FormEvent, KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, GitBranch, ListTree, Plus, Play, Search, UploadCloud, X, ZoomIn, ZoomOut } from "lucide-react";
 import { createWorkflowDefinition, getSession, runMultiAgentWorkflow, type ApiRecord, type PlatformData } from "@/lib/api";
@@ -42,6 +42,7 @@ type WorkflowConnection = {
 };
 
 type PortSide = "in" | "out";
+type LinkActionResult = "cancelled" | "created" | "duplicate" | "invalid" | "linking";
 
 const LEAD_NODE_ID = "lead";
 const CANVAS_HEIGHT = 720;
@@ -60,36 +61,127 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+function cubicPoint(
+  start: CanvasNodePosition,
+  controlStart: CanvasNodePosition,
+  controlEnd: CanvasNodePosition,
+  end: CanvasNodePosition,
+  t: number,
+) {
+  const remaining = 1 - t;
+
+  return {
+    x:
+      remaining ** 3 * start.x +
+      3 * remaining ** 2 * t * controlStart.x +
+      3 * remaining * t ** 2 * controlEnd.x +
+      t ** 3 * end.x,
+    y:
+      remaining ** 3 * start.y +
+      3 * remaining ** 2 * t * controlStart.y +
+      3 * remaining * t ** 2 * controlEnd.y +
+      t ** 3 * end.y,
+  };
+}
+
 function connectionId(from: string, to: string) {
   return `${from}->${to}`;
 }
 
-function defaultConnections(draft: WorkflowDraft, current: WorkflowConnection[] = []) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function workflowMetadata(draft: WorkflowDraft) {
+  return isRecord(draft.metadata) ? draft.metadata : {};
+}
+
+function sanitizeConnections(draft: WorkflowDraft, connections: unknown) {
+  if (!Array.isArray(connections)) {
+    return [];
+  }
+
   const validIds = new Set(canvasNodeIds(draft));
-  const filtered = current.filter((connection) => validIds.has(connection.from) && validIds.has(connection.to));
+  const seen = new Set<string>();
+
+  return connections.reduce<WorkflowConnection[]>((next, connection) => {
+    if (!isRecord(connection)) {
+      return next;
+    }
+
+    const from = typeof connection.from === "string" ? connection.from : "";
+    const to = typeof connection.to === "string" ? connection.to : "";
+
+    if (!from || !to || from === to || to === LEAD_NODE_ID || !validIds.has(from) || !validIds.has(to)) {
+      return next;
+    }
+
+    const id = connectionId(from, to);
+    if (seen.has(id)) {
+      return next;
+    }
+
+    seen.add(id);
+    next.push({ id, from, to });
+    return next;
+  }, []);
+}
+
+function fanOutConnections(draft: WorkflowDraft) {
+  return draft.steps.map((step) => ({
+    id: connectionId(LEAD_NODE_ID, step.step_id),
+    from: LEAD_NODE_ID,
+    to: step.step_id,
+  }));
+}
+
+function defaultConnections(draft: WorkflowDraft, current: WorkflowConnection[] = []) {
+  const filtered = sanitizeConnections(draft, current);
 
   if (filtered.length) {
     return filtered;
   }
 
-  return draft.steps.map((step, index) => {
-    const from = index === 0 ? LEAD_NODE_ID : draft.steps[index - 1].step_id;
-    return {
-      id: connectionId(from, step.step_id),
-      from,
-      to: step.step_id,
-    };
-  });
+  const metadata = workflowMetadata(draft);
+  if ("visual_connections" in metadata) {
+    return sanitizeConnections(draft, metadata.visual_connections);
+  }
+
+  return fanOutConnections(draft);
+}
+
+function sanitizeNodePositions(draft: WorkflowDraft, positions: unknown) {
+  if (!isRecord(positions)) {
+    return {};
+  }
+
+  const validIds = new Set(canvasNodeIds(draft));
+  return Object.entries(positions).reduce<Record<string, CanvasNodePosition>>((next, [nodeId, position]) => {
+    if (!validIds.has(nodeId) || !isRecord(position)) {
+      return next;
+    }
+
+    const x = Number(position.x);
+    const y = Number(position.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return next;
+    }
+
+    next[nodeId] = { x, y };
+    return next;
+  }, {});
 }
 
 function defaultNodePositions(draft: WorkflowDraft, current: Record<string, CanvasNodePosition> = {}) {
   const worldWidth = canvasWorldWidth(draft);
   const next: Record<string, CanvasNodePosition> = {};
+  const metadataPositions = sanitizeNodePositions(draft, workflowMetadata(draft).node_positions);
 
-  next[LEAD_NODE_ID] = current[LEAD_NODE_ID] || { x: 190, y: 360 };
+  next[LEAD_NODE_ID] = current[LEAD_NODE_ID] || metadataPositions[LEAD_NODE_ID] || { x: 190, y: 360 };
   draft.steps.forEach((step, index) => {
     next[step.step_id] =
-      current[step.step_id] || {
+      current[step.step_id] ||
+      metadataPositions[step.step_id] || {
         x: clamp(430 + index * 220, 160, worldWidth - 160),
         y: index % 2 === 0 ? 250 : 430,
       };
@@ -123,12 +215,19 @@ function cleanWorkflowDraft(
   nodePositions: Record<string, CanvasNodePosition>,
   connections: WorkflowConnection[],
 ): ApiRecord {
+  const visualConnections = sanitizeConnections(draft, connections);
+  const leadDelegations = visualConnections
+    .filter((connection) => connection.from === LEAD_NODE_ID)
+    .map((connection) => connection.to);
+
   return {
     ...draft,
     workflow_definition_id: draft.workflow_definition_id || uniqueWorkflowId("workflow"),
     metadata: {
       ...(draft.metadata || {}),
-      visual_connections: connections,
+      execution_mode: leadDelegations.length > 1 ? "multi_agent_fan_out" : "multi_agent_graph",
+      lead_delegations: leadDelegations,
+      visual_connections: visualConnections,
       node_positions: nodePositions,
     },
     steps: draft.steps.map(({ tool_args_json: toolArgsJson, ...step }) => ({
@@ -174,6 +273,7 @@ export function WorkflowBuilderWorkspace({
   const [selectedStepId, setSelectedStepId] = useState(() => draft.steps[0]?.step_id || "");
   const [nodePositions, setNodePositions] = useState<Record<string, CanvasNodePosition>>({});
   const [connections, setConnections] = useState<WorkflowConnection[]>([]);
+  const [connectionsTouched, setConnectionsTouched] = useState(false);
   const [linkingNodeId, setLinkingNodeId] = useState("");
   const [canvasZoom, setCanvasZoom] = useState(1);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
@@ -234,12 +334,13 @@ export function WorkflowBuilderWorkspace({
 
   useEffect(() => {
     setNodePositions((current) => defaultNodePositions(draft, current));
-    setConnections((current) => defaultConnections(draft, current));
+    setConnections((current) => (connectionsTouched ? sanitizeConnections(draft, current) : defaultConnections(draft, current)));
     setLinkingNodeId((current) => (canvasNodeIds(draft).includes(current) ? current : ""));
-  }, [draft]);
+  }, [connectionsTouched, draft]);
 
   function resetTemplate(clearMessage = true) {
     const nextDraft = toWorkflowDraft(selectedEnvironment);
+    setConnectionsTouched(false);
     setDraft(nextDraft);
     setNodePositions(defaultNodePositions(nextDraft));
     setConnections(defaultConnections(nextDraft));
@@ -309,10 +410,11 @@ export function WorkflowBuilderWorkspace({
       },
     }));
     setConnections((current) => {
-      const from = draft.steps[draft.steps.length - 1]?.step_id || LEAD_NODE_ID;
+      const from = LEAD_NODE_ID;
       const nextConnection = { id: connectionId(from, nextStep.step_id), from, to: nextStep.step_id };
       return current.some((connection) => connection.id === nextConnection.id) ? current : [...current, nextConnection];
     });
+    setConnectionsTouched(true);
     setSelectedStepId(nextStep.step_id);
   }
 
@@ -334,6 +436,7 @@ export function WorkflowBuilderWorkspace({
     setConnections((current) =>
       current.filter((connection) => connection.from !== selectedStep.step_id && connection.to !== selectedStep.step_id),
     );
+    setConnectionsTouched(true);
   }
 
   async function uploadWorkflowJson(event: ChangeEvent<HTMLInputElement>) {
@@ -360,6 +463,7 @@ export function WorkflowBuilderWorkspace({
       setDraft(nextDraft);
       setNodePositions(defaultNodePositions(nextDraft));
       setConnections(defaultConnections(nextDraft));
+      setConnectionsTouched(false);
       setLinkingNodeId("");
       setSelectedStepId(nextDraft.steps[0]?.step_id || "");
       setMessage("Workflow JSON loaded.");
@@ -375,21 +479,49 @@ export function WorkflowBuilderWorkspace({
     }));
   }
 
-  function linkNode(nodeId: string, side: PortSide) {
+  function createConnection(from: string, to: string): LinkActionResult {
+    if (!from || !to || from === to || to === LEAD_NODE_ID) {
+      return "invalid";
+    }
+
+    const nextConnection = { id: connectionId(from, to), from, to };
+    if (connections.some((connection) => connection.id === nextConnection.id)) {
+      return "duplicate";
+    }
+
+    setConnections((current) => [...current, nextConnection]);
+    setConnectionsTouched(true);
+    return "created";
+  }
+
+  function linkNode(nodeId: string, side: PortSide): LinkActionResult {
     if (side === "out") {
-      setLinkingNodeId((current) => (current === nodeId ? "" : nodeId));
-      return;
+      if (linkingNodeId === nodeId) {
+        setLinkingNodeId("");
+        return "cancelled";
+      }
+
+      setLinkingNodeId(nodeId);
+      return "linking";
     }
 
     if (!linkingNodeId || linkingNodeId === nodeId) {
       setLinkingNodeId("");
-      return;
+      return "invalid";
     }
 
-    setConnections((current) => {
-      const nextConnection = { id: connectionId(linkingNodeId, nodeId), from: linkingNodeId, to: nodeId };
-      return current.some((connection) => connection.id === nextConnection.id) ? current : [...current, nextConnection];
-    });
+    const result = createConnection(linkingNodeId, nodeId);
+    setLinkingNodeId("");
+    return result;
+  }
+
+  function deleteConnection(connectionIdToDelete: string) {
+    setConnections((current) => current.filter((connection) => connection.id !== connectionIdToDelete));
+    setConnectionsTouched(true);
+    setLinkingNodeId("");
+  }
+
+  function cancelLinking() {
     setLinkingNodeId("");
   }
 
@@ -671,6 +803,9 @@ export function WorkflowBuilderWorkspace({
                   draft={draft}
                   linkingNodeId={linkingNodeId}
                   nodePositions={nodePositions}
+                  onConnectionCreate={createConnection}
+                  onConnectionDelete={deleteConnection}
+                  onLinkCancel={cancelLinking}
                   onNodeMove={moveNode}
                   onPortClick={linkNode}
                   onStepSelect={setSelectedStepId}
@@ -760,6 +895,9 @@ function WorkflowCanvas({
   draft,
   linkingNodeId,
   nodePositions,
+  onConnectionCreate,
+  onConnectionDelete,
+  onLinkCancel,
   onNodeMove,
   onPortClick,
   onStepSelect,
@@ -771,20 +909,38 @@ function WorkflowCanvas({
   draft: WorkflowDraft;
   linkingNodeId: string;
   nodePositions: Record<string, CanvasNodePosition>;
+  onConnectionCreate: (from: string, to: string) => LinkActionResult;
+  onConnectionDelete: (connectionId: string) => void;
+  onLinkCancel: () => void;
   onNodeMove: (nodeId: string, position: CanvasNodePosition) => void;
-  onPortClick: (nodeId: string, side: PortSide) => void;
+  onPortClick: (nodeId: string, side: PortSide) => LinkActionResult;
   onStepSelect: (stepId: string) => void;
   onZoomChange: (zoom: number) => void;
   selectedStepId: string;
   zoom: number;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
+  const suppressNextPortClickRef = useRef(false);
+  const [viewportWidth, setViewportWidth] = useState(0);
   const [dragging, setDragging] = useState<{
     nodeId: string;
     offsetX: number;
     offsetY: number;
   } | null>(null);
-  const worldWidth = canvasWorldWidth(draft);
+  const [hoveredConnectionId, setHoveredConnectionId] = useState("");
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
+  const [linkDrag, setLinkDrag] = useState<{
+    fromNodeId: string;
+    pointer: CanvasNodePosition;
+  } | null>(null);
+  const [canvasNotice, setCanvasNotice] = useState("");
+  const baseWorldWidth = canvasWorldWidth(draft);
+  const visibleWorldWidth = viewportWidth ? Math.ceil(viewportWidth / zoom) : 0;
+  const positionedWorldWidth = Math.max(
+    0,
+    ...Object.values(nodePositions).map((position) => position.x + NODE_WIDTH / 2 + 240),
+  );
+  const worldWidth = Math.max(baseWorldWidth, visibleWorldWidth, positionedWorldWidth);
   const nodes = [
     {
       id: LEAD_NODE_ID,
@@ -800,6 +956,43 @@ function WorkflowCanvas({
     })),
   ];
   const nodeIds = new Set(nodes.map((node) => node.id));
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const connectionIds = useMemo(() => new Set(connections.map((connection) => connection.id)), [connections]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      return undefined;
+    }
+
+    function measureViewport() {
+      setViewportWidth(viewport?.clientWidth || 0);
+    }
+
+    measureViewport();
+    const observer = new ResizeObserver(measureViewport);
+    observer.observe(viewport);
+    window.addEventListener("resize", measureViewport);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measureViewport);
+    };
+  }, []);
+
+  useEffect(() => {
+    setHoveredConnectionId((current) => (current && connectionIds.has(current) ? current : ""));
+    setSelectedConnectionId((current) => (current && connectionIds.has(current) ? current : ""));
+  }, [connectionIds]);
+
+  useEffect(() => {
+    if (!canvasNotice) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => setCanvasNotice(""), 2200);
+    return () => window.clearTimeout(timeoutId);
+  }, [canvasNotice]);
 
   function nodePosition(nodeId: string) {
     return nodePositions[nodeId] || defaultNodePositions(draft)[nodeId] || { x: 240, y: 240 };
@@ -829,6 +1022,7 @@ function WorkflowCanvas({
   function startDrag(event: PointerEvent<HTMLElement>, nodeId: string) {
     const pointer = pointerWorldPosition(event);
     const position = nodePosition(nodeId);
+    setSelectedConnectionId("");
     setDragging({
       nodeId,
       offsetX: pointer.x - position.x,
@@ -842,6 +1036,11 @@ function WorkflowCanvas({
   }
 
   function dragNode(event: PointerEvent<HTMLDivElement>) {
+    if (linkDrag) {
+      setLinkDrag((current) => (current ? { ...current, pointer: pointerWorldPosition(event) } : current));
+      return;
+    }
+
     if (!dragging) {
       return;
     }
@@ -857,13 +1056,159 @@ function WorkflowCanvas({
     onZoomChange(Number(clamp(nextZoom, 0.6, 1.6).toFixed(2)));
   }
 
+  function linkNotice(result: LinkActionResult, fromNodeId: string, toNodeId?: string) {
+    const fromLabel = nodeMap.get(fromNodeId)?.label || fromNodeId;
+    const toLabel = toNodeId ? nodeMap.get(toNodeId)?.label || toNodeId : "";
+
+    if (result === "created") {
+      return `Linked ${fromLabel} -> ${toLabel}`;
+    }
+
+    if (result === "duplicate") {
+      return "Duplicate link ignored";
+    }
+
+    if (result === "invalid") {
+      return fromNodeId === toNodeId ? "Cannot link a node to itself" : "Select an output first";
+    }
+
+    if (result === "cancelled") {
+      return "Link cancelled";
+    }
+
+    return `Linking from ${fromLabel}`;
+  }
+
+  function handlePortClick(nodeId: string, side: PortSide) {
+    if (suppressNextPortClickRef.current) {
+      suppressNextPortClickRef.current = false;
+      return;
+    }
+
+    setSelectedConnectionId("");
+    setHoveredConnectionId("");
+    const result = onPortClick(nodeId, side);
+    setCanvasNotice(linkNotice(result, side === "out" ? nodeId : linkingNodeId, nodeId));
+    viewportRef.current?.focus();
+  }
+
+  function startLinkDrag(event: PointerEvent<HTMLElement>, nodeId: string) {
+    onLinkCancel();
+    setDragging(null);
+    setSelectedConnectionId("");
+    setHoveredConnectionId("");
+    setLinkDrag({ fromNodeId: nodeId, pointer: pointerWorldPosition(event) });
+    setCanvasNotice(linkNotice("linking", nodeId));
+    viewportRef.current?.focus();
+  }
+
+  function finishLinkDrag(nodeId: string) {
+    if (!linkDrag) {
+      return;
+    }
+
+    const result = onConnectionCreate(linkDrag.fromNodeId, nodeId);
+    suppressNextPortClickRef.current = true;
+    window.setTimeout(() => {
+      suppressNextPortClickRef.current = false;
+    }, 100);
+    setCanvasNotice(linkNotice(result, linkDrag.fromNodeId, nodeId));
+    setLinkDrag(null);
+  }
+
+  function finishCanvasPointer() {
+    if (linkDrag) {
+      setCanvasNotice("Link cancelled");
+    }
+
+    setDragging(null);
+    setLinkDrag(null);
+  }
+
+  function selectConnection(connectionIdToSelect: string) {
+    setSelectedConnectionId(connectionIdToSelect);
+    onLinkCancel();
+    viewportRef.current?.focus();
+  }
+
+  function removeConnection(connectionIdToDelete: string) {
+    onConnectionDelete(connectionIdToDelete);
+    setHoveredConnectionId("");
+    setSelectedConnectionId("");
+    setDragging(null);
+    setLinkDrag(null);
+    setCanvasNotice("Link deleted");
+    viewportRef.current?.focus();
+  }
+
+  function handleCanvasKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if ((event.key === "Delete" || event.key === "Backspace") && selectedConnectionId) {
+      event.preventDefault();
+      removeConnection(selectedConnectionId);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      setDragging(null);
+      setLinkDrag(null);
+      setHoveredConnectionId("");
+      setSelectedConnectionId("");
+      onLinkCancel();
+      setCanvasNotice("Link cancelled");
+    }
+  }
+
+  const renderedConnections = connections
+    .filter((connection) => nodeIds.has(connection.from) && nodeIds.has(connection.to))
+    .map((connection) => {
+      const start = portPoint(connection.from, "out");
+      const end = portPoint(connection.to, "in");
+      const curve = Math.max(110, Math.abs(end.x - start.x) * 0.4);
+      const controlStart = { x: start.x + curve, y: start.y };
+      const controlEnd = { x: end.x - curve, y: end.y };
+      const midpoint = cubicPoint(start, controlStart, controlEnd, end, 0.5);
+
+      return {
+        ...connection,
+        fromLabel: nodeMap.get(connection.from)?.label || connection.from,
+        isActive: hoveredConnectionId === connection.id || selectedConnectionId === connection.id,
+        midpoint,
+        path: `M ${start.x} ${start.y} C ${controlStart.x} ${controlStart.y}, ${controlEnd.x} ${controlEnd.y}, ${end.x} ${end.y}`,
+        toLabel: nodeMap.get(connection.to)?.label || connection.to,
+      };
+    });
+  const activeLinkSourceId = linkDrag?.fromNodeId || linkingNodeId;
+  const dragConnection = linkDrag
+    ? (() => {
+        const start = portPoint(linkDrag.fromNodeId, "out");
+        const end = linkDrag.pointer;
+        const curve = Math.max(110, Math.abs(end.x - start.x) * 0.4);
+        return {
+          path: `M ${start.x} ${start.y} C ${start.x + curve} ${start.y}, ${end.x - curve} ${end.y}, ${end.x} ${end.y}`,
+        };
+      })()
+    : null;
+  const selectedConnection = renderedConnections.find((connection) => connection.id === selectedConnectionId);
+  const selectedNode = selectedStepId ? nodeMap.get(selectedStepId) : undefined;
+  const canvasStatus =
+    canvasNotice ||
+    (selectedConnection
+      ? `${selectedConnection.fromLabel} -> ${selectedConnection.toLabel}`
+      : activeLinkSourceId
+        ? `Linking from ${nodeMap.get(activeLinkSourceId)?.label || activeLinkSourceId}`
+        : selectedNode
+          ? `Selected: ${selectedNode.label}`
+          : "Select a node");
+
   return (
     <div
       ref={viewportRef}
-      className="relative min-h-[560px] overflow-auto rounded-3xl border border-line bg-ink/70 [background-image:linear-gradient(rgba(255,255,255,0.045)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.045)_1px,transparent_1px)] [background-size:28px_28px]"
-      onPointerCancel={() => setDragging(null)}
+      tabIndex={0}
+      className="relative min-h-[560px] overflow-auto rounded-3xl border border-line bg-ink/70 outline-none focus:ring-2 focus:ring-accent/25 [background-image:linear-gradient(rgba(255,255,255,0.045)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.045)_1px,transparent_1px)] [background-size:28px_28px]"
+      onKeyDown={handleCanvasKeyDown}
+      onPointerCancel={finishCanvasPointer}
       onPointerMove={dragNode}
-      onPointerUp={() => setDragging(null)}
+      onPointerUp={finishCanvasPointer}
     >
       <div className="sticky left-3 top-3 z-30 inline-flex rounded-2xl border border-line bg-panel/90 p-1 shadow-xl backdrop-blur">
         <button
@@ -899,37 +1244,96 @@ function WorkflowCanvas({
             width: worldWidth,
           }}
         >
-          <svg className="absolute inset-0 h-full w-full" viewBox={`0 0 ${worldWidth} ${CANVAS_HEIGHT}`} aria-hidden="true">
-            {connections
-              .filter((connection) => nodeIds.has(connection.from) && nodeIds.has(connection.to))
-              .map((connection) => {
-                const start = portPoint(connection.from, "out");
-                const end = portPoint(connection.to, "in");
-                const curve = Math.max(110, Math.abs(end.x - start.x) * 0.4);
-
-                return (
-                  <path
-                    key={connection.id}
-                    d={`M ${start.x} ${start.y} C ${start.x + curve} ${start.y}, ${end.x - curve} ${end.y}, ${end.x} ${end.y}`}
-                    fill="none"
-                    stroke="rgba(148, 163, 184, 0.72)"
-                    strokeLinecap="round"
-                    strokeWidth="2.2"
-                  />
-                );
-              })}
+          <svg className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" viewBox={`0 0 ${worldWidth} ${CANVAS_HEIGHT}`}>
+            {renderedConnections.map((connection) => (
+              <g
+                key={connection.id}
+                role="button"
+                tabIndex={0}
+                className="pointer-events-auto outline-none"
+                onBlur={() => setHoveredConnectionId("")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  selectConnection(connection.id);
+                }}
+                onFocus={() => setHoveredConnectionId(connection.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Delete" || event.key === "Backspace") {
+                    event.preventDefault();
+                    removeConnection(connection.id);
+                  }
+                }}
+                onMouseEnter={() => setHoveredConnectionId(connection.id)}
+                onMouseLeave={() => setHoveredConnectionId("")}
+                aria-label={`Select link from ${connection.fromLabel} to ${connection.toLabel}`}
+              >
+                <path
+                  d={connection.path}
+                  fill="none"
+                  stroke="transparent"
+                  strokeLinecap="round"
+                  strokeWidth="18"
+                  className="cursor-pointer"
+                />
+                <path
+                  d={connection.path}
+                  fill="none"
+                  stroke={connection.isActive ? "rgb(var(--color-accent))" : "rgba(100, 116, 139, 0.82)"}
+                  strokeLinecap="round"
+                  strokeWidth={connection.isActive ? "3.2" : "2.2"}
+                  style={{ pointerEvents: "none" }}
+                />
+                <foreignObject
+                  x={connection.midpoint.x - 18}
+                  y={connection.midpoint.y - 18}
+                  width="36"
+                  height="36"
+                  className={`transition ${connection.isActive ? "opacity-100" : "opacity-0"}`}
+                  style={{ overflow: "visible", pointerEvents: connection.isActive ? "auto" : "none" }}
+                >
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeConnection(connection.id);
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    className="grid h-8 w-8 place-items-center rounded-full border border-red-400/50 bg-red-600/90 text-white shadow-xl shadow-red-950/25 transition hover:border-red-200 hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-red-300/60"
+                    aria-label={`Delete link from ${connection.fromLabel} to ${connection.toLabel}`}
+                    title="Delete link"
+                  >
+                    <X size={14} aria-hidden="true" />
+                  </button>
+                </foreignObject>
+              </g>
+            ))}
+            {dragConnection ? (
+              <path
+                d={dragConnection.path}
+                fill="none"
+                stroke="rgb(var(--color-accent))"
+                strokeDasharray="8 8"
+                strokeLinecap="round"
+                strokeWidth="3"
+              />
+            ) : null}
           </svg>
 
           {nodes.map((node) => (
-          <WorkflowNode
+            <WorkflowNode
               key={node.id}
               isLead={node.isLead}
-              isLinking={linkingNodeId === node.id}
+              isLinkInvalidTarget={Boolean(activeLinkSourceId && (activeLinkSourceId === node.id || node.id === LEAD_NODE_ID))}
+              isLinking={activeLinkSourceId === node.id}
+              isLinkTarget={Boolean(activeLinkSourceId && activeLinkSourceId !== node.id && node.id !== LEAD_NODE_ID)}
               isSelected={!node.isLead && node.id === selectedStepId}
               label={node.label}
               meta={node.meta}
-              onPortClick={onPortClick}
+              onPortClick={handlePortClick}
+              onPortPointerDown={startLinkDrag}
+              onPortPointerUp={finishLinkDrag}
               onSelect={() => {
+                setSelectedConnectionId("");
                 if (!node.isLead) {
                   onStepSelect(node.id);
                 }
@@ -937,7 +1341,7 @@ function WorkflowCanvas({
               onStartDrag={startDrag}
               position={nodePosition(node.id)}
               nodeId={node.id}
-          />
+            />
           ))}
         </div>
       </div>
@@ -945,6 +1349,11 @@ function WorkflowCanvas({
       <div className="absolute bottom-4 left-4 grid gap-1 rounded-2xl border border-line bg-ink/80 p-2 text-textSecondary">
         <GitBranch size={16} aria-hidden="true" />
         <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">{formatCount(draft.steps.length, "step")}</span>
+        {canvasStatus ? (
+          <span className="max-w-52 truncate text-[10px] font-semibold text-textPrimary">
+            {canvasStatus}
+          </span>
+        ) : null}
       </div>
     </div>
   );
@@ -952,23 +1361,31 @@ function WorkflowCanvas({
 
 function WorkflowNode({
   isLead,
+  isLinkInvalidTarget,
   isLinking,
+  isLinkTarget,
   isSelected,
   label,
   meta,
   nodeId,
   onPortClick,
+  onPortPointerDown,
+  onPortPointerUp,
   onSelect,
   onStartDrag,
   position,
 }: {
   isLead: boolean;
+  isLinkInvalidTarget: boolean;
   isLinking: boolean;
+  isLinkTarget: boolean;
   isSelected: boolean;
   label: string;
   meta: string;
   nodeId: string;
   onPortClick: (nodeId: string, side: PortSide) => void;
+  onPortPointerDown: (event: PointerEvent<HTMLElement>, nodeId: string) => void;
+  onPortPointerUp: (nodeId: string) => void;
   onSelect: () => void;
   onStartDrag: (event: PointerEvent<HTMLElement>, nodeId: string) => void;
   position: CanvasNodePosition;
@@ -997,28 +1414,53 @@ function WorkflowNode({
         isSelected || isLinking ? "border-accent/70 shadow-[inset_6px_0_0_rgb(var(--color-accent))]" : "border-line"
       }`}
     >
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          onPortClick(nodeId, "in");
-        }}
-        onPointerDown={(event) => event.stopPropagation()}
-        className="absolute left-0 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border border-ink bg-textPrimary transition hover:scale-125 hover:bg-accent"
-        aria-label={`Link into ${label}`}
-      />
+      {!isLead ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onPortClick(nodeId, "in");
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerUp={(event) => {
+            event.stopPropagation();
+            onPortPointerUp(nodeId);
+          }}
+          className={`group absolute left-0 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border border-ink transition hover:scale-125 hover:bg-accent ${
+            isLinkTarget
+              ? "bg-accent shadow-[0_0_28px_rgb(var(--color-accent)/0.55)]"
+              : isLinkInvalidTarget
+                ? "bg-textSecondary opacity-45"
+                : "bg-textPrimary"
+          }`}
+          aria-label={`Link into ${label}`}
+          title={`Link to ${label}`}
+        >
+          <span className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-full border border-line bg-panel/95 px-2 py-1 text-[10px] font-semibold text-textPrimary opacity-0 shadow-lg transition group-focus-visible:opacity-100 group-hover:opacity-100">
+            Link to
+          </span>
+        </button>
+      ) : null}
       <button
         type="button"
         onClick={(event) => {
           event.stopPropagation();
           onPortClick(nodeId, "out");
         }}
-        onPointerDown={(event) => event.stopPropagation()}
-        className={`absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 translate-x-1/2 rounded-full border border-ink transition hover:scale-125 ${
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          onPortPointerDown(event, nodeId);
+        }}
+        className={`group absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 translate-x-1/2 rounded-full border border-ink transition hover:scale-125 ${
           isLinking ? "bg-accent shadow-[0_0_28px_rgb(var(--color-accent)/0.55)]" : "bg-textPrimary hover:bg-accent"
         }`}
         aria-label={`Link from ${label}`}
-      />
+        title={`Link from ${label}`}
+      >
+        <span className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-full border border-line bg-panel/95 px-2 py-1 text-[10px] font-semibold text-textPrimary opacity-0 shadow-lg transition group-focus-visible:opacity-100 group-hover:opacity-100">
+          Link from
+        </span>
+      </button>
       <div className="min-w-0">
         <span className="block truncate text-sm font-semibold text-textPrimary">{label}</span>
         <span className="mt-1 block truncate text-xs text-textSecondary">{meta}</span>

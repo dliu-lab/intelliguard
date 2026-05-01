@@ -508,7 +508,7 @@ Prompt:
 Show the contact details for customer C123
 ```
 
-Expected outcome:
+Target outcome:
 
 - Decision: `ALLOW` with PII redacted in response
 - Tool executes
@@ -522,6 +522,12 @@ Screens to check:
 - Runtime Policies (confirm `redact_pii_in_response: true`)
 
 This scenario is important because it shows that governance is not binary. There is a governed middle path between blocking everything and allowing everything through unmodified.
+
+Current implementation note:
+
+- The default policy currently has `redact_pii_in_response: false`.
+- The current runner changes redacted responses to `ALLOW`, not `ALLOW_WITH_REDACTION`.
+- Treat this as a target scenario until redaction policy, decision naming, and audit logging are updated.
 
 ### 5. Multi-Agent Workflow Path
 
@@ -565,29 +571,324 @@ This tells the core product story:
 
 > Define runtime controls, govern agent behavior, route risky actions to humans, and preserve evidence for audit.
 
+## Implementation Plan For Further Work
+
+### RBAC Principle
+
+All new features must respect the three existing roles. New capabilities default to the most restrictive access level and are explicitly relaxed only where justified.
+
+| Capability | Governance Lead | Governance Reviewer | Agent Developer |
+|---|---|---|---|
+| View audit events | All environments | Assigned environment | Own agent sessions |
+| Export audit events | All environments | Assigned environment | No |
+| Approve/deny review items | Yes | Yes | No |
+| Edit runtime policy | Yes | No | No |
+| Run policy simulation | Yes | No | No |
+| View runtime policy | Yes | Yes | Read-only |
+| Trigger workflow runs | Yes | Yes | Yes |
+| Onboard agents and tools | Yes | No | Yes |
+
+When in doubt, make a new feature visible to all roles but actionable only to Governance Lead or Governance Reviewer.
+
+---
+
+This plan assumes the current dashboard structure should stay mostly the same. Keep the sidebar, page navigation, page headers, environment selector, cards, and visual style. The work should improve the content density and governance clarity inside the existing pages rather than redesigning the whole UI.
+
+### Engineering Standards To Apply
+
+Use the local coding skills as implementation standards for all future IntelliGuard work:
+
+- `python-engineering-standards` for backend/API/governance runtime work.
+- `tsx-react-engineering-standards` for dashboard, React, and TypeScript work.
+
+Python backend standards:
+
+- Keep FastAPI entry points thin. API handlers should validate auth/access, call service/runtime modules, and return typed responses.
+- Move new governance behavior into focused modules instead of growing `api/main.py` or large mixed-purpose files.
+- Prefer feature/domain modules for policy, audit, review, workflow, gateway, and tool governance behavior.
+- Use Pydantic V2 request/response models for API boundaries and config schemas.
+- Avoid passing unstructured raw dictionaries between new modules when the shape is known.
+- Add type annotations for new functions and methods.
+- Use explicit custom exceptions for domain failures instead of silent failures or broad `except Exception`.
+- Add pytest coverage for policy decisions, audit writes, review queue transitions, and workflow aggregation behavior.
+- Run the available Python checks after backend changes: Ruff formatting/linting, type checking where configured, and pytest.
+
+TSX/React standards:
+
+- Keep the current dashboard shell and visual style, but avoid adding more giant generic components.
+- For new UI surfaces, prefer feature-level components for audit, policies, reviews, workflows, and control plane concerns.
+- Keep shared primitives in a generic UI layer only when they are truly reusable.
+- Use typed props with interfaces directly above components.
+- Avoid `any`; use `unknown` at API boundaries and narrow or validate before rendering.
+- Use derived values during render rather than syncing duplicated state through `useEffect`.
+- Add Zod schemas at the API/network boundary before trusting backend payloads in the dashboard.
+- Keep rows, detail panels, filters, and action controls small enough to review independently.
+- Use existing styling conventions first; introduce `cva` only where typed variants reduce repeated class logic.
+- Run the available frontend checks after TSX changes: formatter/linter, `tsc --noEmit`, and tests/build command if present.
+
+### Phase 1: Make Existing Evidence Usable
+
+Objective:
+
+- Make the current runtime evidence readable without changing the main app layout.
+
+Scope:
+
+- Improve Audit Events rows.
+- Improve Runtime Policies summary cards.
+- Improve Review Queue empty and populated states.
+
+Audit Events work:
+
+- Show decision, risk score, risk type, agent, tool, stage, workflow/session, created time, and reason.
+- Read `stage` from `metadata.stage` for now.
+- Add expandable details inside the existing card/list pattern.
+- Show metadata sections for agent identity, requested action, tool args, permission snapshot, and raw JSON.
+- Implement this as typed TSX components rather than expanding generic `RecordList` rows indefinitely.
+- Add narrow helper functions for rendering audit metadata instead of inline object drilling throughout JSX.
+- Keep export, advanced filtering, and SIEM integration out of this phase.
+
+Runtime Policies work:
+
+- Keep the existing Runtime Policies page.
+- Expand each policy row into a policy summary card.
+- Show thresholds, allowed tools, blocked tools, review-required rules, PII behavior, max record limit, and mode.
+- Add a collapsible raw config section.
+- Type policy config rendering explicitly in the dashboard, even if the backend still returns generic records.
+- Do not build a full policy editor yet.
+
+Review Queue work:
+
+- Improve the empty state with a review-triggering test prompt.
+- When items exist, show agent, tool, user query, risk score, risk types, reason, created time, and linked session.
+- Add approve/deny only after the evidence display is clear.
+- Require reviewer note for denial.
+- Keep reviewer action components separate from display-only evidence components.
+
+Why this phase first:
+
+- The backend already has most of the data.
+- It makes the product easier to demo immediately.
+- It avoids major architecture or UI redesign.
+
+### Phase 2: Close Audit Gaps In The Backend
+
+Objective:
+
+- Make audit records defensible enough for compliance and future policy simulation.
+
+Backend changes:
+
+- Add `policy_id` to audit events.
+- Add `policy_version` or `policy_snapshot_hash` to audit events.
+- Promote `stage` from metadata into a first-class field or consistently populate it in metadata.
+- Store enough request context for future simulation: user query, tool name, tool args, agent identity snapshot, policy decision, risk findings, and triggered rules.
+- For final response checks, store whether the response was blocked, redacted, or allowed unchanged.
+- Add or update Pydantic response models for audit events instead of returning loosely shaped dictionaries.
+- Keep audit write logic in governance runtime/store modules, not directly inside UI-facing route handlers.
+- Add pytest coverage that proves audit events include policy ID/version, stage, decision, risk metadata, and workflow/session linkage.
+
+UI changes:
+
+- Display policy version/hash in the Audit Events detail view.
+- Show whether an audit event was evaluated under the current policy or an older policy.
+- Add Zod validation for audit event payloads before rendering policy version and metadata fields.
+
+Do not add yet:
+
+- Full compliance export.
+- Policy simulation.
+- Complex audit analytics.
+
+### Phase 3: Improve Tool Guardrails Beyond Tool Grants
+
+Objective:
+
+- Move from “agent can use this tool” to “this specific tool call is allowed.”
+
+Current state:
+
+- Agent tool grants already control whether an agent can use a tool at all.
+- Existing detector logic already checks risky `search_customers` arguments such as broad search and email exposure.
+
+Next controls:
+
+- Add tool argument validation policies.
+- Validate entity scope, such as `customer_id` matching the session context.
+- Validate limits, such as search limit and date range.
+- Validate side-effect tools before execution.
+- Represent validation findings with typed policy result objects, not ad hoc strings.
+
+Implementation approach:
+
+- Keep validation in the governance runtime before tool execution.
+- Keep defensive schema/domain validation inside the tools themselves.
+- Do not rely on the agent to self-police.
+- Use Pydantic models for new tool argument schemas where the shape is known.
+- Keep detector functions small and focused by risk category.
+- Add tests for allow, review, and block outcomes for each new argument rule.
+
+Recommended first tool rules:
+
+- `search_customers` with empty filter: block or review.
+- `search_customers` with `include_email: true`: review.
+- `get_customer_profile` with customer ID different from session customer: block.
+- `get_customer_transactions` with broad date range or excessive limit: review.
+- `update_contact_info`: require review before execution.
+
+Rate limiting controls to add in this phase:
+
+Argument validation alone cannot stop low-and-slow exfiltration — an agent issuing 200 sequential single-record queries against an allowed tool bypasses all tool-level rules. Rate limits are the primary defense.
+
+- Maximum tool calls per session.
+- Maximum unique customer or entity IDs accessed per session.
+- Maximum failed or blocked tool calls before session suspension.
+- Cooldown period enforced after a block decision.
+
+Keep rate limit enforcement in the governance runtime alongside argument validation. Record limit breaches as audit events with their own risk type. Do not implement per-minute rate limits yet — session-level limits are sufficient for the current demo and test scope.
+
+Side-effect control definition:
+
+- A side-effect tool changes data or triggers an external action.
+- Examples: update contact info, send email, create ticket, delete record, change permissions, call external service.
+- These should support dry-run preview, human approval, before/after audit evidence, and stricter environment controls.
+
+### Phase 4: Add Workflow Guardrail Enforcement
+
+Objective:
+
+- Turn workflow trace metadata into enforceable workflow policy.
+
+Current state:
+
+- Cross-agent handoffs are recorded through workflow session links and delegation metadata.
+- Each sub-agent tool call is governed independently.
+- Workflow decision aggregation is basic: any `BLOCK` makes the workflow `BLOCK`; otherwise any `REVIEW` makes it `REVIEW`; otherwise `ALLOW`.
+- Workflow-level evaluators exist after workflow execution.
+
+Missing controls:
+
+- Handoff allow/deny policy.
+- Step-level approval gates.
+- Final workflow response approval.
+- Configurable risk aggregation.
+
+Recommended implementation:
+
+- Add allowed delegation pairs, such as lead agent to identity agent and lead agent to transaction agent.
+- Validate each workflow step before it runs.
+- Add step gates: always allow, require review, block.
+- Add workflow release gate before final response delivery.
+- Compute workflow-level risk from max step risk, blocked count, review count, and high-risk event count.
+
+Minimal first version:
+
+- Validate that every workflow step agent is in the workflow definition.
+- Validate that each step agent belongs to the expected environment.
+- Validate that lead agent is allowed to delegate to each sub-agent.
+- Add workflow-level `requires_review` when any step returns `REVIEW`.
+- Add typed workflow guardrail result objects so UI and audit logs do not infer workflow state from strings alone.
+- Add backend tests for allowed handoff, denied handoff, step review gate, and workflow risk aggregation.
+- Keep workflow trace UI changes additive: show gate status and aggregation result inside the existing trace layout.
+
+### Phase 5: Add Model Gateway Guardrails
+
+**Prerequisite: This phase does not start until an LLM gateway service exists.** The platform currently routes tool calls but does not route model calls. If no gateway is planned, this phase is deferred indefinitely and does not block any other phase.
+
+Objective:
+
+- Govern model calls consistently once the LLM gateway is introduced.
+
+Where this belongs:
+
+- Model guardrails should live in the LLM gateway because the gateway is the central enforcement point for prompts, model selection, and model responses.
+
+Model gateway controls:
+
+- Model allowlist per agent and environment.
+- Prompt/input checks.
+- System prompt protection.
+- Prompt injection detection.
+- Max token and parameter limits.
+- Output PII detection and redaction.
+- Blocked output patterns.
+- Response schema validation.
+- Model-call audit logging.
+
+Relationship to existing agent guardrails:
+
+- Keep tool, argument, side-effect, and workflow controls in the agent governance runtime.
+- Move or share prompt/output safety checks with the model gateway when it exists.
+- Keep audit events linked by session, workflow, agent, and model call ID.
+
+Minimal first version:
+
+- Add a gateway request/response audit record.
+- Enforce model allowlist.
+- Reuse final-response PII and blocked-pattern checks.
+- Link model audit events back to agent sessions.
+- Define Pydantic models for gateway request, gateway response, and model audit event payloads.
+- Keep the gateway entry point thin and put guardrail decisions in dedicated gateway/policy modules.
+- Add dashboard types/Zod schemas before rendering model audit events.
+
+### Phase 6: Policy Simulation And Export
+
+Objective:
+
+- Help governance leads safely change policy and produce audit evidence.
+
+Policy simulation:
+
+- Simulate against captured policy decision records or session snapshots, not only audit rows.
+- Show decision changes: was `ALLOW`, would become `REVIEW`; was `ALLOW`, would become `BLOCK`.
+- Show impact summary: changed decisions, block-rate change, review-rate change, affected agents, affected tools.
+- Do not mutate live records.
+- Implement simulation as a backend service with typed inputs/outputs.
+- Add pytest coverage proving simulation does not mutate live audit, policy, or review records.
+- Render simulation results with discriminated union state in TSX: idle, loading, success, error.
+
+Audit export:
+
+- Add filtered CSV export first.
+- Add JSON export after the audit detail model is stable.
+- Respect RBAC by environment.
+- Add export audit logging.
+- Support masked export and full export separately.
+- Treat export as sensitive. Add explicit backend audit logging for export requests.
+- In the frontend, keep export controls scoped to the Audit Events page and validate export options before submission.
+
+Do not start this phase until:
+
+- Audit events include policy version.
+- Audit detail views are usable.
+- Sensitive metadata handling is clear.
+
 ## Product Priority
 
 Highest priority:
 
 1. Improve Audit Events so records show agent, tool, stage, risk type, workflow/session, and metadata.
-2. Expand Runtime Policies so users can see actual controls, thresholds, and review routing.
+2. Record policy version/hash and stage consistently for audit events.
 3. Improve Review Queue empty and populated states so testing and reviewer workflows are clear.
+4. Expand Runtime Policies so users can see actual controls, thresholds, and review routing.
 
 Secondary priority:
 
 1. Add policy detail drawers.
 2. Add audit grouping by workflow/session.
-3. Add review history views.
-4. Add risk trend summaries.
-5. Add policy simulation (dry-run preview before publishing changes).
-6. Add audit export for compliance download.
-7. Add SLA countdown and batch actions to the review queue.
+3. Add tool argument validation and session scope binding.
+4. Add side-effect controls for write/external tools.
+5. Add review history views.
+6. Add risk trend summaries.
+7. Add SLA countdown to the review queue.
+8. Add Zod schemas for dashboard API records as views become richer.
 
 Later:
 
-1. Rate limiting controls in runtime policy.
-2. Session scope binding controls.
-3. Policy version recorded at audit event time.
-4. Smart context panel in review queue.
-5. Agent health scorecard per agent.
-
+1. Workflow handoff allow/deny policy.
+2. Step-level and final-response approval gates.
+3. Model gateway guardrails (gated on LLM gateway existing).
+4. Policy simulation.
+5. Audit export for compliance download.
+6. Batch actions and smart context panel in review queue.
+7. Agent health scorecard per agent.

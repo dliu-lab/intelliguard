@@ -1,15 +1,41 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { ArrowRight, Play, ShieldCheck } from "lucide-react";
+import {
+  ArrowRight,
+  Bot,
+  Database,
+  GitBranch,
+  Network,
+  ShieldCheck,
+  TerminalSquare,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
 import { openAuthModal } from "@/components/AuthModal";
 
-const controlNodes = [
-  { label: "Policy", top: "18%", left: "14%" },
-  { label: "Risk", top: "30%", left: "76%" },
-  { label: "Audit", top: "70%", left: "20%" },
-  { label: "RBAC", top: "74%", left: "72%" },
+const orbitNodes = [
+  { label: "Knowledge Bases", icon: Database, className: "left-1/2 top-[7%] -translate-x-1/2" },
+  { label: "Agents", icon: Bot, className: "left-[7%] top-[30%]" },
+  { label: "Tools", icon: TerminalSquare, className: "right-[7%] top-[34%]" },
+];
+
+const platformLayers = [
+  {
+    title: "Control Plane",
+    description: "Policy, RBAC, risk scoring, approvals, and audit evidence.",
+    icon: ShieldCheck,
+  },
+  {
+    title: "Execution Plane",
+    description: "Agentic workflows, tools, APIs, unified gateway, and deployment paths.",
+    icon: GitBranch,
+  },
+  {
+    title: "Runtime Evidence",
+    description: "Traces across prompts, tool calls, model decisions, reviews, and outcomes.",
+    icon: Network,
+  },
 ];
 
 const particleSeeds = [
@@ -132,83 +158,73 @@ function HeroVisual() {
       initial={{ opacity: 0, scale: 0.96, y: 18 }}
       animate={{ opacity: 1, scale: 1, y: 0 }}
       transition={{ duration: 0.8, delay: 0.12, ease: "easeOut" }}
-      className="glass-card relative mx-auto aspect-[1.16] w-full max-w-[620px] overflow-hidden rounded-[28px] p-4"
-      aria-label="Cinematic frame showing Human plus AI flowing into governed runtime"
+      className="glass-card relative mx-auto min-h-[620px] w-full max-w-[620px] overflow-hidden rounded-[32px] p-5"
+      aria-label="IntelliGuard platform preview"
     >
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_40%,rgba(0,200,150,0.18),transparent_38%)]" />
-      <div className="relative flex h-full flex-col rounded-[22px] border border-line bg-ink/70 p-4">
-        <div className="flex items-center justify-between border-b border-line pb-3">
-          <div className="flex items-center gap-2 text-xs text-textSecondary">
-            <Play size={14} aria-hidden="true" />
-            runtime-preview
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_44%,rgba(0,200,150,0.2),transparent_36%)]" />
+      <div className="absolute left-1/2 top-1/2 h-[72%] w-[72%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-accent/20" />
+      <div className="absolute left-1/2 top-1/2 h-[50%] w-[50%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-line" />
+
+      {orbitNodes.map((node) => {
+        const Icon = node.icon;
+
+        return (
+          <div
+            key={node.label}
+            className={`absolute z-10 flex items-center gap-2 rounded-full border border-line bg-ink/80 px-4 py-2 text-sm font-semibold text-textPrimary shadow-card backdrop-blur ${node.className}`}
+          >
+            <Icon className="text-accent" size={17} aria-hidden="true" />
+            {node.label}
           </div>
-          <span className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
-            governed runtime
-          </span>
-        </div>
+        );
+      })}
 
-        <div className="relative flex flex-1 items-center justify-center">
-          <motion.div
-            animate={{ opacity: [0.24, 0.58, 0.24], scale: [1, 1.08, 1] }}
-            transition={{ duration: 4.8, repeat: Infinity, ease: "easeInOut" }}
-            className="absolute h-52 w-52 rounded-full bg-accent/10 blur-3xl"
-          />
-
-          {controlNodes.map((node, index) => (
-            <motion.div
-              key={node.label}
-              animate={{ y: [0, index % 2 ? -7 : 7, 0] }}
-              transition={{ duration: 4 + index * 0.4, repeat: Infinity, ease: "easeInOut" }}
-              className="absolute rounded-full border border-line bg-white/[0.045] px-3 py-1.5 text-xs text-textSecondary backdrop-blur"
-              style={{ top: node.top, left: node.left }}
-            >
-              {node.label}
-            </motion.div>
-          ))}
-
-          <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-3 text-center">
-            <AbstractActor label="Human" sublabel="intent" />
-            <div className="flex flex-col items-center gap-3">
-              <span className="text-xs uppercase tracking-[0.22em] text-textSecondary">+</span>
-              <motion.div
-                animate={{ rotate: [0, 8, -8, 0] }}
-                transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
-                className="grid h-24 w-24 place-items-center rounded-3xl border border-accent/35 bg-accent/10 text-accent teal-glow"
-              >
-                <ShieldCheck size={38} strokeWidth={2.1} aria-hidden="true" />
-              </motion.div>
-              <span className="text-xs uppercase tracking-[0.22em] text-accent">IntelliGuard</span>
-            </div>
-            <AbstractActor label="AI" sublabel="agent action" />
+      <div className="relative z-20 flex min-h-[580px] flex-col justify-end gap-4">
+        <div className="mx-auto w-full max-w-md rounded-[28px] border border-accent/25 bg-ink/86 p-6 text-center shadow-[0_0_80px_rgba(0,200,150,0.18)] backdrop-blur-xl">
+          <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl border border-accent/35 bg-accent/10 text-accent teal-glow">
+            <ShieldCheck size={30} aria-hidden="true" />
           </div>
-
-          <div className="absolute bottom-6 left-1/2 w-[84%] -translate-x-1/2 rounded-2xl border border-line bg-panel/80 px-4 py-3 text-left shadow-card">
-            <div className="mb-2 flex items-center justify-between text-xs text-textSecondary">
+          <h2 className="mt-5 text-3xl font-semibold tracking-[-0.03em] text-textPrimary">IntelliGuard Platform</h2>
+          <p className="mt-3 text-base leading-7 text-textSecondary">
+            Control plane, workflow builder, deployment surface, and runtime evidence layer.
+          </p>
+          <div className="mt-6 rounded-2xl border border-line bg-panel/70 px-4 py-3 text-left">
+            <div className="mb-2 flex items-center justify-between gap-4 text-xs text-textSecondary">
               <span>Human + AI</span>
               <span className="text-accent">Governed Runtime</span>
             </div>
             <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
               <motion.div
-                animate={{ x: ["-30%", "130%"] }}
-                transition={{ duration: 2.7, repeat: Infinity, ease: "easeInOut" }}
-                className="h-full w-1/3 rounded-full bg-accent"
+                animate={{ x: ["-35%", "235%"] }}
+                transition={{ duration: 2.8, repeat: Infinity, ease: "easeInOut" }}
+                className="h-full w-2/5 rounded-full bg-accent shadow-[0_0_24px_rgba(0,200,150,0.7)]"
               />
             </div>
           </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          {platformLayers.map((layer) => (
+            <PlatformLayerCard key={layer.title} {...layer} />
+          ))}
         </div>
       </div>
     </motion.div>
   );
 }
 
-function AbstractActor({ label, sublabel }: { label: string; sublabel: string }) {
+interface PlatformLayerCardProps {
+  title: string;
+  description: string;
+  icon: LucideIcon;
+}
+
+function PlatformLayerCard({ title, description, icon: Icon }: PlatformLayerCardProps) {
   return (
-    <div className="mx-auto grid gap-3">
-      <div className="mx-auto h-24 w-20 rounded-t-[42px] border border-line bg-gradient-to-b from-white/12 to-white/[0.02]" />
-      <div>
-        <strong className="block text-sm text-textPrimary">{label}</strong>
-        <span className="text-xs uppercase tracking-[0.18em] text-textSecondary">{sublabel}</span>
-      </div>
+    <div className="rounded-2xl border border-line bg-ink/76 p-4 shadow-card backdrop-blur">
+      <Icon className="text-accent" size={19} aria-hidden="true" />
+      <h3 className="mt-4 text-base font-semibold text-textPrimary">{title}</h3>
+      <p className="mt-2 text-sm leading-6 text-textSecondary">{description}</p>
     </div>
   );
 }

@@ -11,6 +11,7 @@ from agent_governance.tools import ToolRegistry
 
 
 CUSTOMER_ID_RE = re.compile(r"\bC\d{3,}\b", re.IGNORECASE)
+LEAD_NODE_ID = "lead"
 
 DEFAULT_CUSTOMER_SUPPORT_WORKFLOW = {
     "workflow_definition_id": "customer-support-investigation",
@@ -48,6 +49,67 @@ DEFAULT_CUSTOMER_SUPPORT_WORKFLOW = {
 }
 
 
+def _workflow_connections(workflow_definition: dict, steps: list[dict]) -> list[dict]:
+    step_ids: list[str] = []
+    for step in steps:
+        step_id = step.get("step_id") or step.get("agent_id")
+        if isinstance(step_id, str) and step_id not in step_ids:
+            step_ids.append(step_id)
+
+    valid_ids = {LEAD_NODE_ID, *step_ids}
+    metadata = workflow_definition.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    has_visual_connections = "visual_connections" in metadata
+    raw_connections = metadata.get("visual_connections")
+    connections: list[dict] = []
+    seen: set[str] = set()
+
+    if isinstance(raw_connections, list):
+        for connection in raw_connections:
+            if not isinstance(connection, dict):
+                continue
+
+            from_node = connection.get("from")
+            to_node = connection.get("to")
+            if (
+                not isinstance(from_node, str)
+                or not isinstance(to_node, str)
+                or from_node == to_node
+                or to_node == LEAD_NODE_ID
+                or from_node not in valid_ids
+                or to_node not in valid_ids
+            ):
+                continue
+
+            connection_id = f"{from_node}->{to_node}"
+            if connection_id in seen:
+                continue
+
+            seen.add(connection_id)
+            connections.append({"id": connection_id, "from": from_node, "to": to_node})
+
+    if has_visual_connections:
+        return connections
+
+    return [
+        {"id": f"{LEAD_NODE_ID}->{step_id}", "from": LEAD_NODE_ID, "to": step_id}
+        for step_id in step_ids
+    ]
+
+
+def _incoming_connections(connections: list[dict]) -> dict[str, list[str]]:
+    incoming: dict[str, list[str]] = {}
+
+    for connection in connections:
+        to_node = connection.get("to")
+        from_node = connection.get("from")
+        if not isinstance(to_node, str) or not isinstance(from_node, str):
+            continue
+        incoming.setdefault(to_node, []).append(from_node)
+
+    return incoming
+
+
 def run_customer_support_workflow(
     *,
     database_url: str,
@@ -59,6 +121,11 @@ def run_customer_support_workflow(
     store = GovernanceStore(database_url)
     workflow_definition = workflow_definition or DEFAULT_CUSTOMER_SUPPORT_WORKFLOW
     steps = workflow_definition.get("steps") or DEFAULT_CUSTOMER_SUPPORT_WORKFLOW["steps"]
+    connections = _workflow_connections(workflow_definition, steps)
+    incoming_by_step = _incoming_connections(connections)
+    lead_delegations = [
+        connection["to"] for connection in connections if connection.get("from") == LEAD_NODE_ID
+    ]
     customer_match = CUSTOMER_ID_RE.search(query)
     customer_id = customer_match.group(0).upper() if customer_match else "C123"
     lead_agent_id = workflow_definition.get("lead_agent_id") or "customer-support-lead-agent"
@@ -76,6 +143,11 @@ def run_customer_support_workflow(
                 lead_agent_id,
                 *[step.get("agent_id") for step in steps if step.get("agent_id")],
             ],
+            "execution_mode": "multi_agent_fan_out"
+            if len(lead_delegations) > 1
+            else "multi_agent_graph",
+            "workflow_connections": connections,
+            "lead_delegations": lead_delegations,
         },
     )
 
@@ -113,9 +185,17 @@ def run_customer_support_workflow(
         status="PLANNED",
         payload={
             "sub_agents": [
-                {"agent_id": step.get("agent_id"), "task": step.get("task", step.get("label", ""))}
+                {
+                    "agent_id": step.get("agent_id"),
+                    "task": step.get("task", step.get("label", "")),
+                    "step_id": step.get("step_id") or step.get("agent_id"),
+                    "connected_from": incoming_by_step.get(
+                        step.get("step_id") or step.get("agent_id"), [LEAD_NODE_ID]
+                    ),
+                }
                 for step in steps
             ],
+            "connections": connections,
             "routing_reason": workflow_definition.get(
                 "description",
                 "Workflow definition routes the request through configured agent steps.",
@@ -130,6 +210,13 @@ def run_customer_support_workflow(
         if not agent_id:
             continue
         step_id = step.get("step_id") or agent_id
+        connected_from = incoming_by_step.get(step_id, [LEAD_NODE_ID])
+        parent_session_id = lead_session_id
+        for upstream_step_id in connected_from:
+            if upstream_step_id != LEAD_NODE_ID and upstream_step_id in step_session_ids:
+                parent_session_id = step_session_ids[upstream_step_id]
+                break
+
         session_id = f"sess_{step_id}_{uuid4().hex[:10]}"
         role = step.get("role") or f"sub_agent:{step_id}"
         tool_name = step.get("tool_name")
@@ -143,8 +230,13 @@ def run_customer_support_workflow(
             session_id=session_id,
             agent_id=agent_id,
             role=role,
-            parent_session_id=lead_session_id,
-            metadata={"delegated_by": lead_agent_id, "step_id": step_id},
+            parent_session_id=parent_session_id,
+            metadata={
+                "delegated_by": lead_agent_id,
+                "step_id": step_id,
+                "connected_from": connected_from,
+                "direct_from_lead": LEAD_NODE_ID in connected_from,
+            },
         )
         step_session_ids[step_id] = session_id
         identity = store.get_agent_identity(agent_id)
@@ -217,7 +309,11 @@ def run_customer_support_workflow(
         event_type="WORKFLOW_SUMMARY",
         label="Lead summary",
         status=final_decision,
-        payload={"summary": summary, "step_session_ids": step_session_ids},
+        payload={
+            "summary": summary,
+            "step_session_ids": step_session_ids,
+            "connections": connections,
+        },
     )
     store.update_session_status(lead_session_id, "COMPLETED")
     store.update_agent_workflow(
@@ -233,6 +329,11 @@ def run_customer_support_workflow(
             "customer_id": customer_id,
             "lead_session_id": lead_session_id,
             "sub_agent_session_ids": list(step_session_ids.values()),
+            "execution_mode": "multi_agent_fan_out"
+            if len(lead_delegations) > 1
+            else "multi_agent_graph",
+            "workflow_connections": connections,
+            "lead_delegations": lead_delegations,
         },
     )
 

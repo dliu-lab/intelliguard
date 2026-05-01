@@ -1,4 +1,5 @@
 __pycache__/
+.playwright-mcp/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
@@ -13,3 +14,5 @@ dashboard/out/
 
 .env
 .DS_Store
+
+
