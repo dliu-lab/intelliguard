@@ -1163,19 +1163,23 @@ class GovernanceStore:
                 )
                 if workflow_only and not workflow_link:
                     continue
+                metadata = row.metadata_json or {}
                 events.append(
                     {
                         "event_id": row.event_id,
                         "session_id": row.session_id,
                         "workflow_id": workflow_link.workflow_id if workflow_link else None,
                         "agent_id": row.agent_id,
+                        "environment": identity.environment if identity else None,
                         "agent_environment": identity.environment if identity else None,
                         "risk_type": row.risk_type,
                         "decision": row.decision,
                         "reason": row.reason,
                         "tool_name": row.tool_name,
                         "risk_score": row.risk_score,
-                        "metadata": row.metadata_json,
+                        "stage": metadata.get("stage"),
+                        "policy_snapshot_hash": metadata.get("policy_snapshot_hash"),
+                        "metadata": metadata,
                         "created_at": row.created_at.isoformat(),
                     }
                 )
@@ -1198,11 +1202,18 @@ class GovernanceStore:
                     identity.environment if identity else None, environment
                 ):
                     continue
+                workflow_link = db.scalar(
+                    select(WorkflowSessionLink)
+                    .where(WorkflowSessionLink.session_id == row.session_id)
+                    .limit(1)
+                )
                 reviews.append(
                     {
                         "review_id": row.review_id,
                         "session_id": row.session_id,
+                        "workflow_id": workflow_link.workflow_id if workflow_link else None,
                         "agent_id": row.agent_id,
+                        "environment": identity.environment if identity else None,
                         "agent_environment": identity.environment if identity else None,
                         "tool_name": row.tool_name,
                         "tool_args": row.tool_args,

@@ -62,7 +62,7 @@ export function WorkspaceViewContent({
   }
 
   if (activeView === "reviews") {
-    return <ReviewQueueWorkspace data={data} />;
+    return <ReviewQueueWorkspace data={data} onRefresh={onRefresh} />;
   }
 
   return <AuditEventsWorkspace data={data} />;

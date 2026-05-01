@@ -25,7 +25,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="scroll-smooth">
+    <html lang="en" className="scroll-smooth" suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{
@@ -34,7 +34,7 @@ export default function RootLayout({
                 var storedTheme = localStorage.getItem("intelliguard-theme");
                 var theme = storedTheme === "light" || storedTheme === "dark"
                   ? storedTheme
-                  : (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+                  : "dark";
                 document.documentElement.dataset.theme = theme;
               } catch (error) {
                 document.documentElement.dataset.theme = "dark";

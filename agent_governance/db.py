@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine, inspect, select, text
@@ -56,29 +57,48 @@ def ensure_runtime_schema(engine) -> None:
 def seed_guardrail_defaults(session: Session) -> None:
     from agent_governance.settings import DEFAULT_POLICY_PATH
 
+    policy = load_policy(DEFAULT_POLICY_PATH)
+    default_config = {
+        "allowed_tools": list(policy.allowed_tools),
+        "blocked_tools": list(policy.blocked_tools),
+        "max_records_returned": policy.max_records_returned,
+        "block_pii_in_response": policy.block_pii_in_response,
+        "redact_pii_in_response": policy.redact_pii_in_response,
+        "blocked_patterns": list(policy.blocked_patterns),
+        "review_required_for": list(policy.review_required_for),
+        "decision_thresholds": {
+            "review": policy.decision_thresholds.review,
+            "block": policy.decision_thresholds.block,
+        },
+        "tool_argument_rules": {
+            tool_name: asdict(rule) for tool_name, rule in policy.tool_argument_rules.items()
+        },
+        "tool_side_effect_controls": {
+            tool_name: asdict(control)
+            for tool_name, control in policy.tool_side_effect_controls.items()
+        },
+    }
+
     if not session.get(GuardrailPolicy, "pol_default"):
-        policy = load_policy(DEFAULT_POLICY_PATH)
         session.add(
             GuardrailPolicy(
                 policy_id="pol_default",
                 display_name="Default Policy",
                 description="Seeded from the default policy.yaml. Edit to create custom policies.",
                 environment="demo",
-                config={
-                    "allowed_tools": list(policy.allowed_tools),
-                    "blocked_tools": list(policy.blocked_tools),
-                    "max_records_returned": policy.max_records_returned,
-                    "block_pii_in_response": policy.block_pii_in_response,
-                    "redact_pii_in_response": policy.redact_pii_in_response,
-                    "blocked_patterns": list(policy.blocked_patterns),
-                    "review_required_for": list(policy.review_required_for),
-                    "decision_thresholds": {
-                        "review": policy.decision_thresholds.review,
-                        "block": policy.decision_thresholds.block,
-                    },
-                },
+                config=default_config,
             )
         )
+    else:
+        default_policy = session.get(GuardrailPolicy, "pol_default")
+        config = dict(default_policy.config or {})
+        changed = False
+        for key in ("tool_argument_rules", "tool_side_effect_controls"):
+            if key not in config:
+                config[key] = default_config[key]
+                changed = True
+        if changed:
+            default_policy.config = config
 
     built_in = [
         EvaluatorTemplate(

@@ -27,3 +27,39 @@ decision_thresholds:
   review: 50
   block: 80
 
+tool_argument_rules:
+  get_customer_profile:
+    required:
+      - customer_id
+    customer_id_must_match_query: true
+  get_customer_transactions:
+    required:
+      - customer_id
+    customer_id_must_match_query: true
+    max_limit: 25
+  search_customers:
+    required:
+      - filter
+    require_filter: true
+    max_limit: 50
+  update_contact_info:
+    required:
+      - customer_id
+      - new_value
+    customer_id_must_match_query: true
+
+tool_side_effect_controls:
+  get_customer_profile:
+    level: read_only
+    requires_review: false
+  get_customer_transactions:
+    level: read_only
+    requires_review: false
+  search_customers:
+    level: read_only
+    requires_review: false
+  update_contact_info:
+    level: write_update
+    requires_review: true
+    review_score: 72
+    reason: Contact updates change customer records and require reviewer approval before execution.

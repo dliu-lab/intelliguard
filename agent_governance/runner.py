@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace as dataclass_replace
+from dataclasses import asdict, dataclass, field, replace as dataclass_replace
 from typing import Any
 
 from agent_governance.detectors import (
@@ -11,7 +11,12 @@ from agent_governance.detectors import (
     redact_pii,
 )
 from agent_governance.evaluators import EvaluatorEngine
-from agent_governance.policy import DecisionThresholds, PolicyConfig, load_policy
+from agent_governance.policy import (
+    PolicyConfig,
+    load_policy,
+    policy_from_dict,
+    policy_snapshot_hash,
+)
 from agent_governance.store import GovernanceStore
 from agent_governance.tools import ToolRegistry
 
@@ -42,6 +47,7 @@ class GovernedToolRunner:
         self.store = GovernanceStore(database_url)
         self.tools = tools
         self.guardrail_mode, self.policy = self._resolve_policy(policy_path)
+        self.policy_hash = policy_snapshot_hash(self.policy)
         self.evaluator_engine = EvaluatorEngine(self.store)
 
     def _resolve_policy(self, policy_path: str) -> tuple[str, PolicyConfig]:
@@ -63,19 +69,8 @@ class GovernedToolRunner:
             thresholds["block"] = int(overrides["block"])
         if "review" in overrides:
             thresholds["review"] = int(overrides["review"])
-        return mode, PolicyConfig(
-            allowed_tools=list(config.get("allowed_tools") or []),
-            blocked_tools=list(config.get("blocked_tools") or []),
-            max_records_returned=int(config.get("max_records_returned", 100)),
-            block_pii_in_response=bool(config.get("block_pii_in_response", True)),
-            redact_pii_in_response=bool(config.get("redact_pii_in_response", False)),
-            blocked_patterns=list(config.get("blocked_patterns") or []),
-            review_required_for=list(config.get("review_required_for") or []),
-            decision_thresholds=DecisionThresholds(
-                review=int(thresholds.get("review", 50)),
-                block=int(thresholds.get("block", 80)),
-            ),
-        )
+        config["decision_thresholds"] = thresholds
+        return mode, policy_from_dict(config)
 
     def _apply_mode(self, assessment: RiskAssessment) -> RiskAssessment:
         if self.guardrail_mode == "review_only" and assessment.decision == "BLOCK":
@@ -469,6 +464,33 @@ class GovernedToolRunner:
         assessment: RiskAssessment,
         metadata: dict[str, Any],
     ) -> str:
+        stage = str(metadata.get("stage") or "runtime")
+        enriched_metadata = {
+            **metadata,
+            "stage": stage,
+            "guardrail_mode": self.guardrail_mode,
+            "policy_snapshot_hash": self.policy_hash,
+            "decision_thresholds": {
+                "review": self.policy.decision_thresholds.review,
+                "block": self.policy.decision_thresholds.block,
+            },
+            "policy_controls": {
+                "allowed_tools": list(self.policy.allowed_tools),
+                "blocked_tools": list(self.policy.blocked_tools),
+                "review_required_for": list(self.policy.review_required_for),
+                "max_records_returned": self.policy.max_records_returned,
+                "block_pii_in_response": self.policy.block_pii_in_response,
+                "redact_pii_in_response": self.policy.redact_pii_in_response,
+                "tool_argument_rules": {
+                    tool_name: asdict(rule)
+                    for tool_name, rule in self.policy.tool_argument_rules.items()
+                },
+                "tool_side_effect_controls": {
+                    tool_name: asdict(control)
+                    for tool_name, control in self.policy.tool_side_effect_controls.items()
+                },
+            },
+        }
         event_id = self.store.add_audit_event(
             session_id=session_id,
             agent_id=self.agent_id,
@@ -477,7 +499,7 @@ class GovernedToolRunner:
             reason=assessment.reason,
             tool_name=tool_name,
             risk_score=assessment.risk_score,
-            metadata=metadata,
+            metadata=enriched_metadata,
         )
         self.store.add_workflow_event(
             session_id=session_id,

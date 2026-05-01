@@ -580,6 +580,10 @@ def resolve_review(
     if environment is None:
         raise HTTPException(status_code=404, detail="Review item not found")
     require_environment_access(user, environment, "review:resolve")
+    if request.status == "DENIED" and not (request.reviewer_note or "").strip():
+        raise HTTPException(
+            status_code=400, detail="Reviewer note is required when denying a review"
+        )
     updated = store.resolve_review_item(review_id, request.status, request.reviewer_note)
     if not updated:
         raise HTTPException(status_code=404, detail="Review item not found")
@@ -827,6 +831,7 @@ def trigger_session_evaluation(
 
 
 # ── Knowledge Base endpoints ──────────────────────────────────────────────────
+
 
 @app.get("/v1/knowledge-bases")
 def list_knowledge_bases(

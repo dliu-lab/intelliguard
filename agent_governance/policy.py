@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,22 @@ class DecisionThresholds:
 
 
 @dataclass(frozen=True)
+class ToolArgumentRule:
+    required: list[str] = field(default_factory=list)
+    customer_id_must_match_query: bool = False
+    require_filter: bool = False
+    max_limit: int | None = None
+
+
+@dataclass(frozen=True)
+class ToolSideEffectControl:
+    level: str = "read_only"
+    requires_review: bool = False
+    review_score: int = 72
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class PolicyConfig:
     allowed_tools: list[str] = field(default_factory=list)
     blocked_tools: list[str] = field(default_factory=list)
@@ -23,15 +41,33 @@ class PolicyConfig:
     blocked_patterns: list[str] = field(default_factory=list)
     review_required_for: list[str] = field(default_factory=list)
     decision_thresholds: DecisionThresholds = field(default_factory=DecisionThresholds)
+    tool_argument_rules: dict[str, ToolArgumentRule] = field(default_factory=dict)
+    tool_side_effect_controls: dict[str, ToolSideEffectControl] = field(default_factory=dict)
 
 
-def load_policy(path: str | Path) -> PolicyConfig:
-    policy_path = Path(path)
-    raw: dict[str, Any] = {}
-    if policy_path.exists():
-        raw = yaml.safe_load(policy_path.read_text()) or {}
+def _argument_rule_from_dict(raw: dict[str, Any]) -> ToolArgumentRule:
+    max_limit = raw.get("max_limit")
+    return ToolArgumentRule(
+        required=list(raw.get("required", []) or []),
+        customer_id_must_match_query=bool(raw.get("customer_id_must_match_query", False)),
+        require_filter=bool(raw.get("require_filter", False)),
+        max_limit=int(max_limit) if max_limit is not None else None,
+    )
 
+
+def _side_effect_control_from_dict(raw: dict[str, Any]) -> ToolSideEffectControl:
+    return ToolSideEffectControl(
+        level=str(raw.get("level", "read_only")),
+        requires_review=bool(raw.get("requires_review", False)),
+        review_score=int(raw.get("review_score", 72)),
+        reason=str(raw.get("reason", "")),
+    )
+
+
+def policy_from_dict(raw: dict[str, Any]) -> PolicyConfig:
     thresholds = raw.get("decision_thresholds", {}) or {}
+    argument_rules = raw.get("tool_argument_rules", {}) or {}
+    side_effect_controls = raw.get("tool_side_effect_controls", {}) or {}
     return PolicyConfig(
         allowed_tools=list(raw.get("allowed_tools", []) or []),
         blocked_tools=list(raw.get("blocked_tools", []) or []),
@@ -44,7 +80,26 @@ def load_policy(path: str | Path) -> PolicyConfig:
             review=int(thresholds.get("review", 50)),
             block=int(thresholds.get("block", 80)),
         ),
+        tool_argument_rules={
+            str(tool_name): _argument_rule_from_dict(rule)
+            for tool_name, rule in argument_rules.items()
+            if isinstance(rule, dict)
+        },
+        tool_side_effect_controls={
+            str(tool_name): _side_effect_control_from_dict(control)
+            for tool_name, control in side_effect_controls.items()
+            if isinstance(control, dict)
+        },
     )
+
+
+def load_policy(path: str | Path) -> PolicyConfig:
+    policy_path = Path(path)
+    raw: dict[str, Any] = {}
+    if policy_path.exists():
+        raw = yaml.safe_load(policy_path.read_text()) or {}
+
+    return policy_from_dict(raw)
 
 
 def decide_from_score(risk_score: int, policy: PolicyConfig) -> str:
@@ -53,6 +108,11 @@ def decide_from_score(risk_score: int, policy: PolicyConfig) -> str:
     if risk_score >= policy.decision_thresholds.review:
         return "REVIEW"
     return "ALLOW"
+
+
+def policy_snapshot_hash(policy: PolicyConfig) -> str:
+    payload = json.dumps(asdict(policy), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def policy_to_dict(policy: PolicyConfig) -> dict[str, Any]:
@@ -106,6 +166,29 @@ def policy_to_dict(policy: PolicyConfig) -> dict[str, Any]:
             "decision": "ALLOW_WITH_REDACTION",
             "rules": ["redact_email", "redact_phone"],
             "enabled": policy.redact_pii_in_response,
+        },
+        {
+            "control_id": "tool_argument_validation",
+            "category": "tool_access",
+            "decision": "BLOCK",
+            "rules": [
+                f"{tool}:{','.join(rule.required) or 'argument_rule'}"
+                for tool, rule in policy.tool_argument_rules.items()
+            ],
+            "enabled": bool(policy.tool_argument_rules),
+        },
+        {
+            "control_id": "side_effect_review",
+            "category": "side_effect_control",
+            "decision": "REVIEW",
+            "rules": [
+                f"{tool}:{control.level}"
+                for tool, control in policy.tool_side_effect_controls.items()
+                if control.requires_review
+            ],
+            "enabled": any(
+                control.requires_review for control in policy.tool_side_effect_controls.values()
+            ),
         },
     ]
     return payload

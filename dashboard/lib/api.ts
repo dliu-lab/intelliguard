@@ -149,6 +149,18 @@ export function listReviewQueue(token: string, limit = 100, environment = "all")
   });
 }
 
+export function resolveReview(
+  token: string,
+  reviewId: string,
+  payload: { status: "APPROVED" | "DENIED"; reviewer_note?: string },
+) {
+  return request<ApiRecord>(`/v1/review-queue/${encodeURIComponent(reviewId)}/resolve`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  });
+}
+
 export function listAuditEvents(token: string, limit = 100, environment = "all") {
   return request<ApiRecord[]>(withParams("/v1/audit-events", { limit, environment }), {
     headers: authHeaders(token),

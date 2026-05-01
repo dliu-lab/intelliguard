@@ -126,6 +126,21 @@ export const controlTemplates: Record<ControlTemplateKey, ApiRecord> = {
       blocked_patterns: [],
       review_required_for: [],
       decision_thresholds: { review: 50, block: 80 },
+      tool_argument_rules: {
+        get_customer_transactions: {
+          required: ["customer_id"],
+          customer_id_must_match_query: true,
+          max_limit: 25,
+        },
+      },
+      tool_side_effect_controls: {
+        update_contact_info: {
+          level: "write_update",
+          requires_review: true,
+          review_score: 72,
+          reason: "Contact updates change customer records and require reviewer approval before execution.",
+        },
+      },
     },
   },
   evaluator: {

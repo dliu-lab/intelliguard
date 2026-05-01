@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from examples.review_trigger_workflow import (
+    DEFAULT_LOCAL_DATABASE_URL,
+    build_database_url,
+    install_review_trigger_workflow,
+    run_review_trigger_workflow,
+)
 from agent_governance.runner import GovernedToolRunner
 from agent_governance.policy import PolicyConfig
 from agent_governance.models import new_id
@@ -95,6 +101,114 @@ def test_review_only_mode_downgrades_block(store):
     # cleanup
     assignment = store.get_agent_guardrail_assignment("customer-support-agent", "demo")
     store.delete_agent_guardrail_assignment(assignment["assignment_id"])
+
+
+def test_audit_events_include_policy_snapshot_and_stage(store):
+    session_id = new_id("sess")
+    runner = _make_runner(store)
+    result = runner.evaluate_tool_call(
+        session_id=session_id,
+        user_query="Show recent transactions for customer C123",
+        tool_name="get_customer_transactions",
+        tool_args={"customer_id": "C123"},
+    )
+
+    assert result.decision == "ALLOW"
+    events = store.list_audit_events(limit=10, environment="demo")
+    event = next(item for item in events if item["event_id"] == result.audit_event_id)
+    assert event["stage"] == "pre_tool"
+    assert event["policy_snapshot_hash"]
+    assert event["metadata"]["guardrail_mode"] == "enforce"
+    assert event["metadata"]["decision_thresholds"] == {"review": 50, "block": 80}
+
+
+def test_missing_required_tool_argument_is_blocked(store):
+    session_id = new_id("sess")
+    runner = _make_runner(store)
+    result = runner.evaluate_tool_call(
+        session_id=session_id,
+        user_query="Show recent transactions for customer C123",
+        tool_name="get_customer_transactions",
+        tool_args={},
+    )
+
+    assert result.decision == "BLOCK"
+    assert "INVALID_TOOL_ARGUMENTS" in result.risk_types
+    assert "missing required arguments" in result.reason
+
+
+def test_customer_id_scope_mismatch_is_blocked(store):
+    session_id = new_id("sess")
+    runner = _make_runner(store)
+    result = runner.evaluate_tool_call(
+        session_id=session_id,
+        user_query="Show recent transactions for customer C123",
+        tool_name="get_customer_transactions",
+        tool_args={"customer_id": "C456"},
+    )
+
+    assert result.decision == "BLOCK"
+    assert "SESSION_SCOPE_VIOLATION" in result.risk_types
+
+
+def test_side_effect_tool_requires_review_before_execution(store):
+    session_id = new_id("sess")
+    runner = _make_runner(store)
+    result = runner.evaluate_tool_call(
+        session_id=session_id,
+        user_query="Update contact details for customer C123",
+        tool_name="update_contact_info",
+        tool_args={"customer_id": "C123", "new_value": {"phone": "+61 400 000 000"}},
+    )
+
+    assert result.decision == "REVIEW"
+    assert result.review_id
+    assert "SIDE_EFFECT_REQUIRES_REVIEW" in result.risk_types
+
+
+def test_review_trigger_workflow_script_creates_review_item(store):
+    workflow_definition = install_review_trigger_workflow(store)
+    assert workflow_definition["workflow_definition_id"] == "review-trigger-email-search"
+
+    result = run_review_trigger_workflow(store)
+
+    assert result["decision"] == "REVIEW"
+    reviews = store.list_review_queue(environment="demo")
+    review = next(
+        item
+        for item in reviews
+        if item["workflow_id"] == result["workflow_id"] and item["tool_name"] == "search_customers"
+    )
+    assert review["status"] == "PENDING"
+    assert "PII_EXPOSURE" in review["risk_types"]
+    assert review["tool_args"]["filter"]["include_email"] is True
+
+
+def test_review_trigger_workflow_cli_database_url_helpers(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    assert (
+        build_database_url(
+            database_url=None,
+            host=None,
+            port=None,
+            database="governance",
+            user="governance",
+            password="governance",
+        )
+        == DEFAULT_LOCAL_DATABASE_URL
+    )
+    assert (
+        build_database_url(
+            database_url=None,
+            host="db.example.test",
+            port=6543,
+            database="governance",
+            user="governance",
+            password="secret",
+        )
+        == "postgresql+psycopg://governance:secret@db.example.test:6543/governance"
+    )
 
 
 def test_disabled_mode_allows_everything(store):

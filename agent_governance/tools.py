@@ -15,7 +15,9 @@ class ToolRegistry:
         self._tools: dict[str, ToolFunction] = {}
         self._metadata: dict[str, dict[str, Any]] = {}
 
-    def register(self, name: str, func: ToolFunction, metadata: dict[str, Any] | None = None) -> None:
+    def register(
+        self, name: str, func: ToolFunction, metadata: dict[str, Any] | None = None
+    ) -> None:
         self._tools[name] = func
         self._metadata[name] = {
             "tool_name": name,
@@ -82,7 +84,9 @@ def get_customer_profile(db: Session, customer_id: str) -> dict[str, Any] | None
     return _customer_to_dict(customer) if customer else None
 
 
-def get_customer_transactions(db: Session, customer_id: str, limit: int = 10) -> list[dict[str, Any]]:
+def get_customer_transactions(
+    db: Session, customer_id: str, limit: int = 10
+) -> list[dict[str, Any]]:
     rows = db.scalars(
         select(CustomerTransaction)
         .where(CustomerTransaction.customer_id == customer_id)
@@ -134,21 +138,33 @@ def build_customer_tool_registry() -> ToolRegistry:
     registry.register(
         "get_customer_profile",
         get_customer_profile,
-        metadata={"description": "Retrieve a scoped customer profile by customer ID."},
+        metadata={
+            "description": "Retrieve a scoped customer profile by customer ID.",
+            "side_effect_level": "read_only",
+        },
     )
     registry.register(
         "get_customer_transactions",
         get_customer_transactions,
-        metadata={"description": "Retrieve recent customer transactions by customer ID."},
+        metadata={
+            "description": "Retrieve recent customer transactions by customer ID.",
+            "side_effect_level": "read_only",
+        },
     )
     registry.register(
         "search_customers",
         search_customers,
-        metadata={"description": "Search customer records using governed filters."},
+        metadata={
+            "description": "Search customer records using governed filters.",
+            "side_effect_level": "read_only",
+        },
     )
     registry.register(
         "update_contact_info",
         update_contact_info,
-        metadata={"description": "Update customer contact details after policy approval."},
+        metadata={
+            "description": "Update customer contact details after policy approval.",
+            "side_effect_level": "write_update",
+        },
     )
     return registry
