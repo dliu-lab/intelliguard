@@ -1077,6 +1077,8 @@ class GovernanceStore:
         reason: str,
         tool_name: str | None,
         risk_score: int,
+        policy_id: str | None = None,
+        stage: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
         event_id = new_id("evt")
@@ -1091,6 +1093,8 @@ class GovernanceStore:
                     reason=reason,
                     tool_name=tool_name,
                     risk_score=risk_score,
+                    policy_id=policy_id,
+                    stage=stage,
                     metadata_json=metadata or {},
                 )
             )
@@ -1177,8 +1181,9 @@ class GovernanceStore:
                         "reason": row.reason,
                         "tool_name": row.tool_name,
                         "risk_score": row.risk_score,
-                        "stage": metadata.get("stage"),
-                        "policy_snapshot_hash": metadata.get("policy_snapshot_hash"),
+                        "policy_id": row.policy_id,
+                        "stage": row.stage or (row.metadata_json or {}).get("stage"),
+                        "policy_snapshot_hash": (row.metadata_json or {}).get("policy_snapshot_hash"),
                         "metadata": metadata,
                         "created_at": row.created_at.isoformat(),
                     }

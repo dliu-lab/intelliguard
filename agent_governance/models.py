@@ -215,6 +215,8 @@ class AuditEvent(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     tool_name: Mapped[str | None] = mapped_column(String(120))
     risk_score: Mapped[int] = mapped_column(Integer, default=0)
+    policy_id: Mapped[str | None] = mapped_column(String(64))
+    stage: Mapped[str | None] = mapped_column(String(40))
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 

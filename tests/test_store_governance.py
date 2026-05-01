@@ -204,3 +204,23 @@ def test_list_review_queue_returns_all_statuses(store: GovernanceStore) -> None:
     resolved = next(r for r in approved if r["review_id"] == rev_id)
     assert resolved["reviewer_note"] == "looks fine"
     assert resolved["resolved_at"] is not None
+
+
+def test_audit_event_records_policy_id_and_stage(store: GovernanceStore) -> None:
+    store.ensure_agent_session("sess_policy_audit", "test-agent", "test query")
+    event_id = store.add_audit_event(
+        session_id="sess_policy_audit",
+        agent_id="test-agent",
+        risk_type="sensitive_data_exposure",
+        decision="BLOCK",
+        reason="test",
+        tool_name="get_data",
+        risk_score=85,
+        policy_id="pol_demo_001",
+        stage="pre_tool",
+        metadata={},
+    )
+    events = store.list_audit_events()
+    event = next(e for e in events if e["event_id"] == event_id)
+    assert event["policy_id"] == "pol_demo_001"
+    assert event["stage"] == "pre_tool"
