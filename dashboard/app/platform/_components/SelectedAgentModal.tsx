@@ -19,7 +19,7 @@ import {
   revokeAgentTool,
   type ApiRecord,
 } from "@/lib/api";
-import { ComponentRow, InfoTile } from "./shared";
+import { ComponentRow } from "./shared";
 import type { AgentModalTab } from "./types";
 import { agentProfileForm, getAgentTools, isErrorMessage, joinParts, readText } from "./utils";
 
@@ -399,16 +399,9 @@ export function SelectedAgentModal({
           </div>
         </div>
 
-        <div className="grid gap-3 border-b border-line p-5 md:grid-cols-4">
-          <InfoTile label="tools" value={String(toolGrants.length)} />
-          <InfoTile label="guardrails" value={String(guardrailAssignments.length)} />
-          <InfoTile label="evaluators" value={String(evaluatorAssignments.length)} />
-          <InfoTile label="KBs" value={String(knowledgeAssignments.length)} />
-        </div>
-
-        <div className="grid max-h-[calc(92vh-218px)] overflow-auto p-5 md:grid-cols-[260px_minmax(0,1fr)]">
-          <aside className="border-b border-line pb-5 md:border-b-0 md:border-r md:pr-5">
-            <div className="grid grid-cols-1 gap-2">
+        <div className="max-h-[calc(92vh-130px)] overflow-auto">
+          <div className="sticky top-0 z-10 border-b border-line bg-panel/95 px-5 py-4 backdrop-blur-xl">
+            <div className="flex gap-2 overflow-x-auto pb-1">
               {tabs.map((tab) => {
                 const Icon = tab.icon;
 
@@ -417,7 +410,7 @@ export function SelectedAgentModal({
                     key={tab.id}
                     type="button"
                     onClick={() => onTabChange(tab.id)}
-                    className={`flex min-h-14 items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-left text-sm font-semibold transition ${
+                    className={`inline-flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition ${
                       modalTab === tab.id
                         ? "border-accent/45 bg-accent text-ink"
                         : "border-line bg-white/[0.04] text-textPrimary hover:border-accent/45 hover:bg-accent/10"
@@ -428,15 +421,21 @@ export function SelectedAgentModal({
                       {tab.label}
                     </span>
                     {typeof tab.count === "number" ? (
-                      <span className={modalTab === tab.id ? "text-ink/70" : "text-textSecondary"}>{tab.count}</span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs ${
+                          modalTab === tab.id ? "bg-ink/10 text-ink/75" : "bg-white/[0.06] text-textSecondary"
+                        }`}
+                      >
+                        {tab.count}
+                      </span>
                     ) : null}
                   </button>
                 );
               })}
             </div>
-          </aside>
+          </div>
 
-          <section className="pt-5 md:pl-5 md:pt-0">
+          <section className="p-5">
             {message ? (
               <div
                 className={`mb-4 rounded-2xl border p-3 text-sm ${

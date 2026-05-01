@@ -112,10 +112,8 @@ const loginRoles = [
 const governanceLeadEnvironmentOptions = ["all", "demo", "staging", "production", "local"];
 
 const defaultAgentLlm = {
-  gateway: "unified",
-  endpoint: "/llm/v1",
-  model: "local/default-9b",
-  temperature: 0.2,
+  gateway_endpoint: "unified",
+  model: "ollama/qwen3.5:9b"
 };
 
 const agentTemplate = {

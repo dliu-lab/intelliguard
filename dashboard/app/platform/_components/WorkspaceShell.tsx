@@ -128,13 +128,6 @@ export function WorkspaceShell({
               <p className="mt-3 max-w-3xl text-base leading-7 text-textSecondary">{active.description}</p>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-3 text-sm">
-              <div className="inline-flex items-center gap-2 whitespace-nowrap text-textSecondary">
-                <Clock3 size={16} className="text-accent" aria-hidden="true" />
-                <span className="font-semibold text-textPrimary">Local</span>
-                <time className="font-mono text-xs text-textSecondary" dateTime={platformTime}>
-                  {platformTime}
-                </time>
-              </div>
               <label className="inline-flex min-h-11 items-center gap-3 rounded-2xl border border-line bg-white/[0.045] px-4">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-textSecondary">
                   Environment
@@ -161,6 +154,13 @@ export function WorkspaceShell({
                 >
                   <RefreshCw size={18} aria-hidden="true" />
                 </button>
+              </div>
+              <div className="inline-flex items-center gap-2 whitespace-nowrap text-textSecondary">
+                <Clock3 size={16} className="text-accent" aria-hidden="true" />
+                <span className="font-semibold text-textPrimary">Local</span>
+                <time className="font-mono text-xs text-textSecondary" dateTime={platformTime}>
+                  {platformTime}
+                </time>
               </div>
             </div>
           </header>

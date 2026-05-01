@@ -15,10 +15,8 @@ import { userCan } from "../../lib/permissions";
 import AgentGovernanceCard from "./AgentGovernanceCard";
 
 const defaultLlmConfig = {
-  gateway: "unified",
-  endpoint: "/llm/v1",
-  model: "local/default-9b",
-  temperature: 0.2,
+  gateway_endpoint: "unified",
+  model: "ollama/qwen3.5:9b"
 };
 
 function profileFormFor(agent) {
@@ -29,10 +27,8 @@ function profileFormFor(agent) {
     environment: agent?.environment || "",
     agent_type: agent?.agent_type || "",
     purpose: agent?.purpose || "",
-    llm_gateway: llm.gateway || defaultLlmConfig.gateway,
-    llm_endpoint: llm.endpoint || defaultLlmConfig.endpoint,
-    llm_model: llm.model || defaultLlmConfig.model,
-    llm_temperature: String(llm.temperature ?? defaultLlmConfig.temperature),
+    llm_gateway_endpoint: llm.gateway_endpoint || defaultLlmConfig.gateway_endpoint,
+    llm_model: llm.model || defaultLlmConfig.model
     metadata: JSON.stringify(agent?.metadata || {}, null, 2),
   };
 }

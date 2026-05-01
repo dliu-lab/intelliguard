@@ -82,10 +82,8 @@ export const controlTemplates: Record<ControlTemplateKey, ApiRecord> = {
       framework: "custom-agent",
       data_domain: "customer_support",
       llm: {
-        gateway: "unified",
-        endpoint: "/llm/v1",
-        model: "local/default-9b",
-        temperature: 0.2,
+        gateway_endpoint: "unified",
+        model: "ollama/qwen3.5:9b"
       },
     },
   },
