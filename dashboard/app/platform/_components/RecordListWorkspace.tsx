@@ -705,6 +705,7 @@ function AuditEventRow({
   const stage = eventStage(event);
   const toolOrStage = readText(event, ["tool_name"]) || stage;
   const policyHash = readText(event, ["policy_snapshot_hash"]) || readNestedText(event, ["metadata", "policy_snapshot_hash"]);
+  const policyId = readText(event, ["policy_id"]);
 
   return (
     <div className="border-b border-line last:border-b-0">
@@ -739,7 +740,11 @@ function AuditEventRow({
             <ChevronDown className={`mt-1 shrink-0 text-textSecondary transition ${expanded ? "rotate-180" : ""}`} size={18} aria-hidden="true" />
           </div>
           <p className="mt-2 break-words text-xs text-textSecondary">
-            {joinParts([readText(event, ["workflow_id"]), readText(event, ["session_id"]), policyHash ? `policy ${policyHash}` : undefined])}
+            {joinParts([
+              readText(event, ["workflow_id"]),
+              readText(event, ["session_id"]),
+              policyId ? `policy ${policyId}` : policyHash ? `hash ${policyHash.slice(0, 8)}` : undefined,
+            ])}
           </p>
         </div>
       </button>
@@ -749,7 +754,8 @@ function AuditEventRow({
           <div className="grid gap-3">
             <ReviewField label="Agent" value={readText(event, ["agent_id"]) || "Unknown agent"} />
             <ReviewField label="Workflow/session" value={joinParts([readText(event, ["workflow_id"]), readText(event, ["session_id"])]) || "No workflow link"} />
-            <ReviewField label="Policy snapshot" value={policyHash || "Not recorded"} />
+            <ReviewField label="Policy" value={policyId || "Not recorded"} />
+            <ReviewField label="Policy snapshot hash" value={policyHash || "Not recorded"} />
           </div>
           <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
