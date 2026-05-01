@@ -874,17 +874,30 @@ export function ReviewQueueWorkspace({
 export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
   const [decisionFilter, setDecisionFilter] = useState("ALL");
   const [stageFilter, setStageFilter] = useState("ALL");
+  const [riskTypeFilter, setRiskTypeFilter] = useState("ALL");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedEventId, setExpandedEventId] = useState("");
   const query = searchQuery.trim().toLowerCase();
   const stages = ["ALL", ...Array.from(new Set(data.auditEvents.map(eventStage).filter(Boolean)))];
   const decisions = ["ALL", ...Array.from(new Set(data.auditEvents.map((event) => readText(event, ["decision"])).filter(Boolean) as string[]))];
+  const riskTypes = [
+    "ALL",
+    ...Array.from(
+      new Set(
+        data.auditEvents
+          .map((event) => readText(event, ["risk_type"]))
+          .filter((rt): rt is string => Boolean(rt) && rt !== "none"),
+      ),
+    ),
+  ];
   const filteredEvents = data.auditEvents.filter((event) => {
     const decision = readText(event, ["decision"]) || "";
     const stage = eventStage(event);
+    const riskType = readText(event, ["risk_type"]) || "";
     return (
       (decisionFilter === "ALL" || decision === decisionFilter)
       && (stageFilter === "ALL" || stage === stageFilter)
+      && (riskTypeFilter === "ALL" || riskType === riskTypeFilter)
       && (!query || evidenceText(event).includes(query))
     );
   });
@@ -900,7 +913,7 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
   return (
     <section className="grid gap-5">
       <section className="glass-card rounded-3xl p-5">
-        <div className="grid gap-4 xl:grid-cols-[1fr_auto_auto] xl:items-center">
+        <div className="grid gap-4 xl:grid-cols-[1fr_auto_auto_auto] xl:items-center">
           <label className="flex min-h-11 items-center gap-2 rounded-2xl border border-line bg-ink/55 px-3 text-sm text-textSecondary">
             <Search size={16} aria-hidden="true" />
             <input
@@ -911,6 +924,7 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
             />
           </label>
           <FilterSelect label="Decision" value={decisionFilter} options={decisions} onChange={setDecisionFilter} />
+          <FilterSelect label="Risk type" value={riskTypeFilter} options={riskTypes} onChange={setRiskTypeFilter} />
           <FilterSelect label="Stage" value={stageFilter} options={stages} onChange={setStageFilter} />
         </div>
       </section>
