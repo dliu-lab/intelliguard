@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent_governance.models import GuardrailPolicy, EvaluatorTemplate, new_id
+from agent_governance.store import GovernanceStore
 
 
 def test_models_importable():
@@ -177,3 +178,29 @@ def test_evaluation_result_lifecycle(store):
 
     all_results = store.list_evaluation_results(agent_id="customer-support-agent")
     assert any(r["session_id"] == session_id for r in all_results)
+
+
+def test_list_review_queue_returns_all_statuses(store: GovernanceStore) -> None:
+    store.ensure_agent_session("sess_rev_all", "test-agent", "test query")
+    rev_id = store.add_review_item(
+        session_id="sess_rev_all",
+        agent_id="test-agent",
+        tool_name="get_data",
+        tool_args={},
+        user_query="test query",
+        risk_score=60,
+        risk_types=["sensitive_data_exposure"],
+        reason="test",
+    )
+    store.resolve_review_item(rev_id, "APPROVED", "looks fine")
+
+    pending = store.list_review_queue(status="PENDING")
+    approved = store.list_review_queue(status="APPROVED")
+    all_items = store.list_review_queue(status="ALL")
+
+    assert not any(r["review_id"] == rev_id for r in pending)
+    assert any(r["review_id"] == rev_id for r in approved)
+    assert any(r["review_id"] == rev_id for r in all_items)
+    resolved = next(r for r in approved if r["review_id"] == rev_id)
+    assert resolved["reviewer_note"] == "looks fine"
+    assert resolved["resolved_at"] is not None

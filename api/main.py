@@ -567,9 +567,16 @@ def audit_events(
 
 @app.get("/v1/review-queue")
 def review_queue(
-    limit: int = 100, environment: str | None = None, user: dict[str, Any] = Depends(current_user)
-) -> list[dict[str, Any]]:
-    return store.list_review_queue(limit=limit, environment=visible_environment(environment, user))
+    status: str = "PENDING",
+    limit: int = 100,
+    environment: str = "all",
+    user: dict = Depends(current_user),
+) -> list[dict]:
+    return store.list_review_queue(
+        limit=limit,
+        environment=visible_environment(environment, user),
+        status=status,
+    )
 
 
 @app.post("/v1/review-queue/{review_id}/resolve")

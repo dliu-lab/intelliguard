@@ -1186,15 +1186,22 @@ class GovernanceStore:
             return events
 
     def list_review_queue(
-        self, limit: int = 100, environment: str | list[str] | None = None
+        self, limit: int = 100, environment: str | list[str] | None = None, status: str | None = None
     ) -> list[dict[str, Any]]:
         with self.session() as db:
-            rows = db.scalars(
+            stmt = (
                 select(ReviewQueueItem)
-                .where(ReviewQueueItem.status == "PENDING")
                 .order_by(desc(ReviewQueueItem.created_at))
                 .limit(limit)
-            ).all()
+            )
+            if not status or status == "ALL":
+                pass  # return all statuses
+            elif status == "PENDING":
+                stmt = stmt.where(ReviewQueueItem.status == "PENDING")
+            else:
+                stmt = stmt.where(ReviewQueueItem.status == status)
+
+            rows = db.scalars(stmt).all()
             reviews = []
             for row in rows:
                 identity = db.get(AgentIdentity, row.agent_id)
@@ -1222,6 +1229,8 @@ class GovernanceStore:
                         "risk_types": row.risk_types,
                         "reason": row.reason,
                         "status": row.status,
+                        "reviewer_note": row.reviewer_note,
+                        "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
                         "created_at": row.created_at.isoformat(),
                     }
                 )
