@@ -566,10 +566,15 @@ function ReviewEvidenceCard({
   const status = readText(review, ["status"]) || "PENDING";
   const toolArgs = objectValue(review, "tool_args");
   const reviewId = readText(review, ["review_id"]) || "Review item";
+  const isPending = status === "PENDING";
+  const existingNote = readText(review, ["reviewer_note"]);
+  const resolvedAt = readText(review, ["resolved_at"]);
+
+  // PENDING items start expanded so the action is immediately visible
+  const [isExpanded, setIsExpanded] = useState(isPending);
   const [reviewerNote, setReviewerNote] = useState("");
   const [activeAction, setActiveAction] = useState<ReviewActionStatus | "">("");
   const [message, setMessage] = useState("");
-  const isPending = status === "PENDING";
   const trimmedNote = reviewerNote.trim();
   const denyDisabled = !trimmedNote || Boolean(activeAction);
   const approveDisabled = Boolean(activeAction);
@@ -603,71 +608,103 @@ function ReviewEvidenceCard({
   }
 
   return (
-    <article className="glass-card rounded-3xl p-5">
-      <div className="grid gap-4 xl:grid-cols-[1fr_auto] xl:items-start">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <EvidenceBadge tone={decisionBadgeTone(status, riskScore)}>{status}</EvidenceBadge>
-            <EvidenceBadge tone="review">{`risk ${riskScore}`}</EvidenceBadge>
-            {riskTypes(review).map((riskType) => <EvidenceBadge key={riskType}>{riskType}</EvidenceBadge>)}
+    <article className="glass-card rounded-3xl overflow-hidden">
+      {/* Collapsed header — always visible */}
+      <button
+        type="button"
+        onClick={() => setIsExpanded((prev) => !prev)}
+        className="w-full p-5 text-left"
+      >
+        <div className="flex items-start gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <EvidenceBadge tone={decisionBadgeTone(status, riskScore)}>{status}</EvidenceBadge>
+              <EvidenceBadge tone="review">{`risk ${riskScore}`}</EvidenceBadge>
+              {riskTypes(review).map((riskType) => <EvidenceBadge key={riskType}>{riskType}</EvidenceBadge>)}
+            </div>
+            <h3 className="mt-3 text-xl font-semibold tracking-[-0.02em]">
+              {readText(review, ["tool_name"]) || "Tool request"} requires human review
+            </h3>
+            <p className="mt-1 text-sm leading-6 text-textSecondary">{readText(review, ["reason"]) || "Policy routed this action to review."}</p>
           </div>
-          <h3 className="mt-3 text-xl font-semibold tracking-[-0.02em]">
-            {readText(review, ["tool_name"]) || "Tool request"} requires human review
-          </h3>
-          <p className="mt-2 text-sm leading-6 text-textSecondary">{readText(review, ["reason"]) || "Policy routed this action to review."}</p>
-        </div>
-        <div className="grid gap-1 text-xs text-textSecondary xl:text-right">
-          <span>{formatTimestamp(readText(review, ["created_at"]))}</span>
-          <span>{readText(review, ["environment"]) || "environment unknown"}</span>
-          <span>{reviewId}</span>
-        </div>
-      </div>
-
-      <div className="mt-5 grid gap-3 lg:grid-cols-3">
-        <ReviewField label="Agent" value={readText(review, ["agent_id"]) || "Unknown agent"} />
-        <ReviewField label="Workflow/session" value={joinParts([readText(review, ["workflow_id"]), readText(review, ["session_id"])]) || "No workflow link"} />
-        <ReviewField label="Requested action" value={readText(review, ["tool_name"]) || "No tool recorded"} />
-      </div>
-      <div className="mt-3 grid gap-3 lg:grid-cols-2">
-        <ReviewEvidenceBlock label="User request" value={readText(review, ["user_query"]) || "No user request captured."} />
-        <ReviewEvidenceBlock label="Tool arguments" value={compactJson(toolArgs)} monospace />
-      </div>
-      {isPending ? (
-        <div className="mt-4 rounded-2xl border border-line bg-white/[0.035] p-4">
-          <label className="block">
-            <span className="text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
-              Reviewer note
-            </span>
-            <textarea
-              value={reviewerNote}
-              onChange={(event) => setReviewerNote(event.target.value)}
-              placeholder="Add decision context. Required for deny."
-              className="mt-2 min-h-24 w-full resize-y rounded-2xl border border-line bg-ink/70 p-3 text-sm leading-6 text-textPrimary outline-none placeholder:text-textSecondary focus:border-accent/50 focus:ring-2 focus:ring-accent/20"
+          <div className="flex shrink-0 items-start gap-3">
+            <div className="grid gap-1 text-right text-xs text-textSecondary">
+              <span>{formatTimestamp(readText(review, ["created_at"]))}</span>
+              <span>{readText(review, ["environment"]) || "—"}</span>
+              <span className="font-mono">{reviewId}</span>
+            </div>
+            <ChevronDown
+              size={18}
+              aria-hidden="true"
+              className={`mt-1 shrink-0 text-textSecondary transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
             />
-          </label>
-          <div className="mt-3 flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={() => submitReviewDecision("APPROVED")}
-              disabled={approveDisabled}
-              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-accent/45 bg-accent/12 px-5 py-2 text-sm font-semibold text-textPrimary transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              <CheckCircle2 size={17} aria-hidden="true" />
-              {activeAction === "APPROVED" ? "Approving..." : "Approve"}
-            </button>
-            <button
-              type="button"
-              onClick={() => submitReviewDecision("DENIED")}
-              disabled={denyDisabled}
-              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-rose-300/45 bg-rose-300/12 px-5 py-2 text-sm font-semibold text-textPrimary transition hover:bg-rose-300/20 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              <XCircle size={17} aria-hidden="true" />
-              {activeAction === "DENIED" ? "Denying..." : "Deny"}
-            </button>
-            {message ? <span className="text-sm text-textSecondary">{message}</span> : null}
           </div>
         </div>
-      ) : null}
+      </button>
+
+      {/* Expandable body */}
+      {isExpanded && (
+        <div className="border-t border-line px-5 pb-5 pt-4">
+          <div className="grid gap-3 lg:grid-cols-3">
+            <ReviewField label="Agent" value={readText(review, ["agent_id"]) || "Unknown agent"} />
+            <ReviewField label="Workflow/session" value={joinParts([readText(review, ["workflow_id"]), readText(review, ["session_id"])]) || "No workflow link"} />
+            <ReviewField label="Requested action" value={readText(review, ["tool_name"]) || "No tool recorded"} />
+          </div>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            <ReviewEvidenceBlock label="User request" value={readText(review, ["user_query"]) || "No user request captured."} />
+            <ReviewEvidenceBlock label="Tool arguments" value={compactJson(toolArgs)} monospace />
+          </div>
+
+          {/* Human review section */}
+          <div className="mt-4 rounded-2xl border border-line bg-white/[0.035] p-4">
+            <span className="text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
+              Human review
+            </span>
+            {isPending ? (
+              <>
+                <label className="mt-3 block">
+                  <textarea
+                    value={reviewerNote}
+                    onChange={(event) => setReviewerNote(event.target.value)}
+                    placeholder="Add decision context. Required for deny."
+                    className="mt-1 min-h-24 w-full resize-y rounded-2xl border border-line bg-ink/70 p-3 text-sm leading-6 text-textPrimary outline-none placeholder:text-textSecondary focus:border-accent/50 focus:ring-2 focus:ring-accent/20"
+                  />
+                </label>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => submitReviewDecision("APPROVED")}
+                    disabled={approveDisabled}
+                    className="inline-flex min-h-11 items-center gap-2 rounded-full border border-accent/45 bg-accent/12 px-5 py-2 text-sm font-semibold text-textPrimary transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <CheckCircle2 size={17} aria-hidden="true" />
+                    {activeAction === "APPROVED" ? "Approving..." : "Approve"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => submitReviewDecision("DENIED")}
+                    disabled={denyDisabled}
+                    className="inline-flex min-h-11 items-center gap-2 rounded-full border border-rose-300/45 bg-rose-300/12 px-5 py-2 text-sm font-semibold text-textPrimary transition hover:bg-rose-300/20 disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <XCircle size={17} aria-hidden="true" />
+                    {activeAction === "DENIED" ? "Denying..." : "Deny"}
+                  </button>
+                  {message ? <span className="text-sm text-textSecondary">{message}</span> : null}
+                </div>
+              </>
+            ) : (
+              <div className="mt-3 grid gap-2">
+                <p className="text-sm text-textPrimary">
+                  {existingNote || <span className="text-textSecondary italic">No reviewer note recorded.</span>}
+                </p>
+                {resolvedAt && (
+                  <p className="text-xs text-textSecondary">{`Resolved ${formatTimestamp(resolvedAt)}`}</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </article>
   );
 }
