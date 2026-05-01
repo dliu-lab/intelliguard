@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -567,11 +567,11 @@ def audit_events(
 
 @app.get("/v1/review-queue")
 def review_queue(
-    status: str = "PENDING",
+    status: Literal["PENDING", "APPROVED", "DENIED", "ALL"] = "PENDING",
     limit: int = 100,
     environment: str = "all",
-    user: dict = Depends(current_user),
-) -> list[dict]:
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
     return store.list_review_queue(
         limit=limit,
         environment=visible_environment(environment, user),

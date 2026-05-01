@@ -1196,8 +1196,6 @@ class GovernanceStore:
             )
             if not status or status == "ALL":
                 pass  # return all statuses
-            elif status == "PENDING":
-                stmt = stmt.where(ReviewQueueItem.status == "PENDING")
             else:
                 stmt = stmt.where(ReviewQueueItem.status == status)
 
