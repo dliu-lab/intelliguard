@@ -1182,7 +1182,7 @@ class GovernanceStore:
                         "tool_name": row.tool_name,
                         "risk_score": row.risk_score,
                         "policy_id": row.policy_id,
-                        "stage": row.stage or (row.metadata_json or {}).get("stage"),
+                        "stage": row.stage if row.stage is not None else (row.metadata_json or {}).get("stage"),
                         "policy_snapshot_hash": (row.metadata_json or {}).get("policy_snapshot_hash"),
                         "metadata": metadata,
                         "created_at": row.created_at.isoformat(),

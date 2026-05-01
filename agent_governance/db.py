@@ -40,6 +40,13 @@ def ensure_runtime_schema(engine) -> None:
         if "password_hash" not in columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE users ADD COLUMN password_hash TEXT"))
+    if "audit_events" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("audit_events")}
+        with engine.begin() as connection:
+            if "policy_id" not in cols:
+                connection.execute(text("ALTER TABLE audit_events ADD COLUMN policy_id VARCHAR(64)"))
+            if "stage" not in cols:
+                connection.execute(text("ALTER TABLE audit_events ADD COLUMN stage VARCHAR(40)"))
     if "user_environment_access" in inspector.get_table_names():
         with engine.begin() as connection:
             connection.execute(
