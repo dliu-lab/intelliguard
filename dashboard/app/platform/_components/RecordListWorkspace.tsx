@@ -817,7 +817,7 @@ export function ReviewQueueWorkspace({
         <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
           <div>
             <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Review queue</span>
-            <h3 className="mt-2 text-xl font-semibold">No pending reviews</h3>
+            <h3 className="mt-2 text-xl font-semibold">No reviews yet</h3>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-textSecondary">
               Run a review-triggering scenario such as "Find customers in Melbourne and include their emails" to create a reviewer decision item.
             </p>

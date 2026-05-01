@@ -144,7 +144,7 @@ export function listSessions(token: string, limit = 50, environment = "all") {
 }
 
 export function listReviewQueue(token: string, limit = 100, environment = "all") {
-  return request<ApiRecord[]>(withParams("/v1/review-queue", { limit, environment }), {
+  return request<ApiRecord[]>(withParams("/v1/review-queue", { limit, environment, status: "ALL" }), {
     headers: authHeaders(token),
   });
 }
