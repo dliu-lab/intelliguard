@@ -10,10 +10,39 @@ policy decisions, and visualizes each agent run as an auditable workflow trace.
 - Python governance SDK for agent frameworks and custom agents.
 - FastAPI governance API for microservices and non-Python systems.
 - Postgres audit store, review queue, customer demo data, and workflow events.
-- React dashboard with an n8n-style workflow trace using React Flow.
+- React dashboard with an n8n-style workflow trace and workflow designer.
 - CLI demo for a customer support agent using governed tools.
 - Agent marketplace and tool marketplace with permission grants.
 - Multi-agent workflow grouping with lead and sub-agent traces.
+
+## Tech Stack
+
+Backend and governance runtime:
+
+- Python 3.11+ package, built into a Python 3.12 API container.
+- FastAPI service served by Uvicorn.
+- Pydantic v2 response and request models.
+- SQLAlchemy 2 with `psycopg` for persistence.
+- PostgreSQL 16 in Docker Compose for audit events, review queue, workflow traces,
+  runtime policies, agents, tools, evaluators, guardrails, and knowledge bases.
+- YAML policy loading through PyYAML.
+- Pytest and Ruff for backend verification and linting.
+
+Dashboard:
+
+- Next.js App Router with TypeScript.
+- React 19 UI components.
+- Tailwind CSS for styling and design tokens.
+- Lucide React icons.
+- Framer Motion for animated landing-page interactions.
+- Static export through `next build`, served from Nginx in the dashboard container.
+
+Local and container runtime:
+
+- Docker Compose runs Postgres, the FastAPI API, and the static dashboard.
+- Root `npm` scripts proxy to the dashboard package for local frontend commands.
+- Dashboard API calls use `NEXT_PUBLIC_API_BASE_URL`, defaulting to
+  `http://localhost:8000`.
 
 ## Run With Docker
 
@@ -96,3 +125,32 @@ curl http://localhost:8000/v1/workflows
 ## Workflow Spec
 
 See [docs/workflow-spec.md](docs/workflow-spec.md).
+
+## Naming Conventions
+
+Use stable, lowercase identifiers so agents, workflow graphs, audit evidence, and
+policy bindings stay predictable across the API and dashboard.
+
+| Field | Convention | Example |
+|---|---|---|
+| `agent_id` | kebab-case | `banking-auth-gate-agent` |
+| `workflow_definition_id` | kebab-case | `banking-account-inquiry` |
+| `tool_name` | snake_case | `get_customer_profile` |
+| `step_id` / `node_id` | snake_case | `auth_gate` |
+| `domain` | snake_case | `banking_accounts` |
+| `environment` | lowercase token using letters, numbers, hyphens, or underscores | `demo`, `pre_prod` |
+| `agent_type` / `node_type` | shared controlled vocabulary | `lead_agent`, `gate_agent`, `task_agent` |
+| `version` | semver-style | `1.0.0` |
+
+Shared `agent_type` / `node_type` values:
+
+- `lead_agent`
+- `gate_agent`
+- `task_agent`
+- `review_agent`
+- `approval_agent`
+- `terminal_agent`
+
+Workflow node type is derived from the registered agent type. If the same runtime
+needs a different workflow role, register a separate configured agent identity or
+version rather than overriding the type inside a workflow.

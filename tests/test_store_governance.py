@@ -224,3 +224,63 @@ def test_audit_event_records_policy_id_and_stage(store: GovernanceStore) -> None
     event = next(e for e in events if e["event_id"] == event_id)
     assert event["policy_id"] == "pol_demo_001"
     assert event["stage"] == "pre_tool"
+
+
+def test_workflow_definition_normalizes_graph_and_validates_node_type(
+    store: GovernanceStore,
+) -> None:
+    definition = store.upsert_workflow_definition(
+        {
+            "workflow_definition_id": "test-domain-graph",
+            "name": "Test Domain Graph",
+            "description": "Graph validation test.",
+            "owner": "Tests",
+            "environment": "demo",
+            "domain": "banking",
+            "lead_agent_id": "banking-lead-agent",
+            "steps": [
+                {
+                    "step_id": "auth_gate",
+                    "label": "Auth",
+                    "agent_id": "banking-auth-gate-agent",
+                    "node_type": "gate_agent",
+                    "activation_policy": "always",
+                    "activation_stage": "pre_route",
+                    "task": "Authenticate account scope.",
+                }
+            ],
+        }
+    )
+
+    assert definition["domain"] == "banking"
+    assert definition["graph_version_hash"]
+    assert definition["nodes"][0]["node_type"] == "lead_agent"
+    assert definition["nodes"][1]["node_type"] == "gate_agent"
+    assert definition["edges"][0]["from_node_id"] == "lead"
+
+    try:
+        store.upsert_workflow_definition(
+            {
+                "workflow_definition_id": "bad-domain-graph",
+                "name": "Bad Domain Graph",
+                "description": "Graph validation test.",
+                "owner": "Tests",
+                "environment": "demo",
+                "domain": "banking",
+                "lead_agent_id": "banking-lead-agent",
+                "steps": [
+                    {
+                        "step_id": "bad_auth",
+                        "label": "Bad Auth",
+                        "agent_id": "banking-auth-gate-agent",
+                        "node_type": "task_agent",
+                        "activation_policy": "always",
+                        "activation_stage": "pre_route",
+                    }
+                ],
+            }
+        )
+    except ValueError as error:
+        assert "registered agent" in str(error)
+    else:
+        raise AssertionError("Expected workflow graph validation to reject mismatched node_type")

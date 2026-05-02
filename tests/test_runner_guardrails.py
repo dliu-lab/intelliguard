@@ -9,6 +9,7 @@ from examples.review_trigger_workflow import (
 from agent_governance.runner import GovernedToolRunner
 from agent_governance.policy import PolicyConfig
 from agent_governance.models import new_id
+from agent_governance.multi_agent import run_customer_support_workflow
 from agent_governance.tools import build_customer_tool_registry
 
 
@@ -211,6 +212,29 @@ def test_review_trigger_workflow_script_creates_review_item(store):
     assert review["status"] == "PENDING"
     assert "PII_EXPOSURE" in review["risk_types"]
     assert review["tool_args"]["filter"]["include_email"] is True
+
+
+def test_multi_agent_workflow_records_lead_routing_decision(store):
+    workflow_definition = store.get_workflow_definition("banking-account-inquiry")
+    result = run_customer_support_workflow(
+        database_url=store.session_factory.kw["bind"].url.render_as_string(hide_password=False),
+        policy_path="policies/policy.yaml",
+        tools=build_customer_tool_registry(),
+        query="I need to check my bank account.",
+        workflow_definition=workflow_definition,
+    )
+
+    events = store.list_audit_events(limit=50, environment="demo")
+    routing_event = next(
+        item
+        for item in events
+        if item["workflow_id"] == result["workflow_id"]
+        and item["decision"] == "LEAD_ROUTING_DECISION"
+    )
+    assert routing_event["stage"] == "pre_route"
+    assert routing_event["metadata"]["workflow_definition_id"] == "banking-account-inquiry"
+    assert "auth_gate" in routing_event["metadata"]["selected_node_ids"]
+    assert routing_event["metadata"]["handoff_edges_used"]
 
 
 def test_review_trigger_workflow_cli_database_url_helpers(monkeypatch):

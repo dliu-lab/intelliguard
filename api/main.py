@@ -16,6 +16,7 @@ from agent_governance.runner import GovernedToolRunner
 from agent_governance.settings import load_settings
 from agent_governance.store import GovernanceStore
 from agent_governance.tools import build_customer_tool_registry
+from agent_governance.workflow_graph import WorkflowGraphError
 
 
 settings = load_settings()
@@ -104,9 +105,15 @@ class WorkflowDefinitionRequest(BaseModel):
     description: str = ""
     owner: str = "Unassigned"
     environment: str = "demo"
+    domain: str = "general"
     lead_agent_id: str
     trigger_type: str = "manual"
     steps: list[dict[str, Any]] = Field(default_factory=list)
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, Any]] = Field(default_factory=list)
+    policy_bindings: dict[str, Any] = Field(default_factory=dict)
+    review_rules: dict[str, Any] = Field(default_factory=dict)
+    graph_version_hash: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -460,9 +467,12 @@ def create_workflow_definition(
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     require_environment_access(user, request.environment, "workflow:create")
-    if not request.steps:
-        raise HTTPException(status_code=400, detail="Workflow definition needs at least one step")
-    return store.upsert_workflow_definition(request.model_dump())
+    if not request.steps and not request.nodes:
+        raise HTTPException(status_code=400, detail="Workflow definition needs at least one node")
+    try:
+        return store.upsert_workflow_definition(request.model_dump())
+    except WorkflowGraphError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.post("/v1/agents/{agent_id}/tool-grants")

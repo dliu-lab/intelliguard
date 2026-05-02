@@ -14,11 +14,12 @@ import {
   type ApiRecord,
   type PlatformData,
 } from "@/lib/api";
-import { ComponentRow, JsonBuilder, ResourceGrid } from "./shared";
+import { ComponentRow, JsonBuilder, PlatformSurface, ResourceGrid } from "./shared";
 import { SelectedAgentModal } from "./SelectedAgentModal";
 import type { BackendComponentKey } from "./types";
 import {
   agentVersion,
+  agentDomain,
   countUnique,
   formatCount,
   formatTimestamp,
@@ -33,7 +34,6 @@ import {
 export function ControlPlaneWorkspace({
   activeComponent,
   data,
-  dataStatus,
   onRefresh,
   onSelect,
 }: {
@@ -175,6 +175,7 @@ export function ControlPlaneWorkspace({
                       readText(agent, ["purpose"]),
                       readText(agent, ["owner"]),
                       readText(agent, ["environment"]),
+                      agentDomain(agent),
                       readText(agent, ["agent_type"]),
                       `${data.agentAssignmentCounts[String(agent.agent_id || "")]?.guardrails || 0} guardrails`,
                       `${data.agentAssignmentCounts[String(agent.agent_id || "")]?.evaluators || 0} evaluators`,
@@ -207,15 +208,13 @@ export function ControlPlaneWorkspace({
 
       <div className="glass-card overflow-hidden rounded-3xl">
         <div className="border-b border-line px-5 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h3 className="text-base font-semibold">Control Plane</h3>
-            <div className="flex gap-2 overflow-x-auto pb-1">
+          <div className="flex gap-2 overflow-x-auto pb-1">
             {controlTabs.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => selectTab(item.id)}
-                className={`inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-accent/40 ${
+                className={`inline-flex min-h-11 shrink-0 items-center gap-2 rounded-2xl border px-4 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-accent/40 ${
                   tab === item.id
                     ? "border-accent/45 bg-accent text-ink"
                     : "border-line bg-white/[0.04] text-textPrimary hover:border-accent/40 hover:bg-accent/10"
@@ -227,142 +226,148 @@ export function ControlPlaneWorkspace({
                 ) : null}
               </button>
             ))}
-            </div>
           </div>
         </div>
 
         <div className="p-5">
           {tab === "agents" ? (
             <div className="grid gap-5">
-              <section>
-                <div className="flex flex-wrap items-start justify-between gap-4">
+              <PlatformSurface tone="emerald">
+                <div className="grid gap-5 xl:grid-cols-[minmax(0,0.8fr)_minmax(360px,1.2fr)] xl:items-end">
                   <div>
                     <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
                       Agent onboarding
                     </span>
+                    <h4 className="mt-2 text-xl font-semibold tracking-[-0.02em] text-textPrimary">
+                      Register governed identities
+                    </h4>
                     <p className="mt-2 text-sm leading-6 text-textSecondary">
-                      Register governed agent identities from a template or a checked-in JSON contract.
+                      Start from the domain-aware template or import a checked-in JSON contract. Agent domain, type, and controls become the source of truth for workflow designer review.
                     </p>
                   </div>
-                </div>
 
-                <div className="mt-5 grid gap-3 lg:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAgentJson(templateJson("agent"));
-                      setShowAgentBuilder(true);
-                      }}
-                    className={`rounded-2xl border p-4 text-left transition hover:border-accent/45 hover:bg-accent/10 ${
-                      showAgentBuilder ? "border-accent/45 bg-accent/10" : "border-line bg-white/[0.035]"
-                    }`}
-                  >
-                    <span className="inline-grid h-10 w-10 place-items-center rounded-xl border border-accent/25 bg-accent/10 text-accent">
-                      <FileJson size={18} aria-hidden="true" />
-                    </span>
-                    <strong className="ml-3 align-middle">Register from Template</strong>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => agentImportInputRef.current?.click()}
-                    className="rounded-2xl border border-line bg-white/[0.035] p-4 text-left transition hover:border-accent/45 hover:bg-accent/10"
-                  >
-                    <span className="inline-grid h-10 w-10 place-items-center rounded-xl border border-accent/25 bg-accent/10 text-accent">
-                      <UploadCloud size={18} aria-hidden="true" />
-                    </span>
-                    <strong className="ml-3 align-middle">Import JSON</strong>
-                  </button>
-                  <input
-                    ref={agentImportInputRef}
-                    className="sr-only"
-                    type="file"
-                    accept="application/json,.json"
-                    onChange={importAgentJson}
-                  />
-                </div>
-
-                {showAgentBuilder ? (
-                  <div className="mt-5">
-                    <JsonBuilder
-                      endpoint="/v1/agents"
-                      json={agentJson}
-                      onChange={setAgentJson}
-                      onCancel={() => {
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => {
                         setAgentJson(templateJson("agent"));
-                        setShowAgentBuilder(false);
+                        setShowAgentBuilder(true);
                       }}
-                      onReset={() => setAgentJson(templateJson("agent"))}
-                      onSubmit={(event) => submitJson(event, "Agent", agentJson, createAgent)}
-                      submitLabel="Register Agent"
-                      title="Agent registration"
+                      className={`rounded-2xl border p-4 text-left transition hover:border-accent/45 hover:bg-accent/10 ${
+                        showAgentBuilder ? "border-accent/45 bg-accent/10" : "border-line bg-ink/45"
+                      }`}
+                    >
+                      <span className="inline-grid h-10 w-10 place-items-center rounded-xl border border-accent/25 bg-accent/10 text-accent">
+                        <FileJson size={18} aria-hidden="true" />
+                      </span>
+                      <strong className="ml-3 align-middle">Register from Template</strong>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => agentImportInputRef.current?.click()}
+                      className="rounded-2xl border border-line bg-ink/45 p-4 text-left transition hover:border-accent/45 hover:bg-accent/10"
+                    >
+                      <span className="inline-grid h-10 w-10 place-items-center rounded-xl border border-accent/25 bg-accent/10 text-accent">
+                        <UploadCloud size={18} aria-hidden="true" />
+                      </span>
+                      <strong className="ml-3 align-middle">Import JSON</strong>
+                    </button>
+                    <input
+                      ref={agentImportInputRef}
+                      className="sr-only"
+                      type="file"
+                      accept="application/json,.json"
+                      onChange={importAgentJson}
                     />
                   </div>
-                ) : null}
-              </section>
+                </div>
+              </PlatformSurface>
 
-              <section className="border-t border-line pt-5">
-                <div className="flex flex-wrap items-start justify-between gap-4">
+              {showAgentBuilder ? (
+                <JsonBuilder
+                  endpoint="/v1/agents"
+                  json={agentJson}
+                  onChange={setAgentJson}
+                  onCancel={() => {
+                    setAgentJson(templateJson("agent"));
+                    setShowAgentBuilder(false);
+                  }}
+                  onReset={() => setAgentJson(templateJson("agent"))}
+                  onSubmit={(event) => submitJson(event, "Agent", agentJson, createAgent)}
+                  submitLabel="Register Agent"
+                  title="Agent registration"
+                />
+              ) : null}
+
+              <section className="grid gap-5 xl:grid-cols-[minmax(290px,0.34fr)_minmax(0,1fr)]">
+                <PlatformSurface tone="cyan">
                   <div>
                     <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
                       Agent harness
                     </span>
+                    <h4 className="mt-2 text-xl font-semibold tracking-[-0.02em] text-textPrimary">
+                      Govern registered agents
+                    </h4>
                     <p className="mt-2 text-sm leading-6 text-textSecondary">
                       Select an identity, then govern tool access, guardrails, evaluators, and knowledge access.
                     </p>
                   </div>
-                  <div className="flex flex-wrap gap-2 text-sm text-textSecondary">
-                    <span className="rounded-xl border border-line bg-ink/60 px-3 py-2">
-                      <strong className="text-textPrimary">{data.agents.length}</strong> agents
-                    </span>
-                    <span className="rounded-xl border border-line bg-ink/60 px-3 py-2">
-                      <strong className="text-textPrimary">{countUnique(data.agents, "environment")}</strong>{" "}
-                      environments
-                    </span>
-                    <span className="rounded-xl border border-line bg-ink/60 px-3 py-2">
-                      <strong className="text-textPrimary">{sumAgentToolGrants(data.agents)}</strong> tool grants
-                    </span>
+                  <div className="mt-5 grid gap-3 text-sm text-textSecondary">
+                    <div className="rounded-2xl border border-line bg-ink/45 p-4">
+                      <strong className="text-2xl text-textPrimary">{data.agents.length}</strong>
+                      <p className="mt-1">registered agents</p>
+                    </div>
+                    <div className="rounded-2xl border border-line bg-ink/45 p-4">
+                      <strong className="text-2xl text-textPrimary">{countUnique(data.agents, "environment")}</strong>
+                      <p className="mt-1">environments</p>
+                    </div>
+                    <div className="rounded-2xl border border-line bg-ink/45 p-4">
+                      <strong className="text-2xl text-textPrimary">{sumAgentToolGrants(data.agents)}</strong>
+                      <p className="mt-1">tool grants</p>
+                    </div>
                   </div>
-                </div>
+                </PlatformSurface>
 
-                <label className="mt-5 flex items-center gap-3 rounded-2xl border border-line bg-ink/65 px-4 py-3 text-sm text-textSecondary">
-                  <Search size={17} aria-hidden="true" />
-                  <input
-                    className="w-full bg-transparent text-textPrimary outline-none placeholder:text-textSecondary"
-                    placeholder="Search agents..."
-                    value={agentSearch}
-                    onChange={(event) => setAgentSearch(event.target.value)}
-                  />
-                </label>
+                <section className="rounded-3xl border border-line bg-white/[0.035] p-5">
+                  <label className="flex items-center gap-3 rounded-2xl border border-line bg-ink/65 px-4 py-3 text-sm text-textSecondary">
+                    <Search size={17} aria-hidden="true" />
+                    <input
+                      className="w-full bg-transparent text-textPrimary outline-none placeholder:text-textSecondary"
+                      placeholder="Search agents by name, domain, type, control, or tool..."
+                      value={agentSearch}
+                      onChange={(event) => setAgentSearch(event.target.value)}
+                    />
+                  </label>
 
-                <div className="mt-4 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-                  {filteredAgents.map((agent) => {
-                    const agentId = String(agent.agent_id || "");
-                    const toolCount = getAgentTools(agent).length;
-                    const createdAt = formatTimestamp(readText(agent, ["created_at"]));
-                    const assignmentCounts = data.agentAssignmentCounts[agentId] || {
-                      guardrails: 0,
-                      evaluators: 0,
-                      knowledge: 0,
-                    };
-                    const countPills = [
-                      { label: formatCount(toolCount, "tool"), tone: "agent-count-tool", visible: toolCount > 0 },
-                      {
-                        label: formatCount(assignmentCounts.guardrails, "guardrail"),
-                        tone: "agent-count-guardrail",
-                        visible: assignmentCounts.guardrails > 0,
-                      },
-                      {
-                        label: formatCount(assignmentCounts.evaluators, "evaluator"),
-                        tone: "agent-count-evaluator",
-                        visible: assignmentCounts.evaluators > 0,
-                      },
-                      {
-                        label: formatCount(assignmentCounts.knowledge, "KB"),
-                        tone: "agent-count-knowledge",
-                        visible: assignmentCounts.knowledge > 0,
-                      },
-                    ];
+                  <div className="mt-4 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                    {filteredAgents.map((agent) => {
+                      const agentId = String(agent.agent_id || "");
+                      const toolCount = getAgentTools(agent).length;
+                      const createdAt = formatTimestamp(readText(agent, ["created_at"]));
+                      const assignmentCounts = data.agentAssignmentCounts[agentId] || {
+                        guardrails: 0,
+                        evaluators: 0,
+                        knowledge: 0,
+                      };
+                      const countPills = [
+                        { label: formatCount(toolCount, "tool"), tone: "agent-count-tool", visible: toolCount > 0 },
+                        {
+                          label: formatCount(assignmentCounts.guardrails, "guardrail"),
+                          tone: "agent-count-guardrail",
+                          visible: assignmentCounts.guardrails > 0,
+                        },
+                        {
+                          label: formatCount(assignmentCounts.evaluators, "evaluator"),
+                          tone: "agent-count-evaluator",
+                          visible: assignmentCounts.evaluators > 0,
+                        },
+                        {
+                          label: formatCount(assignmentCounts.knowledge, "KB"),
+                          tone: "agent-count-knowledge",
+                          visible: assignmentCounts.knowledge > 0,
+                        },
+                      ];
 
                     return (
                       <article
@@ -442,6 +447,11 @@ export function ControlPlaneWorkspace({
                               {readText(agent, ["environment"])}
                             </span>
                           ) : null}
+                          {agentDomain(agent) ? (
+                            <span className="rounded-full border border-line bg-ink/60 px-2.5 py-1">
+                              {agentDomain(agent)}
+                            </span>
+                          ) : null}
                           {readText(agent, ["agent_type"]) ? (
                             <span className="rounded-full border border-line bg-ink/60 px-2.5 py-1">
                               {readText(agent, ["agent_type"])}
@@ -464,7 +474,8 @@ export function ControlPlaneWorkspace({
                   {!filteredAgents.length ? (
                     <ComponentRow title="No agents found" detail="Adjust the search or register a new agent." />
                   ) : null}
-                </div>
+                  </div>
+                </section>
               </section>
             </div>
           ) : null}

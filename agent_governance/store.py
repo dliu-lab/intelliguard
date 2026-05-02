@@ -33,6 +33,11 @@ from agent_governance.models import (
     new_id,
     utc_now,
 )
+from agent_governance.workflow_graph import (
+    WorkflowGraphError,
+    normalize_agent_type,
+    normalize_workflow_graph,
+)
 
 
 DEFAULT_AGENT_PERMISSIONS = {
@@ -299,7 +304,7 @@ class GovernanceStore:
                 identity = AgentIdentity(
                     agent_id=agent_id,
                     display_name=agent_id.replace("-", " ").title(),
-                    agent_type="custom_agent",
+                    agent_type="task_agent",
                     owner="Unassigned",
                     environment="local",
                     purpose="Auto-registered agent. Review and grant permissions before production use.",
@@ -346,7 +351,7 @@ class GovernanceStore:
                 identity = AgentIdentity(
                     agent_id=payload["agent_id"],
                     display_name=payload["display_name"],
-                    agent_type=payload["agent_type"],
+                    agent_type=normalize_agent_type(payload["agent_type"]),
                     owner=payload["owner"],
                     environment=payload["environment"],
                     purpose=payload["purpose"],
@@ -356,7 +361,7 @@ class GovernanceStore:
                 db.add(identity)
             else:
                 identity.display_name = payload["display_name"]
-                identity.agent_type = payload["agent_type"]
+                identity.agent_type = normalize_agent_type(payload["agent_type"])
                 identity.owner = payload["owner"]
                 identity.environment = payload["environment"]
                 identity.purpose = payload["purpose"]
@@ -410,6 +415,34 @@ class GovernanceStore:
 
     def upsert_workflow_definition(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
+            agent_ids = {
+                str(payload["lead_agent_id"]),
+                *[
+                    str(step.get("agent_id"))
+                    for step in payload.get("steps", [])
+                    if isinstance(step, dict) and step.get("agent_id")
+                ],
+                *[
+                    str(node.get("agent_id"))
+                    for node in payload.get("nodes", [])
+                    if isinstance(node, dict) and node.get("agent_id")
+                ],
+            }
+            agent_types_by_id: dict[str, str] = {}
+            for agent_id in agent_ids:
+                identity = db.get(AgentIdentity, agent_id)
+                if not identity:
+                    raise WorkflowGraphError(f"Unknown workflow agent_id '{agent_id}'.")
+                agent_types_by_id[agent_id] = identity.agent_type
+
+            graph = normalize_workflow_graph(payload=payload, agent_types_by_id=agent_types_by_id)
+            metadata = {
+                **(payload.get("metadata") or {}),
+                "domain": payload.get("domain")
+                or (payload.get("metadata") or {}).get("domain")
+                or "general",
+                "graph_version_hash": graph["graph_version_hash"],
+            }
             definition = db.get(WorkflowDefinition, payload["workflow_definition_id"])
             if not definition:
                 definition = WorkflowDefinition(
@@ -418,10 +451,16 @@ class GovernanceStore:
                     description=payload["description"],
                     owner=payload["owner"],
                     environment=payload["environment"],
+                    domain=metadata["domain"],
                     lead_agent_id=payload["lead_agent_id"],
                     trigger_type=payload.get("trigger_type") or "manual",
                     steps=payload.get("steps") or [],
-                    metadata_json=payload.get("metadata") or {},
+                    nodes=graph["nodes"],
+                    edges=graph["edges"],
+                    policy_bindings=graph["policy_bindings"],
+                    review_rules=graph["review_rules"],
+                    graph_version_hash=graph["graph_version_hash"],
+                    metadata_json=metadata,
                 )
                 db.add(definition)
             else:
@@ -429,10 +468,16 @@ class GovernanceStore:
                 definition.description = payload["description"]
                 definition.owner = payload["owner"]
                 definition.environment = payload["environment"]
+                definition.domain = metadata["domain"]
                 definition.lead_agent_id = payload["lead_agent_id"]
                 definition.trigger_type = payload.get("trigger_type") or "manual"
                 definition.steps = payload.get("steps") or []
-                definition.metadata_json = payload.get("metadata") or {}
+                definition.nodes = graph["nodes"]
+                definition.edges = graph["edges"]
+                definition.policy_bindings = graph["policy_bindings"]
+                definition.review_rules = graph["review_rules"]
+                definition.graph_version_hash = graph["graph_version_hash"]
+                definition.metadata_json = metadata
                 definition.updated_at = utc_now()
             db.flush()
             return self._workflow_definition_to_dict(definition)
@@ -1181,8 +1226,12 @@ class GovernanceStore:
                         "tool_name": row.tool_name,
                         "risk_score": row.risk_score,
                         "policy_id": row.policy_id,
-                        "stage": row.stage if row.stage is not None else (row.metadata_json or {}).get("stage"),
-                        "policy_snapshot_hash": (row.metadata_json or {}).get("policy_snapshot_hash"),
+                        "stage": row.stage
+                        if row.stage is not None
+                        else (row.metadata_json or {}).get("stage"),
+                        "policy_snapshot_hash": (row.metadata_json or {}).get(
+                            "policy_snapshot_hash"
+                        ),
                         "metadata": metadata,
                         "created_at": row.created_at.isoformat(),
                     }
@@ -1190,14 +1239,13 @@ class GovernanceStore:
             return events
 
     def list_review_queue(
-        self, limit: int = 100, environment: str | list[str] | None = None, status: str | None = None
+        self,
+        limit: int = 100,
+        environment: str | list[str] | None = None,
+        status: str | None = None,
     ) -> list[dict[str, Any]]:
         with self.session() as db:
-            stmt = (
-                select(ReviewQueueItem)
-                .order_by(desc(ReviewQueueItem.created_at))
-                .limit(limit)
-            )
+            stmt = select(ReviewQueueItem).order_by(desc(ReviewQueueItem.created_at)).limit(limit)
             if not status or status == "ALL":
                 pass  # return all statuses
             else:
@@ -1432,9 +1480,15 @@ class GovernanceStore:
             "description": definition.description,
             "owner": definition.owner,
             "environment": definition.environment,
+            "domain": definition.domain,
             "lead_agent_id": definition.lead_agent_id,
             "trigger_type": definition.trigger_type,
             "steps": definition.steps or [],
+            "nodes": definition.nodes or [],
+            "edges": definition.edges or [],
+            "policy_bindings": definition.policy_bindings or {},
+            "review_rules": definition.review_rules or {},
+            "graph_version_hash": definition.graph_version_hash,
             "metadata": definition.metadata_json or {},
             "created_at": definition.created_at.isoformat(),
             "updated_at": definition.updated_at.isoformat(),

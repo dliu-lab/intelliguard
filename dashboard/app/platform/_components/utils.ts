@@ -2,6 +2,55 @@ import type { ApiRecord } from "@/lib/api";
 import { controlTemplates, workflowDefinitionTemplate } from "./config";
 import type { BackendComponentKey, ControlTemplateKey, WorkspaceView } from "./types";
 
+export const AGENT_TYPE_VALUES = [
+  "lead_agent",
+  "gate_agent",
+  "task_agent",
+  "review_agent",
+  "approval_agent",
+  "terminal_agent",
+] as const;
+
+const KEBAB_CASE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const SNAKE_CASE_RE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+const LOWER_TOKEN_RE = /^[a-z][a-z0-9_-]*$/;
+const SEMVERISH_RE = /^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/;
+
+export function validateKebabCase(value: string, label: string) {
+  if (!KEBAB_CASE_RE.test(value.trim())) {
+    return `${label} must use kebab-case, for example banking-account-inquiry.`;
+  }
+  return undefined;
+}
+
+export function validateSnakeCase(value: string, label: string) {
+  if (!SNAKE_CASE_RE.test(value.trim())) {
+    return `${label} must use snake_case, for example banking_accounts.`;
+  }
+  return undefined;
+}
+
+export function validateLowerToken(value: string, label: string) {
+  if (!LOWER_TOKEN_RE.test(value.trim())) {
+    return `${label} must start with a lowercase letter and use only lowercase letters, numbers, hyphens, or underscores.`;
+  }
+  return undefined;
+}
+
+export function validateAgentType(value: string) {
+  if (!AGENT_TYPE_VALUES.includes(value.trim() as typeof AGENT_TYPE_VALUES[number])) {
+    return `Agent Type must be one of: ${AGENT_TYPE_VALUES.join(", ")}.`;
+  }
+  return undefined;
+}
+
+export function validateVersion(value: string) {
+  if (!SEMVERISH_RE.test(value.trim())) {
+    return "Agent Version must use semantic versioning, for example 1.0.0.";
+  }
+  return undefined;
+}
+
 export function readText(record: ApiRecord, keys: string[]) {
   for (const key of keys) {
     const value = record[key];
@@ -110,6 +159,7 @@ export function agentProfileForm(agent: ApiRecord) {
     display_name: readText(agent, ["display_name"]) || "",
     owner: readText(agent, ["owner"]) || "",
     environment: readText(agent, ["environment"]) || "",
+    domain: String(metadata.domain || metadata.data_domain || ""),
     agent_type: readText(agent, ["agent_type"]) || "",
     purpose: readText(agent, ["purpose"]) || "",
     version: String(metadata.version || metadata.agent_version || "1.0.0"),
@@ -119,6 +169,12 @@ export function agentProfileForm(agent: ApiRecord) {
     vault_api_key: String(vault.api_key || vault.apiKey || ""),
     metadata: JSON.stringify(metadata, null, 2),
   };
+}
+export function agentDomain(agent: ApiRecord) {
+  const metadata = agent.metadata && typeof agent.metadata === "object" && !Array.isArray(agent.metadata)
+    ? (agent.metadata as Record<string, unknown>)
+    : {};
+  return String(metadata.domain || metadata.data_domain || "");
 }
 export function getAgentTools(agent: ApiRecord) {
   const permissions = agent.permissions;

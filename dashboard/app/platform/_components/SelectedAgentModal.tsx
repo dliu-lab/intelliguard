@@ -21,7 +21,18 @@ import {
 } from "@/lib/api";
 import { ComponentRow } from "./shared";
 import type { AgentModalTab } from "./types";
-import { agentProfileForm, getAgentTools, isErrorMessage, joinParts, readText } from "./utils";
+import {
+  AGENT_TYPE_VALUES,
+  agentProfileForm,
+  getAgentTools,
+  isErrorMessage,
+  joinParts,
+  readText,
+  validateAgentType,
+  validateLowerToken,
+  validateSnakeCase,
+  validateVersion,
+} from "./utils";
 
 type AssignmentItem = {
   id: string;
@@ -200,6 +211,15 @@ export function SelectedAgentModal({
     event.preventDefault();
 
     await runAction(async (token) => {
+      const validationError =
+        validateLowerToken(form.environment, "Environment")
+        || validateSnakeCase(form.domain, "Domain")
+        || validateAgentType(form.agent_type)
+        || validateVersion(form.version);
+      if (validationError) {
+        throw new Error(validationError);
+      }
+
       let metadata: Record<string, unknown>;
       try {
         metadata = JSON.parse(form.metadata || "{}") as Record<string, unknown>;
@@ -223,6 +243,8 @@ export function SelectedAgentModal({
 
       metadata = {
         ...metadata,
+        domain: form.domain.trim() || "general",
+        data_domain: form.domain.trim() || "general",
         version: form.version.trim() || "1.0.0",
         llm: {
           gateway_endpoint: form.llm_gateway_endpoint.trim() || "/llm/v1",
@@ -480,12 +502,25 @@ export function SelectedAgentModal({
                       onChange={(event) => setForm({ ...form, environment: event.target.value })}
                     />
                   </BuilderField>
-                  <BuilderField label="Agent Type">
+                  <BuilderField label="Domain">
                     <input
+                      className="field-input"
+                      value={form.domain}
+                      onChange={(event) => setForm({ ...form, domain: event.target.value })}
+                    />
+                  </BuilderField>
+                  <BuilderField label="Agent Type">
+                    <select
                       className="field-input"
                       value={form.agent_type}
                       onChange={(event) => setForm({ ...form, agent_type: event.target.value })}
-                    />
+                    >
+                      {AGENT_TYPE_VALUES.map((agentType) => (
+                        <option key={agentType} value={agentType}>
+                          {agentType}
+                        </option>
+                      ))}
+                    </select>
                   </BuilderField>
                   <BuilderField label="Agent Version">
                     <input

@@ -22,6 +22,7 @@ export type ApiRecord = Record<string, unknown>;
 export type PlatformData = {
   agents: ApiRecord[];
   agentAssignmentCounts: Record<string, { guardrails: number; evaluators: number; knowledge: number }>;
+  agentAssignments: Record<string, { guardrails: ApiRecord[]; evaluators: ApiRecord[]; knowledge: ApiRecord[] }>;
   workflowDefinitions: ApiRecord[];
   workflows: ApiRecord[];
   workflowDetails: ApiRecord[];
@@ -34,6 +35,8 @@ export type PlatformData = {
   tools: ApiRecord[];
   environments: string[];
 };
+
+type AgentAssignments = { guardrails: ApiRecord[]; evaluators: ApiRecord[]; knowledge: ApiRecord[] };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 const SESSION_STORAGE_KEY = "governance-session";
@@ -381,7 +384,7 @@ export async function platformOverview(token: string, environment = "all"): Prom
     agents.map(async (agent) => {
       const agentId = typeof agent.agent_id === "string" ? agent.agent_id : "";
       if (!agentId) {
-        return ["", { guardrails: 0, evaluators: 0, knowledge: 0 }] as const;
+        return ["", { guardrails: [], evaluators: [], knowledge: [] }] as const;
       }
 
       const [guardrails, evaluators, knowledge] = await Promise.all([
@@ -390,14 +393,27 @@ export async function platformOverview(token: string, environment = "all"): Prom
         listAgentKnowledgeBases(token, agentId).catch(() => []),
       ]);
 
-      return [agentId, { guardrails: guardrails.length, evaluators: evaluators.length, knowledge: knowledge.length }] as const;
+      return [agentId, { guardrails, evaluators, knowledge }] as const;
     }),
   );
-  const agentAssignmentCounts = Object.fromEntries(agentAssignmentEntries.filter(([agentId]) => agentId));
+  const agentAssignments = Object.fromEntries(
+    agentAssignmentEntries.filter(([agentId]) => agentId),
+  ) as Record<string, AgentAssignments>;
+  const agentAssignmentCounts = Object.fromEntries(
+    Object.entries(agentAssignments).map(([agentId, assignments]) => [
+      agentId,
+      {
+        guardrails: assignments.guardrails.length,
+        evaluators: assignments.evaluators.length,
+        knowledge: assignments.knowledge.length,
+      },
+    ]),
+  );
 
   return {
     agents,
     agentAssignmentCounts,
+    agentAssignments,
     workflowDefinitions,
     workflows,
     workflowDetails,

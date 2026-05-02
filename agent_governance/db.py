@@ -14,9 +14,11 @@ from agent_governance.models import (
     EvaluatorTemplate,
     GuardrailPolicy,
     SupportCase,
+    WorkflowDefinition,
 )
 from agent_governance.policy import load_policy
 from agent_governance.settings import DEFAULT_DATABASE_URL
+from agent_governance.workflow_graph import workflow_graph_hash
 
 
 def build_engine(database_url: str = DEFAULT_DATABASE_URL):
@@ -44,9 +46,50 @@ def ensure_runtime_schema(engine) -> None:
         cols = {c["name"] for c in inspector.get_columns("audit_events")}
         with engine.begin() as connection:
             if "policy_id" not in cols:
-                connection.execute(text("ALTER TABLE audit_events ADD COLUMN policy_id VARCHAR(64)"))
+                connection.execute(
+                    text("ALTER TABLE audit_events ADD COLUMN policy_id VARCHAR(64)")
+                )
             if "stage" not in cols:
                 connection.execute(text("ALTER TABLE audit_events ADD COLUMN stage VARCHAR(40)"))
+    if "workflow_definitions" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("workflow_definitions")}
+        with engine.begin() as connection:
+            if "domain" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions ADD COLUMN domain VARCHAR(80) DEFAULT 'general'"
+                    )
+                )
+            if "nodes" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions ADD COLUMN nodes JSONB DEFAULT '[]'::jsonb"
+                    )
+                )
+            if "edges" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions ADD COLUMN edges JSONB DEFAULT '[]'::jsonb"
+                    )
+                )
+            if "policy_bindings" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions ADD COLUMN policy_bindings JSONB DEFAULT '{}'::jsonb"
+                    )
+                )
+            if "review_rules" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions ADD COLUMN review_rules JSONB DEFAULT '{}'::jsonb"
+                    )
+                )
+            if "graph_version_hash" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions ADD COLUMN graph_version_hash VARCHAR(64)"
+                    )
+                )
     if "user_environment_access" in inspector.get_table_names():
         with engine.begin() as connection:
             connection.execute(
@@ -157,6 +200,7 @@ def seed_guardrail_defaults(session: Session) -> None:
 def seed_demo_data(session: Session) -> None:
     seed_guardrail_defaults(session)
     seed_agent_identities(session)
+    seed_workflow_definitions(session)
 
     existing = session.scalar(select(Customer).limit(1))
     if existing:
@@ -268,7 +312,7 @@ def seed_agent_identities(session: Session) -> None:
         AgentIdentity(
             agent_id="customer-support-agent",
             display_name="Customer Support Agent",
-            agent_type="support_assistant",
+            agent_type="task_agent",
             owner="Support Operations",
             environment="demo",
             purpose="Answer customer support questions using governed customer data tools.",
@@ -301,7 +345,7 @@ def seed_agent_identities(session: Session) -> None:
         AgentIdentity(
             agent_id="customer-support-lead-agent",
             display_name="Customer Support Lead Agent",
-            agent_type="lead_orchestrator",
+            agent_type="lead_agent",
             owner="Support Operations",
             environment="demo",
             purpose="Plans customer support workflows and delegates work to specialist sub-agents.",
@@ -323,7 +367,7 @@ def seed_agent_identities(session: Session) -> None:
         AgentIdentity(
             agent_id="identity-verification-agent",
             display_name="Identity Verification Agent",
-            agent_type="sub_agent",
+            agent_type="gate_agent",
             owner="Support Operations",
             environment="demo",
             purpose="Retrieves scoped customer profile facts needed to ground support workflows.",
@@ -345,7 +389,7 @@ def seed_agent_identities(session: Session) -> None:
         AgentIdentity(
             agent_id="transaction-analyst-agent",
             display_name="Transaction Analyst Agent",
-            agent_type="sub_agent",
+            agent_type="task_agent",
             owner="Support Operations",
             environment="demo",
             purpose="Retrieves and summarizes recent customer transaction activity.",
@@ -367,7 +411,7 @@ def seed_agent_identities(session: Session) -> None:
         AgentIdentity(
             agent_id="risk-review-agent",
             display_name="Risk Review Agent",
-            agent_type="sub_agent",
+            agent_type="review_agent",
             owner="Governance",
             environment="demo",
             purpose="Reviews delegated outputs and records workflow-level safety disposition.",
@@ -389,7 +433,7 @@ def seed_agent_identities(session: Session) -> None:
         AgentIdentity(
             agent_id="customer-support-cli",
             display_name="Customer Support CLI Agent",
-            agent_type="cli_agent",
+            agent_type="task_agent",
             owner="Developer Experience",
             environment="local",
             purpose="Run the governed customer support demo from a terminal.",
@@ -413,8 +457,284 @@ def seed_agent_identities(session: Session) -> None:
                 "llm": {**DEFAULT_AGENT_LLM_CONFIG},
             },
         ),
+        AgentIdentity(
+            agent_id="banking-lead-agent",
+            display_name="Banking Lead Agent",
+            agent_type="lead_agent",
+            owner="Banking Operations",
+            environment="demo",
+            purpose="Routes banking account inquiries through governed authentication and account-review nodes.",
+            permissions={
+                "tools": [],
+                "actions": ["route_banking_request", "delegate_to_banking_nodes"],
+                "scopes": {"domain": "banking", "tool_execution": "delegated_only"},
+            },
+            metadata_json={
+                "framework": "multi-agent-orchestrator",
+                "data_domain": "banking",
+                "identity_provider": "local-demo",
+                "execution_mode": "native",
+                "llm": {**DEFAULT_AGENT_LLM_CONFIG},
+            },
+        ),
+        AgentIdentity(
+            agent_id="banking-auth-gate-agent",
+            display_name="Banking Authentication Gate Agent",
+            agent_type="gate_agent",
+            owner="Banking Operations",
+            environment="demo",
+            purpose="Checks authenticated account scope before banking workflow routing proceeds.",
+            permissions={
+                "tools": [],
+                "actions": ["verify_account_scope", "check_consent"],
+                "scopes": {"account_access": "authenticated_account_id"},
+            },
+            metadata_json={
+                "framework": "multi-agent-specialist",
+                "data_domain": "banking_identity",
+                "identity_provider": "local-demo",
+                "execution_mode": "native",
+                "llm": {**DEFAULT_AGENT_LLM_CONFIG},
+            },
+        ),
+        AgentIdentity(
+            agent_id="banking-account-inquiry-agent",
+            display_name="Banking Account Inquiry Agent",
+            agent_type="task_agent",
+            owner="Banking Operations",
+            environment="demo",
+            purpose="Prepares scoped account-inquiry summaries after authentication gates pass.",
+            permissions={
+                "tools": [],
+                "actions": ["summarize_account_activity", "prepare_account_answer"],
+                "scopes": {
+                    "account_access": "authenticated_account_id",
+                    "pii_exposure": "review_required",
+                },
+            },
+            metadata_json={
+                "framework": "multi-agent-specialist",
+                "data_domain": "banking_accounts",
+                "identity_provider": "local-demo",
+                "execution_mode": "native",
+                "llm": {**DEFAULT_AGENT_LLM_CONFIG},
+            },
+        ),
+        AgentIdentity(
+            agent_id="banking-compliance-review-agent",
+            display_name="Banking Compliance Review Agent",
+            agent_type="review_agent",
+            owner="Governance",
+            environment="demo",
+            purpose="Reviews high-risk banking responses and sensitive account summaries.",
+            permissions={
+                "tools": [],
+                "actions": ["review_sensitive_account_output", "recommend_release_or_escalation"],
+                "scopes": {"financial_data": "review_only", "decision_authority": "advisory"},
+            },
+            metadata_json={
+                "framework": "multi-agent-specialist",
+                "data_domain": "banking_compliance",
+                "identity_provider": "local-demo",
+                "execution_mode": "native",
+                "llm": {**DEFAULT_AGENT_LLM_CONFIG},
+            },
+        ),
     ]
 
     for identity in defaults:
-        if not session.get(AgentIdentity, identity.agent_id):
+        existing = session.get(AgentIdentity, identity.agent_id)
+        if not existing:
             session.add(identity)
+        elif existing.agent_type != identity.agent_type:
+            existing.agent_type = identity.agent_type
+
+
+def seed_workflow_definitions(session: Session) -> None:
+    definitions = [
+        {
+            "workflow_definition_id": "customer-support-investigation",
+            "name": "Customer Support Investigation",
+            "description": "Verify requester scope, review recent account activity, and prepare a governed response recommendation.",
+            "owner": "Support Operations",
+            "environment": "demo",
+            "domain": "customer_support",
+            "lead_agent_id": "customer-support-lead-agent",
+            "trigger_type": "manual",
+            "steps": [
+                {
+                    "step_id": "identity",
+                    "label": "Verify requester scope",
+                    "role": "gate_agent:identity",
+                    "agent_id": "identity-verification-agent",
+                    "node_type": "gate_agent",
+                    "activation_policy": "always",
+                    "activation_stage": "pre_route",
+                    "task": "Verify customer profile for {{customer_id}}.",
+                    "tool_name": "get_customer_profile",
+                    "tool_args": {"customer_id": "{{customer_id}}"},
+                },
+                {
+                    "step_id": "transactions",
+                    "label": "Retrieve recent transactions",
+                    "role": "task_agent:transactions",
+                    "agent_id": "transaction-analyst-agent",
+                    "node_type": "task_agent",
+                    "activation_policy": "conditional",
+                    "activation_stage": "routed",
+                    "task": "Retrieve recent transactions for {{customer_id}}.",
+                    "tool_name": "get_customer_transactions",
+                    "tool_args": {"customer_id": "{{customer_id}}"},
+                },
+                {
+                    "step_id": "risk_review",
+                    "label": "Review workflow outputs",
+                    "role": "review_agent:risk_review",
+                    "agent_id": "risk-review-agent",
+                    "node_type": "review_agent",
+                    "activation_policy": "on_risk",
+                    "activation_stage": "final_review",
+                    "task": "Review outputs for safe response composition.",
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "lead->identity",
+                    "from_node_id": "lead",
+                    "to_node_id": "identity",
+                    "conditions": {"required": True},
+                },
+                {
+                    "edge_id": "identity->transactions",
+                    "from_node_id": "identity",
+                    "to_node_id": "transactions",
+                    "conditions": {"when": "identity_verified"},
+                },
+                {
+                    "edge_id": "transactions->risk_review",
+                    "from_node_id": "transactions",
+                    "to_node_id": "risk_review",
+                    "conditions": {"when": "risk_detected_or_final_review"},
+                },
+            ],
+        },
+        {
+            "workflow_definition_id": "banking-account-inquiry",
+            "name": "Banking Account Inquiry",
+            "description": "Authenticate account scope, route account inquiry work, and review sensitive financial summaries before release.",
+            "owner": "Banking Operations",
+            "environment": "demo",
+            "domain": "banking",
+            "lead_agent_id": "banking-lead-agent",
+            "trigger_type": "manual",
+            "steps": [
+                {
+                    "step_id": "auth_gate",
+                    "label": "Authenticate account scope",
+                    "role": "gate_agent:auth_gate",
+                    "agent_id": "banking-auth-gate-agent",
+                    "node_type": "gate_agent",
+                    "activation_policy": "always",
+                    "activation_stage": "pre_route",
+                    "task": "Confirm the request is bound to the authenticated account scope.",
+                },
+                {
+                    "step_id": "account_inquiry",
+                    "label": "Prepare account inquiry",
+                    "role": "task_agent:account_inquiry",
+                    "agent_id": "banking-account-inquiry-agent",
+                    "node_type": "task_agent",
+                    "activation_policy": "conditional",
+                    "activation_stage": "routed",
+                    "task": "Prepare a scoped banking account inquiry response.",
+                },
+                {
+                    "step_id": "compliance_review",
+                    "label": "Review sensitive summary",
+                    "role": "review_agent:compliance_review",
+                    "agent_id": "banking-compliance-review-agent",
+                    "node_type": "review_agent",
+                    "activation_policy": "on_risk",
+                    "activation_stage": "final_review",
+                    "task": "Review sensitive financial information before release.",
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "lead->auth_gate",
+                    "from_node_id": "lead",
+                    "to_node_id": "auth_gate",
+                    "conditions": {"required": True},
+                },
+                {
+                    "edge_id": "auth_gate->account_inquiry",
+                    "from_node_id": "auth_gate",
+                    "to_node_id": "account_inquiry",
+                    "conditions": {"when": "authenticated"},
+                },
+                {
+                    "edge_id": "account_inquiry->compliance_review",
+                    "from_node_id": "account_inquiry",
+                    "to_node_id": "compliance_review",
+                    "conditions": {"when": "sensitive_financial_summary"},
+                },
+            ],
+        },
+    ]
+
+    for definition in definitions:
+        if session.get(WorkflowDefinition, definition["workflow_definition_id"]):
+            continue
+        nodes = [
+            {
+                "node_id": "lead",
+                "agent_id": definition["lead_agent_id"],
+                "node_type": "lead_agent",
+                "activation_policy": "always",
+                "activation_stage": "pre_route",
+                "capabilities": ["route_request", "coordinate_workflow"],
+                "allowed_tools": [],
+                "data_scope": {},
+                "side_effect_level": "none",
+            },
+            *[
+                {
+                    "node_id": step["step_id"],
+                    "agent_id": step["agent_id"],
+                    "node_type": step["node_type"],
+                    "activation_policy": step["activation_policy"],
+                    "activation_stage": step["activation_stage"],
+                    "capabilities": [step["task"]],
+                    "allowed_tools": [step["tool_name"]] if step.get("tool_name") else [],
+                    "data_scope": {},
+                    "side_effect_level": "read_only",
+                    "label": step["label"],
+                    "task": step["task"],
+                    "tool_name": step.get("tool_name"),
+                    "tool_args": step.get("tool_args", {}),
+                }
+                for step in definition["steps"]
+            ],
+        ]
+        session.add(
+            WorkflowDefinition(
+                workflow_definition_id=definition["workflow_definition_id"],
+                name=definition["name"],
+                description=definition["description"],
+                owner=definition["owner"],
+                environment=definition["environment"],
+                domain=definition["domain"],
+                lead_agent_id=definition["lead_agent_id"],
+                trigger_type=definition["trigger_type"],
+                steps=definition["steps"],
+                nodes=nodes,
+                edges=definition["edges"],
+                policy_bindings={},
+                review_rules={},
+                graph_version_hash=workflow_graph_hash(nodes=nodes, edges=definition["edges"]),
+                metadata_json={
+                    "domain": definition["domain"],
+                    "risk_controls": ["policy_check", "audit_trail", "human_review_when_required"],
+                },
+            )
+        )

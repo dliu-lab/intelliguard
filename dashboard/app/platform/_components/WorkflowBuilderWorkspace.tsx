@@ -5,13 +5,30 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, GitBranch, ListTree, Plus, Play, Search, UploadCloud, X, ZoomIn, ZoomOut } from "lucide-react";
 import { createWorkflowDefinition, getSession, runMultiAgentWorkflow, type ApiRecord, type PlatformData } from "@/lib/api";
 import { ComponentRow } from "./shared";
-import { formatCount, formatTimestamp, isErrorMessage, joinParts, readText, workflowTemplateJson } from "./utils";
+import {
+  formatCount,
+  formatTimestamp,
+  isErrorMessage,
+  joinParts,
+  readText,
+  validateKebabCase,
+  validateLowerToken,
+  validateSnakeCase,
+  workflowTemplateJson,
+} from "./utils";
 
 type WorkflowStepDraft = {
   step_id: string;
   label: string;
   role?: string;
   agent_id: string;
+  node_type?: string;
+  activation_policy?: string;
+  activation_stage?: string;
+  capabilities?: string[];
+  allowed_tools?: string[];
+  data_scope?: Record<string, unknown>;
+  side_effect_level?: string;
   tool_name?: string;
   task?: string;
   tool_args?: unknown;
@@ -24,9 +41,11 @@ type WorkflowDraft = {
   description?: string;
   owner?: string;
   environment: string;
+  domain?: string;
   lead_agent_id: string;
   trigger_type?: string;
   steps: WorkflowStepDraft[];
+  edges?: ApiRecord[];
   metadata?: Record<string, unknown>;
 };
 
@@ -48,6 +67,8 @@ const LEAD_NODE_ID = "lead";
 const CANVAS_HEIGHT = 720;
 const NODE_WIDTH = 236;
 const NODE_HEIGHT = 96;
+const ACTIVATION_POLICIES = ["always", "conditional", "on_risk", "human_required"];
+const ACTIVATION_STAGES = ["pre_route", "routed", "pre_tool", "post_tool", "final_review"];
 
 function canvasWorldWidth(draft: WorkflowDraft) {
   return Math.max(1240, 420 + draft.steps.length * 220);
@@ -146,6 +167,16 @@ function defaultConnections(draft: WorkflowDraft, current: WorkflowConnection[] 
   if ("visual_connections" in metadata) {
     return sanitizeConnections(draft, metadata.visual_connections);
   }
+  if (Array.isArray(draft.edges) && draft.edges.length) {
+    return sanitizeConnections(
+      draft,
+      draft.edges.map((edge) => ({
+        id: readText(edge, ["edge_id"]) || "",
+        from: readText(edge, ["from_node_id", "from"]) || "",
+        to: readText(edge, ["to_node_id", "to"]) || "",
+      })),
+    );
+  }
 
   return fanOutConnections(draft);
 }
@@ -214,17 +245,55 @@ function cleanWorkflowDraft(
   draft: WorkflowDraft,
   nodePositions: Record<string, CanvasNodePosition>,
   connections: WorkflowConnection[],
+  agentTypesById: Record<string, string>,
 ): ApiRecord {
   const visualConnections = sanitizeConnections(draft, connections);
   const leadDelegations = visualConnections
     .filter((connection) => connection.from === LEAD_NODE_ID)
     .map((connection) => connection.to);
+  const nodes = [
+    {
+      node_id: LEAD_NODE_ID,
+      agent_id: draft.lead_agent_id,
+      node_type: "lead_agent",
+      activation_policy: "always",
+      activation_stage: "pre_route",
+      capabilities: ["route_request", "coordinate_workflow"],
+      allowed_tools: [],
+      data_scope: {},
+      side_effect_level: "none",
+    },
+    ...draft.steps.map((step) => ({
+      node_id: step.step_id,
+      agent_id: step.agent_id,
+      node_type: agentTypesById[step.agent_id] || normalizeAgentType(step.node_type) || "task_agent",
+      activation_policy: step.activation_policy || "conditional",
+      activation_stage: step.activation_stage || "routed",
+      capabilities: step.capabilities || [step.task || step.label],
+      allowed_tools: step.tool_name ? [step.tool_name] : [],
+      data_scope: step.data_scope || {},
+      side_effect_level: step.side_effect_level || "read_only",
+      label: step.label,
+      task: step.task,
+      tool_name: step.tool_name,
+      tool_args: step.tool_args_json ? JSON.parse(step.tool_args_json) : step.tool_args || {},
+    })),
+  ];
+  const edges = visualConnections.map((connection) => ({
+    edge_id: connection.id,
+    from_node_id: connection.from,
+    to_node_id: connection.to,
+    conditions: {},
+  }));
 
   return {
     ...draft,
     workflow_definition_id: draft.workflow_definition_id || uniqueWorkflowId("workflow"),
+    nodes,
+    edges,
     metadata: {
       ...(draft.metadata || {}),
+      domain: draft.domain || draft.metadata?.domain || "general",
       execution_mode: leadDelegations.length > 1 ? "multi_agent_fan_out" : "multi_agent_graph",
       lead_delegations: leadDelegations,
       visual_connections: visualConnections,
@@ -232,6 +301,7 @@ function cleanWorkflowDraft(
     },
     steps: draft.steps.map(({ tool_args_json: toolArgsJson, ...step }) => ({
       ...step,
+      node_type: agentTypesById[step.agent_id] || normalizeAgentType(step.node_type) || "task_agent",
       tool_args: toolArgsJson ? JSON.parse(toolArgsJson) : step.tool_args || {},
     })),
   };
@@ -243,6 +313,127 @@ function workflowId(workflow: ApiRecord) {
 
 function safeOption(value: string | undefined, fallback: string) {
   return value && value.trim() ? value : fallback;
+}
+
+function normalizeAgentType(value: string | undefined) {
+  const legacyMap: Record<string, string> = {
+    cli_agent: "task_agent",
+    custom_agent: "task_agent",
+    lead_orchestrator: "lead_agent",
+    specialist_agent: "task_agent",
+    sub_agent: "task_agent",
+    support_assistant: "task_agent",
+  };
+  return legacyMap[value || ""] || value || "";
+}
+
+function getAgentTools(agent: ApiRecord | undefined) {
+  const permissions = agent?.permissions;
+  if (!permissions || typeof permissions !== "object" || Array.isArray(permissions)) {
+    return [];
+  }
+
+  const tools = (permissions as Record<string, unknown>).tools;
+  return Array.isArray(tools) ? tools.map(String).filter(Boolean) : [];
+}
+
+function lookupDisplayName(records: ApiRecord[], idKey: string, id: string | undefined) {
+  if (!id) {
+    return undefined;
+  }
+  const record = records.find((item) => readText(item, [idKey]) === id);
+  return readText(record || {}, ["display_name", "name", idKey]) || id;
+}
+
+function domainSearchTokens(domain: string | undefined) {
+  return String(domain || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 2);
+}
+
+function agentMetadata(agent: ApiRecord) {
+  return agent.metadata && typeof agent.metadata === "object" && !Array.isArray(agent.metadata)
+    ? (agent.metadata as Record<string, unknown>)
+    : {};
+}
+
+function agentMatchesWorkflowDomain(agent: ApiRecord, domain: string | undefined) {
+  const normalizedDomain = String(domain || "").toLowerCase();
+  if (!normalizedDomain || normalizedDomain === "general") {
+    return true;
+  }
+
+  const metadata = agentMetadata(agent);
+  const workflowDomains = metadata.workflow_domains;
+  if (Array.isArray(workflowDomains) && workflowDomains.map(String).includes(normalizedDomain)) {
+    return true;
+  }
+
+  const dataDomain = String(metadata.domain || metadata.data_domain || "").toLowerCase();
+  const owner = readText(agent, ["owner"])?.toLowerCase() || "";
+  if (dataDomain === "governance" || dataDomain === "platform" || owner === "governance") {
+    return true;
+  }
+
+  const haystack = [
+    readText(agent, ["agent_id"]),
+    readText(agent, ["display_name"]),
+    readText(agent, ["owner"]),
+    readText(agent, ["purpose"]),
+    dataDomain,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/[_-]+/g, " ")
+    .toLowerCase();
+
+  const tokens = domainSearchTokens(normalizedDomain);
+  return haystack.includes(normalizedDomain.replace(/[_-]+/g, " ")) || tokens.some((token) => haystack.includes(token));
+}
+
+function assignmentSummary(
+  assignments: ApiRecord[],
+  idKey: string,
+  registry: ApiRecord[],
+  extraKeys: string[] = [],
+) {
+  return assignments.map((assignment) => {
+    const id = readText(assignment, [idKey]);
+    return joinParts([
+      lookupDisplayName(registry, idKey, id),
+      ...extraKeys.map((key) => readText(assignment, [key])),
+    ]) || id || "Attached control";
+  });
+}
+
+function validateWorkflowDraft(draft: WorkflowDraft) {
+  const validationError =
+    validateKebabCase(draft.workflow_definition_id, "Workflow ID")
+    || validateLowerToken(draft.environment, "Environment")
+    || validateSnakeCase(draft.domain || "", "Domain");
+  if (validationError) {
+    return validationError;
+  }
+
+  const duplicateStepIds = new Set<string>();
+  const seenStepIds = new Set<string>();
+  for (const step of draft.steps) {
+    const stepIdError = validateSnakeCase(step.step_id, "Step ID");
+    if (stepIdError) {
+      return stepIdError;
+    }
+    if (seenStepIds.has(step.step_id)) {
+      duplicateStepIds.add(step.step_id);
+    }
+    seenStepIds.add(step.step_id);
+  }
+
+  if (duplicateStepIds.size) {
+    return `Step ID must be unique: ${Array.from(duplicateStepIds).join(", ")}.`;
+  }
+
+  return undefined;
 }
 
 function workflowRunSearchText(workflow: ApiRecord) {
@@ -277,7 +468,7 @@ export function WorkflowBuilderWorkspace({
   const [linkingNodeId, setLinkingNodeId] = useState("");
   const [canvasZoom, setCanvasZoom] = useState(1);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
-  const [runQuery, setRunQuery] = useState("Investigate customer C123 and prepare a governed response.");
+  const [runQuery, setRunQuery] = useState("I need to check my bank account.");
   const [message, setMessage] = useState("");
   const [workflowRunSearch, setWorkflowRunSearch] = useState("");
   const [workflowRunsExpanded, setWorkflowRunsExpanded] = useState(false);
@@ -287,17 +478,14 @@ export function WorkflowBuilderWorkspace({
       data.agents.map((agent) => ({
         id: readText(agent, ["agent_id"]) || "",
         label: readText(agent, ["display_name", "agent_id"]) || "Agent",
+        agentType: normalizeAgentType(readText(agent, ["agent_type"])),
+        record: agent,
       })),
     [data.agents],
   );
-
-  const toolOptions = useMemo(
-    () =>
-      data.tools.map((tool) => ({
-        id: readText(tool, ["tool_name", "name"]) || "",
-        label: readText(tool, ["display_name", "tool_name", "name"]) || "Tool",
-      })),
-    [data.tools],
+  const agentTypesById = useMemo(
+    () => Object.fromEntries(agentOptions.map((agent) => [agent.id, agent.agentType]).filter(([agentId]) => agentId)),
+    [agentOptions],
   );
 
   const environmentOptions = useMemo(() => {
@@ -309,6 +497,56 @@ export function WorkflowBuilderWorkspace({
   }, [data.environments, selectedEnvironment]);
 
   const selectedStep = draft.steps.find((step) => step.step_id === selectedStepId) || draft.steps[0];
+  const selectedDomain = draft.domain || String(draft.metadata?.domain || "");
+  const visibleAgentOptions = useMemo(() => {
+    const referencedAgentIds = new Set([
+      draft.lead_agent_id,
+      ...draft.steps.map((step) => step.agent_id),
+    ]);
+    return agentOptions.filter(
+      (agent) => referencedAgentIds.has(agent.id) || agentMatchesWorkflowDomain(agent.record, selectedDomain),
+    );
+  }, [agentOptions, draft.lead_agent_id, draft.steps, selectedDomain]);
+  const leadAgentOptions = visibleAgentOptions.filter(
+    (agent) => agent.id === draft.lead_agent_id || agent.agentType === "lead_agent",
+  );
+  const stepAgentOptions = visibleAgentOptions.filter(
+    (agent) => agent.id === selectedStep?.agent_id || agent.agentType !== "lead_agent",
+  );
+  const selectedAgentType =
+    (selectedStep ? agentTypesById[selectedStep.agent_id] : undefined)
+    || normalizeAgentType(selectedStep?.node_type)
+    || "task_agent";
+  const selectedAgent = data.agents.find((agent) => readText(agent, ["agent_id"]) === selectedStep?.agent_id);
+  const selectedAgentAssignments = selectedStep
+    ? data.agentAssignments[selectedStep.agent_id] || { guardrails: [], evaluators: [], knowledge: [] }
+    : { guardrails: [], evaluators: [], knowledge: [] };
+  const selectedAgentToolNames = getAgentTools(selectedAgent);
+  const selectedAgentToolLabels = selectedAgentToolNames.map(
+    (toolName) => lookupDisplayName(data.tools, "tool_name", toolName) || toolName,
+  );
+  const selectedStepToolLabel = selectedStep?.tool_name
+    ? lookupDisplayName(data.tools, "tool_name", selectedStep.tool_name) || selectedStep.tool_name
+    : "No tool request";
+  const selectedStepToolIsGranted = !selectedStep?.tool_name || selectedAgentToolNames.includes(selectedStep.tool_name);
+  const selectedAgentGuardrails = assignmentSummary(
+    selectedAgentAssignments.guardrails,
+    "policy_id",
+    data.guardrailPolicies,
+    ["mode", "environment"],
+  );
+  const selectedAgentEvaluators = assignmentSummary(
+    selectedAgentAssignments.evaluators,
+    "evaluator_id",
+    data.evaluatorTemplates,
+    ["trigger", "environment"],
+  );
+  const selectedAgentKnowledge = assignmentSummary(
+    selectedAgentAssignments.knowledge,
+    "kb_id",
+    data.knowledgeBases,
+    ["access_mode"],
+  );
   const leadAgentLabel =
     agentOptions.find((agent) => agent.id === draft.lead_agent_id)?.label || draft.lead_agent_id || "Lead agent";
   const filteredWorkflowRuns = useMemo(() => {
@@ -386,16 +624,43 @@ export function WorkflowBuilderWorkspace({
     }
   }
 
+  function firstGrantedToolForAgent(agentId: string) {
+    const agent = data.agents.find((item) => readText(item, ["agent_id"]) === agentId);
+    return getAgentTools(agent)[0] || "";
+  }
+
+  function updateSelectedStepAgent(agentId: string) {
+    const previousStepId = selectedStep?.step_id || "";
+    const nextToolName = firstGrantedToolForAgent(agentId);
+
+    setDraft((current) => ({
+      ...current,
+      steps: current.steps.map((step) =>
+        step.step_id === previousStepId
+          ? {
+              ...step,
+              agent_id: agentId,
+              node_type: agentTypesById[agentId] || normalizeAgentType(step.node_type) || "task_agent",
+              tool_name: nextToolName || undefined,
+            }
+          : step,
+      ),
+    }));
+  }
+
   function addStep() {
     const nextIndex = draft.steps.length + 1;
-    const agentId = safeOption(agentOptions[0]?.id, "specialist-agent");
-    const toolName = safeOption(toolOptions[0]?.id, "get_customer_profile");
+    const agentId = safeOption(stepAgentOptions[0]?.id, "specialist-agent");
+    const toolName = firstGrantedToolForAgent(agentId);
     const nextStep: WorkflowStepDraft = {
       step_id: `step_${nextIndex}`,
       label: `Workflow step ${nextIndex}`,
-      role: `sub_agent:step_${nextIndex}`,
+      role: `task_agent:step_${nextIndex}`,
       agent_id: agentId,
-      tool_name: toolName,
+      node_type: agentTypesById[agentId] || "task_agent",
+      activation_policy: "conditional",
+      activation_stage: "routed",
+      tool_name: toolName || undefined,
       task: "Complete the assigned workflow task.",
       tool_args: {},
       tool_args_json: "{}",
@@ -536,7 +801,19 @@ export function WorkflowBuilderWorkspace({
     }
 
     try {
-      const payload = cleanWorkflowDraft(draft, nodePositions, connections);
+      const validationError = validateWorkflowDraft(draft);
+      if (validationError) {
+        setMessage(validationError);
+        return;
+      }
+
+      const leadAgentType = agentTypesById[draft.lead_agent_id];
+      if (leadAgentType && leadAgentType !== "lead_agent") {
+        setMessage(`Lead node requires a lead_agent, but ${draft.lead_agent_id} is registered as ${leadAgentType}.`);
+        return;
+      }
+
+      const payload = cleanWorkflowDraft(draft, nodePositions, connections, agentTypesById);
       await createWorkflowDefinition(session.token, payload);
       setSelectedWorkflowId(String(payload.workflow_definition_id || ""));
       setMessage("Workflow definition created.");
@@ -702,7 +979,7 @@ export function WorkflowBuilderWorkspace({
                   {readText(workflow, ["name", "workflow_definition_id"]) || "Workflow definition"}
                 </option>
               ))}
-              {!data.workflowDefinitions.length ? <option value="">Default customer support workflow</option> : null}
+              {!data.workflowDefinitions.length ? <option value="">Default banking workflow</option> : null}
             </select>
           </BuilderField>
 
@@ -763,7 +1040,7 @@ export function WorkflowBuilderWorkspace({
             </div>
 
             <div className="min-h-0 overflow-auto p-5">
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[0.34fr_0.34fr_0.28fr_0.34fr]">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[0.34fr_0.34fr_0.24fr_0.24fr_0.34fr]">
                 <BuilderField label="ID">
                   <input
                     value={draft.workflow_definition_id}
@@ -783,10 +1060,13 @@ export function WorkflowBuilderWorkspace({
                     ))}
                   </select>
                 </BuilderField>
+                <BuilderField label="Domain">
+                  <input value={draft.domain || ""} onChange={(event) => updateDraft("domain", event.target.value)} className="field-input" />
+                </BuilderField>
                 <BuilderField label="Lead Agent">
                   <select value={draft.lead_agent_id} onChange={(event) => updateDraft("lead_agent_id", event.target.value)} className="field-input">
                     <option value={draft.lead_agent_id}>{leadAgentLabel}</option>
-                    {agentOptions
+                    {leadAgentOptions
                       .filter((agent) => agent.id && agent.id !== draft.lead_agent_id)
                       .map((agent) => (
                         <option key={agent.id} value={agent.id}>
@@ -799,6 +1079,7 @@ export function WorkflowBuilderWorkspace({
 
               <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_344px]">
                 <WorkflowCanvas
+                  agentTypesById={agentTypesById}
                   connections={connections}
                   draft={draft}
                   linkingNodeId={linkingNodeId}
@@ -825,9 +1106,9 @@ export function WorkflowBuilderWorkspace({
                         <input value={selectedStep.label} onChange={(event) => updateStep("label", event.target.value)} className="field-input" />
                       </BuilderField>
                       <BuilderField label="Agent">
-                        <select value={selectedStep.agent_id} onChange={(event) => updateStep("agent_id", event.target.value)} className="field-input">
+                        <select value={selectedStep.agent_id} onChange={(event) => updateSelectedStepAgent(event.target.value)} className="field-input">
                           <option value={selectedStep.agent_id}>{selectedStep.agent_id}</option>
-                          {agentOptions
+                          {stepAgentOptions
                             .filter((agent) => agent.id && agent.id !== selectedStep.agent_id)
                             .map((agent) => (
                               <option key={agent.id} value={agent.id}>
@@ -836,19 +1117,41 @@ export function WorkflowBuilderWorkspace({
                             ))}
                         </select>
                       </BuilderField>
-                      <BuilderField label="Tool">
-                        <select value={selectedStep.tool_name || ""} onChange={(event) => updateStep("tool_name", event.target.value)} className="field-input">
-                          <option value="">No tool</option>
-                          {selectedStep.tool_name ? <option value={selectedStep.tool_name}>{selectedStep.tool_name}</option> : null}
-                          {toolOptions
-                            .filter((tool) => tool.id && tool.id !== selectedStep.tool_name)
-                            .map((tool) => (
-                              <option key={tool.id} value={tool.id}>
-                                {tool.label}
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <BuilderField label="Agent Type">
+                          <div className="field-input flex items-center">
+                            {selectedAgentType}
+                          </div>
+                        </BuilderField>
+                        <BuilderField label="Activation">
+                          <select value={selectedStep.activation_policy || "conditional"} onChange={(event) => updateStep("activation_policy", event.target.value)} className="field-input">
+                            {ACTIVATION_POLICIES.map((policy) => (
+                              <option key={policy} value={policy}>
+                                {policy}
                               </option>
                             ))}
-                        </select>
+                          </select>
+                        </BuilderField>
+                        <BuilderField label="Stage">
+                          <select value={selectedStep.activation_stage || "routed"} onChange={(event) => updateStep("activation_stage", event.target.value)} className="field-input">
+                            {ACTIVATION_STAGES.map((stage) => (
+                              <option key={stage} value={stage}>
+                                {stage}
+                              </option>
+                            ))}
+                          </select>
+                        </BuilderField>
+                      </div>
+                      <BuilderField label="Tool request">
+                        <div className="field-input flex items-center">
+                          {selectedStepToolLabel}
+                        </div>
                       </BuilderField>
+                      {!selectedStepToolIsGranted ? (
+                        <div className="rounded-2xl border border-amber-300/45 bg-amber-300/10 p-3 text-xs leading-5 text-textSecondary">
+                          This workflow step references a tool that is not currently granted to the selected agent.
+                        </div>
+                      ) : null}
                       <BuilderField label="Task">
                         <textarea value={selectedStep.task || ""} onChange={(event) => updateStep("task", event.target.value)} className="field-input min-h-24 resize-y" />
                       </BuilderField>
@@ -860,6 +1163,12 @@ export function WorkflowBuilderWorkspace({
                           spellCheck={false}
                         />
                       </BuilderField>
+                      <AgentControlSnapshot
+                        evaluators={selectedAgentEvaluators}
+                        guardrails={selectedAgentGuardrails}
+                        knowledge={selectedAgentKnowledge}
+                        tools={selectedAgentToolLabels}
+                      />
                       <button
                         type="button"
                         onClick={removeSelectedStep}
@@ -890,7 +1199,59 @@ function BuilderField({ children, label }: { children: ReactNode; label: string 
   );
 }
 
+function AgentControlSnapshot({
+  evaluators,
+  guardrails,
+  knowledge,
+  tools,
+}: {
+  evaluators: string[];
+  guardrails: string[];
+  knowledge: string[];
+  tools: string[];
+}) {
+  return (
+    <section className="rounded-3xl border border-line bg-white/[0.035] p-4">
+      <h5 className="text-sm font-semibold text-textPrimary">Registered agent controls</h5>
+      <div className="mt-3 grid gap-3">
+        <SnapshotList emptyText="No tool grants" items={tools} label="Tools" />
+        <SnapshotList emptyText="No guardrail policy assigned" items={guardrails} label="Guardrails" />
+        <SnapshotList emptyText="No evaluator assignments" items={evaluators} label="Evaluators" />
+        <SnapshotList emptyText="No knowledge bases attached" items={knowledge} label="Knowledge Bases" />
+      </div>
+    </section>
+  );
+}
+
+function SnapshotList({
+  emptyText,
+  items,
+  label,
+}: {
+  emptyText: string;
+  items: string[];
+  label: string;
+}) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">{label}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {items.length ? (
+          items.map((item) => (
+            <span key={item} className="rounded-full border border-line bg-ink/70 px-3 py-1 text-xs font-semibold text-textSecondary">
+              {item}
+            </span>
+          ))
+        ) : (
+          <span className="text-xs text-textSecondary">{emptyText}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function WorkflowCanvas({
+  agentTypesById,
   connections,
   draft,
   linkingNodeId,
@@ -905,6 +1266,7 @@ function WorkflowCanvas({
   selectedStepId,
   zoom,
 }: {
+  agentTypesById: Record<string, string>;
   connections: WorkflowConnection[];
   draft: WorkflowDraft;
   linkingNodeId: string;
@@ -946,12 +1308,14 @@ function WorkflowCanvas({
       id: LEAD_NODE_ID,
       label: "Lead",
       meta: draft.lead_agent_id || "lead-agent",
+      nodeType: "lead_agent",
       isLead: true,
     },
     ...draft.steps.map((step) => ({
       id: step.step_id,
       label: step.label || step.step_id,
       meta: step.agent_id,
+      nodeType: agentTypesById[step.agent_id] || normalizeAgentType(step.node_type) || "task_agent",
       isLead: false,
     })),
   ];
@@ -1329,6 +1693,7 @@ function WorkflowCanvas({
               isSelected={!node.isLead && node.id === selectedStepId}
               label={node.label}
               meta={node.meta}
+              nodeType={node.nodeType}
               onPortClick={handlePortClick}
               onPortPointerDown={startLinkDrag}
               onPortPointerUp={finishLinkDrag}
@@ -1367,6 +1732,7 @@ function WorkflowNode({
   isSelected,
   label,
   meta,
+  nodeType,
   nodeId,
   onPortClick,
   onPortPointerDown,
@@ -1382,6 +1748,7 @@ function WorkflowNode({
   isSelected: boolean;
   label: string;
   meta: string;
+  nodeType: string;
   nodeId: string;
   onPortClick: (nodeId: string, side: PortSide) => void;
   onPortPointerDown: (event: PointerEvent<HTMLElement>, nodeId: string) => void;
@@ -1464,6 +1831,7 @@ function WorkflowNode({
       <div className="min-w-0">
         <span className="block truncate text-sm font-semibold text-textPrimary">{label}</span>
         <span className="mt-1 block truncate text-xs text-textSecondary">{meta}</span>
+        <span className="mt-1 block truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-accent">{nodeType}</span>
         {isLead ? <span className="sr-only">Lead agent</span> : null}
       </div>
     </div>

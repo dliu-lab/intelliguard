@@ -138,9 +138,15 @@ class WorkflowDefinition(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     owner: Mapped[str] = mapped_column(String(120), nullable=False)
     environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    domain: Mapped[str] = mapped_column(String(80), default="general")
     lead_agent_id: Mapped[str] = mapped_column(String(120), nullable=False)
     trigger_type: Mapped[str] = mapped_column(String(80), default="manual")
     steps: Mapped[list] = mapped_column(JSONB, default=list)
+    nodes: Mapped[list] = mapped_column(JSONB, default=list)
+    edges: Mapped[list] = mapped_column(JSONB, default=list)
+    policy_bindings: Mapped[dict] = mapped_column(JSONB, default=dict)
+    review_rules: Mapped[dict] = mapped_column(JSONB, default=dict)
+    graph_version_hash: Mapped[str | None] = mapped_column(String(64))
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -339,7 +345,9 @@ class KnowledgeBase(Base):
     kb_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    source_type: Mapped[str] = mapped_column(String(40), nullable=False)  # "vector_store"|"url"|"file"
+    source_type: Mapped[str] = mapped_column(
+        String(40), nullable=False
+    )  # "vector_store"|"url"|"file"
     source_config: Mapped[dict] = mapped_column(JSONB, default=dict)
     environment: Mapped[str] = mapped_column(String(40), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -353,5 +361,7 @@ class AgentKBAssignment(Base):
     assignment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     agent_id: Mapped[str] = mapped_column(ForeignKey("agent_identities.agent_id"), nullable=False)
     kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.kb_id"), nullable=False)
-    access_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="read")  # "read"|"read_write"
+    access_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="read"
+    )  # "read"|"read_write"
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

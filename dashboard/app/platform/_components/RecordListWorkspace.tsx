@@ -205,6 +205,41 @@ function evidenceText(record: ApiRecord) {
     .toLowerCase();
 }
 
+function uniqueTextOptions(records: ApiRecord[], keys: string[]) {
+  return [
+    "ALL",
+    ...Array.from(new Set(records.map((record) => readText(record, keys)).filter(Boolean) as string[])).sort(),
+  ];
+}
+
+function eventWorkflowKey(event: ApiRecord) {
+  return readText(event, ["workflow_id"]) || readText(event, ["session_id"]) || "unlinked";
+}
+
+function eventCreatedAtMs(event: ApiRecord) {
+  const value = readText(event, ["created_at"]);
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
+function dateRangeMatches(event: ApiRecord, range: string) {
+  if (range === "ALL") {
+    return true;
+  }
+  const createdAt = eventCreatedAtMs(event);
+  if (!createdAt) {
+    return false;
+  }
+  const ageMs = Date.now() - createdAt;
+  if (range === "24H") {
+    return ageMs <= 24 * 60 * 60 * 1000;
+  }
+  if (range === "7D") {
+    return ageMs <= 7 * 24 * 60 * 60 * 1000;
+  }
+  return true;
+}
+
 function EvidenceBadge({
   children,
   tone = "neutral",
@@ -555,6 +590,21 @@ function FilterSelect({
 
 type ReviewActionStatus = "APPROVED" | "DENIED";
 
+function reviewSla(review: ApiRecord) {
+  const createdAt = eventCreatedAtMs(review);
+  const ageMinutes = createdAt ? Math.max(0, Math.floor((Date.now() - createdAt) / 60000)) : 0;
+  const slaMinutes = numberValue(review, ["sla_minutes"]) || 60;
+  const remaining = slaMinutes - ageMinutes;
+  const status = remaining <= 0 ? "breached" : remaining <= Math.ceil(slaMinutes * 0.2) ? "approaching" : "within SLA";
+  return {
+    ageMinutes,
+    escalationOwner: readText(review, ["escalation_owner"]) || "Governance Lead",
+    remaining,
+    slaMinutes,
+    status,
+  };
+}
+
 function ReviewEvidenceCard({
   onResolved,
   review,
@@ -569,6 +619,7 @@ function ReviewEvidenceCard({
   const isPending = status === "PENDING";
   const existingNote = readText(review, ["reviewer_note"]);
   const resolvedAt = readText(review, ["resolved_at"]);
+  const sla = reviewSla(review);
 
   // PENDING items start expanded so the action is immediately visible
   const [isExpanded, setIsExpanded] = useState(isPending);
@@ -620,6 +671,9 @@ function ReviewEvidenceCard({
             <div className="flex flex-wrap items-center gap-2">
               <EvidenceBadge tone={decisionBadgeTone(status, riskScore)}>{status}</EvidenceBadge>
               <EvidenceBadge tone="review">{`risk ${riskScore}`}</EvidenceBadge>
+              <EvidenceBadge tone={sla.status === "breached" ? "block" : sla.status === "approaching" ? "review" : "neutral"}>
+                {`waiting ${sla.ageMinutes}m`}
+              </EvidenceBadge>
               {riskTypes(review).map((riskType) => <EvidenceBadge key={riskType}>{riskType}</EvidenceBadge>)}
             </div>
             <h3 className="mt-3 text-xl font-semibold tracking-[-0.02em]">
@@ -649,6 +703,14 @@ function ReviewEvidenceCard({
             <ReviewField label="Agent" value={readText(review, ["agent_id"]) || "Unknown agent"} />
             <ReviewField label="Workflow/session" value={joinParts([readText(review, ["workflow_id"]), readText(review, ["session_id"])]) || "No workflow link"} />
             <ReviewField label="Requested action" value={readText(review, ["tool_name"]) || "No tool recorded"} />
+            <ReviewField
+              label="SLA"
+              value={
+                sla.status === "breached"
+                  ? `Breached ${Math.abs(sla.remaining)}m ago / escalate to ${sla.escalationOwner}`
+                  : `${sla.status} / ${sla.remaining}m remaining`
+              }
+            />
           </div>
           <div className="mt-3 grid gap-3 lg:grid-cols-2">
             <ReviewEvidenceBlock label="User request" value={readText(review, ["user_query"]) || "No user request captured."} />
@@ -757,28 +819,46 @@ function AuditEventRow({
   const policyHash = readText(event, ["policy_snapshot_hash"]) || readNestedText(event, ["metadata", "policy_snapshot_hash"]);
   const policyId = readText(event, ["policy_id"]);
   const eventId = readText(event, ["event_id"]);
+  const workflowId = readText(event, ["workflow_id"]);
+  const sessionId = readText(event, ["session_id"]);
+  const tone = decisionBadgeTone(decision, riskScore);
+  const leftBorder =
+    tone === "block" ? "border-l-[3px] border-l-rose-400"
+    : tone === "review" ? "border-l-[3px] border-l-amber-400"
+    : tone === "allow" ? "border-l-[3px] border-l-emerald-400"
+    : "border-l-[3px] border-l-transparent";
 
   return (
-    <div className="border-b border-line last:border-b-0">
+    <div className={`border-b border-line last:border-b-0 ${leftBorder}`}>
       <button
         type="button"
         onClick={onToggle}
-        className="grid w-full gap-x-4 gap-y-2 px-5 py-4 text-left transition hover:bg-white/[0.035] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-accent/35 xl:grid-cols-[1fr_96px_108px_1.5fr] xl:items-start"
+        className="grid w-full gap-x-4 gap-y-2 px-5 py-4 text-left transition hover:bg-white/[0.035] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-accent/35 xl:grid-cols-[1fr_1.5fr_108px_96px_90px_1fr] xl:items-start"
       >
-        {/* Col 1: decision + time */}
+        {/* Col 1: agent */}
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <EvidenceBadge tone={decisionBadgeTone(decision, riskScore)}>{decision}</EvidenceBadge>
-            <span className="text-xs text-textSecondary">{formatTimestamp(readText(event, ["created_at"]))}</span>
-          </div>
+          <p className="truncate text-sm font-semibold text-textPrimary" title={agentId ?? undefined}>
+            {agentId || "Unknown agent"}
+          </p>
         </div>
 
-        {/* Col 2: risk score + risk type */}
+        {/* Col 2: reason + chevron */}
         <div className="min-w-0">
-          <EvidenceBadge tone={decisionBadgeTone(undefined, riskScore)}>{`risk ${riskScore}`}</EvidenceBadge>
-          {riskType && riskType !== "none" && (
-            <p className="mt-1.5 truncate text-xs text-textSecondary" title={riskType}>{riskType.replace(/_/g, " ")}</p>
-          )}
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="line-clamp-2 text-sm leading-5 text-textSecondary">
+                {readText(event, ["reason"]) || "Runtime evidence."}
+              </p>
+              <p className="mt-1 truncate text-xs text-textSecondary">
+                {joinParts([workflowId ? `workflow ${workflowId}` : undefined, sessionId ? `session ${sessionId}` : undefined])}
+              </p>
+            </div>
+            <ChevronDown
+              className={`mt-0.5 shrink-0 text-textSecondary transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
+              size={18}
+              aria-hidden="true"
+            />
+          </div>
         </div>
 
         {/* Col 3: stage */}
@@ -789,23 +869,24 @@ function AuditEventRow({
           )}
         </div>
 
-        {/* Col 4: agent, reason, chevron */}
+        {/* Col 4: risk score + risk type */}
         <div className="min-w-0">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-textPrimary" title={agentId ?? undefined}>
-                {agentId || "Unknown agent"}
-              </p>
-              <p className="mt-1 line-clamp-2 text-sm leading-5 text-textSecondary">
-                {readText(event, ["reason"]) || "Runtime evidence."}
-              </p>
-            </div>
-            <ChevronDown
-              className={`mt-0.5 shrink-0 text-textSecondary transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
-              size={18}
-              aria-hidden="true"
-            />
-          </div>
+          <EvidenceBadge tone={decisionBadgeTone(undefined, riskScore)}>{`risk ${riskScore}`}</EvidenceBadge>
+          {riskType && riskType !== "none" && (
+            <p className="mt-1.5 truncate text-xs text-textSecondary" title={riskType}>{riskType.replace(/_/g, " ")}</p>
+          )}
+        </div>
+
+        {/* Col 5: decision badge */}
+        <div className="min-w-0">
+          <EvidenceBadge tone={decisionBadgeTone(decision, riskScore)}>{decision}</EvidenceBadge>
+        </div>
+
+        {/* Col 6: timestamp as single line */}
+        <div className="min-w-0">
+          <p className="truncate text-sm text-textSecondary">
+            {formatTimestamp(readText(event, ["created_at"])) || "—"}
+          </p>
         </div>
       </button>
 
@@ -939,15 +1020,70 @@ export function ReviewQueueWorkspace({
   );
 }
 
+function AuditEventGroup({
+  events,
+  expandedEventId,
+  groupId,
+  onExpandedEventChange,
+}: {
+  events: ApiRecord[];
+  expandedEventId: string;
+  groupId: string;
+  onExpandedEventChange: (eventId: string) => void;
+}) {
+  const maxRisk = Math.max(...events.map((event) => numberValue(event, ["risk_score"])));
+  const blocked = events.some((event) => decisionBadgeTone(readText(event, ["decision"]), numberValue(event, ["risk_score"])) === "block");
+  const review = events.some((event) => decisionBadgeTone(readText(event, ["decision"]), numberValue(event, ["risk_score"])) === "review");
+  const overall = blocked ? "BLOCK" : review ? "REVIEW" : "ALLOW";
+  const primaryAgent = readText(events[0], ["agent_id"]) || "Unknown agent";
+  const workflowId = readText(events[0], ["workflow_id"]);
+  const sessionId = readText(events[0], ["session_id"]);
+
+  return (
+    <section className="border-b border-line last:border-b-0">
+      <div className="grid gap-2 bg-white/[0.025] px-5 py-3 text-sm md:grid-cols-[1fr_auto_auto_auto] md:items-center">
+        <div className="min-w-0">
+          <p className="truncate font-semibold text-textPrimary">
+            {workflowId ? `Workflow ${workflowId}` : sessionId ? `Session ${sessionId}` : groupId}
+          </p>
+          <p className="mt-1 truncate text-xs text-textSecondary">{joinParts([primaryAgent, formatCount(events.length, "event")])}</p>
+        </div>
+        <EvidenceBadge tone={decisionBadgeTone(overall, maxRisk)}>{overall}</EvidenceBadge>
+        <EvidenceBadge tone={decisionBadgeTone(undefined, maxRisk)}>{`max risk ${maxRisk}`}</EvidenceBadge>
+        <span className="text-xs text-textSecondary">{formatTimestamp(readText(events[0], ["created_at"]))}</span>
+      </div>
+      {events.map((event) => {
+        const eventId = readText(event, ["event_id"]) || "";
+        const expanded = expandedEventId === eventId;
+        return (
+          <AuditEventRow
+            key={eventId || readText(event, ["created_at"])}
+            event={event}
+            expanded={expanded}
+            onToggle={() => onExpandedEventChange(expanded ? "" : eventId)}
+          />
+        );
+      })}
+    </section>
+  );
+}
+
 export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
   const [decisionFilter, setDecisionFilter] = useState("ALL");
   const [stageFilter, setStageFilter] = useState("ALL");
   const [riskTypeFilter, setRiskTypeFilter] = useState("ALL");
+  const [agentFilter, setAgentFilter] = useState("ALL");
+  const [toolFilter, setToolFilter] = useState("ALL");
+  const [environmentFilter, setEnvironmentFilter] = useState("ALL");
+  const [dateRangeFilter, setDateRangeFilter] = useState("ALL");
+  const [sortMode, setSortMode] = useState("NEWEST");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedEventId, setExpandedEventId] = useState("");
   const query = searchQuery.trim().toLowerCase();
   const stages = ["ALL", ...Array.from(new Set(data.auditEvents.map(eventStage).filter(Boolean)))];
-  const decisions = ["ALL", ...Array.from(new Set(data.auditEvents.map((event) => readText(event, ["decision"])).filter(Boolean) as string[]))];
+  const agents = uniqueTextOptions(data.auditEvents, ["agent_id"]);
+  const tools = uniqueTextOptions(data.auditEvents, ["tool_name"]);
+  const environments = uniqueTextOptions(data.auditEvents, ["environment"]);
   const riskTypeOptions = [
     "ALL",
     ...Array.from(
@@ -958,18 +1094,56 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
       ),
     ),
   ];
+
+  const blockCount = data.auditEvents.filter((e) => decisionBadgeTone(readText(e, ["decision"]) || "", numberValue(e, ["risk_score"])) === "block").length;
+  const reviewCount = data.auditEvents.filter((e) => decisionBadgeTone(readText(e, ["decision"]) || "", numberValue(e, ["risk_score"])) === "review").length;
+  const allowCount = data.auditEvents.filter((e) => decisionBadgeTone(readText(e, ["decision"]) || "", numberValue(e, ["risk_score"])) === "allow").length;
+
   const filteredEvents = data.auditEvents.filter((event) => {
     const decision = readText(event, ["decision"]) || "";
     const stage = eventStage(event);
-    // events with no risk_type or "none" are excluded when a specific type filter is active
     const riskType = readText(event, ["risk_type"]) || "";
+    const agentId = readText(event, ["agent_id"]) || "";
+    const toolName = readText(event, ["tool_name"]) || "";
+    const environment = readText(event, ["environment"]) || "";
+    const tone = decisionBadgeTone(decision, numberValue(event, ["risk_score"]));
+    const matchesDecision =
+      decisionFilter === "ALL"
+      || (decisionFilter === "BLOCK" && tone === "block")
+      || (decisionFilter === "REVIEW" && tone === "review")
+      || (decisionFilter === "ALLOW" && tone === "allow");
     return (
-      (decisionFilter === "ALL" || decision === decisionFilter)
+      matchesDecision
       && (stageFilter === "ALL" || stage === stageFilter)
       && (riskTypeFilter === "ALL" || riskType === riskTypeFilter)
+      && (agentFilter === "ALL" || agentId === agentFilter)
+      && (toolFilter === "ALL" || toolName === toolFilter)
+      && (environmentFilter === "ALL" || environment === environmentFilter)
+      && dateRangeMatches(event, dateRangeFilter)
       && (!query || evidenceText(event).includes(query))
     );
+  }).sort((first, second) => {
+    if (sortMode === "RISK") {
+      return numberValue(second, ["risk_score"]) - numberValue(first, ["risk_score"]);
+    }
+    if (sortMode === "BLOCKED") {
+      const firstTone = decisionBadgeTone(readText(first, ["decision"]), numberValue(first, ["risk_score"]));
+      const secondTone = decisionBadgeTone(readText(second, ["decision"]), numberValue(second, ["risk_score"]));
+      const rank = { block: 3, review: 2, allow: 1, neutral: 0 };
+      return rank[secondTone] - rank[firstTone] || eventCreatedAtMs(second) - eventCreatedAtMs(first);
+    }
+    if (sortMode === "WORKFLOW") {
+      return eventWorkflowKey(first).localeCompare(eventWorkflowKey(second)) || eventCreatedAtMs(second) - eventCreatedAtMs(first);
+    }
+    return eventCreatedAtMs(second) - eventCreatedAtMs(first);
   });
+  const groupedEvents = Array.from(
+    filteredEvents.reduce<Map<string, ApiRecord[]>>((groups, event) => {
+      const key = eventWorkflowKey(event);
+      groups.set(key, [...(groups.get(key) || []), event]);
+      return groups;
+    }, new Map()),
+  );
 
   if (!data.auditEvents.length) {
     return (
@@ -981,8 +1155,9 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
 
   return (
     <section className="grid gap-5">
+      {/* Filter bar: pill buttons for decision + dropdowns for risk type / stage */}
       <section className="glass-card rounded-3xl p-5">
-        <div className="grid gap-4 xl:grid-cols-[1fr_auto_auto_auto] xl:items-center">
+        <div className="grid gap-4">
           <label className="flex min-h-11 items-center gap-2 rounded-2xl border border-line bg-ink/55 px-3 text-sm text-textSecondary">
             <Search size={16} aria-hidden="true" />
             <input
@@ -992,22 +1167,72 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
               className="min-w-0 flex-1 bg-transparent text-textPrimary outline-none placeholder:text-textSecondary"
             />
           </label>
-          <FilterSelect label="Decision" value={decisionFilter} options={decisions} onChange={setDecisionFilter} />
-          <FilterSelect label="Risk type" value={riskTypeFilter} options={riskTypeOptions} onChange={setRiskTypeFilter} />
-          <FilterSelect label="Stage" value={stageFilter} options={stages} onChange={setStageFilter} />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  { label: `All (${data.auditEvents.length})`, value: "ALL" },
+                  { label: `Block (${blockCount})`, value: "BLOCK" },
+                  { label: `Review (${reviewCount})`, value: "REVIEW" },
+                  { label: `Allow (${allowCount})`, value: "ALLOW" },
+                ] as const
+              ).map(({ label, value }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setDecisionFilter(value)}
+                  className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.12em] transition ${
+                    decisionFilter === value
+                      ? "border-accent/50 bg-accent/12 text-textPrimary"
+                      : "border-line bg-white/[0.04] text-textSecondary hover:border-accent/35 hover:text-textPrimary"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <FilterSelect label="Agent" value={agentFilter} options={agents} onChange={setAgentFilter} />
+              <FilterSelect label="Tool" value={toolFilter} options={tools} onChange={setToolFilter} />
+              <FilterSelect label="Environment" value={environmentFilter} options={environments} onChange={setEnvironmentFilter} />
+              <FilterSelect label="Risk type" value={riskTypeFilter} options={riskTypeOptions} onChange={setRiskTypeFilter} />
+              <FilterSelect label="Stage" value={stageFilter} options={stages} onChange={setStageFilter} />
+              <FilterSelect label="Date" value={dateRangeFilter} options={["ALL", "24H", "7D"]} onChange={setDateRangeFilter} />
+              <FilterSelect
+                label="Sort"
+                value={sortMode}
+                options={["NEWEST", "RISK", "BLOCKED", "WORKFLOW"]}
+                onChange={setSortMode}
+              />
+            </div>
+          </div>
         </div>
       </section>
 
+      {/* Events table with fuchsia accent edge */}
       <section className="glass-card overflow-hidden rounded-3xl">
-        <div className="grid grid-cols-[1fr_96px_108px_1.5fr] gap-x-4 border-b border-line px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary max-xl:hidden">
-          <span>Decision &amp; time</span>
-          <span>Risk</span>
+        <div className="pointer-events-none h-0.5 bg-gradient-to-r from-fuchsia-400/60 via-violet-400/35 to-transparent" />
+        <div className="grid grid-cols-[1fr_1.5fr_108px_96px_90px_1fr] gap-x-4 border-b border-line px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary max-xl:hidden">
+          <span>Agent</span>
+          <span>Reason</span>
           <span>Stage</span>
-          <span>Agent &amp; reason</span>
+          <span>Risk</span>
+          <span>Decision</span>
+          <span>Time</span>
         </div>
         <div className="grid">
           {filteredEvents.length ? (
-            filteredEvents.map((event) => {
+            sortMode === "WORKFLOW" ? (
+              groupedEvents.map(([groupId, events]) => (
+                <AuditEventGroup
+                  key={groupId}
+                  events={events}
+                  expandedEventId={expandedEventId}
+                  groupId={groupId}
+                  onExpandedEventChange={setExpandedEventId}
+                />
+              ))
+            ) : filteredEvents.map((event) => {
               const eventId = readText(event, ["event_id"]) || "";
               const expanded = expandedEventId === eventId;
               return (
