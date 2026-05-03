@@ -339,6 +339,125 @@ class EvaluationResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class ToolRecord(Base):
+    __tablename__ = "tool_records"
+
+    tool_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tool_name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(80), nullable=False, default="custom")
+    side_effect_level: Mapped[str] = mapped_column(String(40), nullable=False, default="read_only")
+    input_schema: Mapped[dict] = mapped_column(JSONB, default=dict)
+    output_schema: Mapped[dict] = mapped_column(JSONB, default=dict)
+    permissions: Mapped[dict] = mapped_column(JSONB, default=dict)
+    allowed_actions: Mapped[list] = mapped_column(JSONB, default=list)
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    owner: Mapped[str] = mapped_column(String(120), nullable=False)
+    config_hash: Mapped[str | None] = mapped_column(String(64))
+    artifact_digest: Mapped[str | None] = mapped_column(String(128))
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ToolCertification(Base):
+    __tablename__ = "tool_certifications"
+
+    certification_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tool_id: Mapped[str] = mapped_column(
+        ForeignKey("tool_records.tool_id"), nullable=False, unique=True
+    )
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="DRAFT")
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_digest: Mapped[str | None] = mapped_column(String(128))
+    last_evaluation_run_id: Mapped[str | None] = mapped_column(String(64))
+    certified_by: Mapped[str | None] = mapped_column(String(160))
+    certified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AgentCertification(Base):
+    __tablename__ = "agent_certifications"
+
+    certification_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_identities.agent_id"), nullable=False, unique=True
+    )
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="DRAFT")
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    invalidation_reason: Mapped[str | None] = mapped_column(String(200))
+    last_evaluation_run_id: Mapped[str | None] = mapped_column(String(64))
+    certified_by: Mapped[str | None] = mapped_column(String(160))
+    certified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class WorkflowCertification(Base):
+    __tablename__ = "workflow_certifications"
+
+    certification_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workflow_definition_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_definitions.workflow_definition_id"),
+        nullable=False,
+        unique=True,
+    )
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="DRAFT")
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    invalidation_reason: Mapped[str | None] = mapped_column(String(200))
+    last_evaluation_run_id: Mapped[str | None] = mapped_column(String(64))
+    certified_by: Mapped[str | None] = mapped_column(String(160))
+    certified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EvaluationRun(Base):
+    __tablename__ = "evaluation_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_digest: Mapped[str | None] = mapped_column(String(128))
+    triggered_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="RUNNING")
+    overall_result: Mapped[str | None] = mapped_column(String(20))
+    criteria_total: Mapped[int] = mapped_column(Integer, default=0)
+    criteria_passed: Mapped[int] = mapped_column(Integer, default=0)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EvaluationCriterionResult(Base):
+    __tablename__ = "evaluation_criterion_results"
+
+    criterion_result_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_runs.run_id"), nullable=False
+    )
+    evaluator_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    criterion_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    score: Mapped[int | None] = mapped_column(Integer)
+    evidence_sentence: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_value: Mapped[dict] = mapped_column(JSONB, default=dict)
+    expected_value: Mapped[dict] = mapped_column(JSONB, default=dict)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    input_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
 

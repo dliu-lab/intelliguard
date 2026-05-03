@@ -9,10 +9,10 @@ policy decisions, and visualizes each agent run as an auditable workflow trace.
 
 - Python governance SDK for agent frameworks and custom agents.
 - FastAPI governance API for microservices and non-Python systems.
-- Postgres audit store, review queue, customer demo data, and workflow events.
+- Postgres governance store for audit events, review queue, workflow traces, registry records, and evaluations.
 - React dashboard with an n8n-style workflow trace and workflow designer.
-- CLI demo for a customer support agent using governed tools.
-- Agent marketplace and tool marketplace with permission grants.
+- CLI harness for a governed agent using explicitly registered tools.
+- Agent, tool, evaluator, guardrail, and knowledge-base registries with certification-aware permission grants.
 - Multi-agent workflow grouping with lead and sub-agent traces.
 
 ## Tech Stack
@@ -57,10 +57,12 @@ Services:
 - Dashboard: `http://localhost:5175`
 - Postgres: `localhost:55432`
 
-The API initializes tables and seed demo data on startup when `AUTO_INIT_DB=true`.
+The API initializes and migrates tables on startup when `AUTO_INIT_DB=true`.
+It does not seed demo records by default. Set `SEED_DEMO_DATA=true` only for local demos.
 
 ## Demo CLI
 
+The CLI harness is for local demos only and expects `SEED_DEMO_DATA=true`.
 After installing the Python package locally:
 
 ```bash
@@ -74,18 +76,20 @@ Use `DATABASE_URL` to point the CLI at Postgres.
 
 ## API Examples
 
-List marketplace agents, list marketplace tools, and grant a tool permission:
+List registered agents, list registered tools, evaluate a tool contract, and grant a tool permission.
+These examples assume you have already registered the agent and tool records through
+the dashboard or API:
 
 ```bash
-curl http://localhost:8000/v1/agent-marketplace
-
-curl http://localhost:8000/v1/tool-marketplace
-
 curl http://localhost:8000/v1/agents
 
-curl -X POST http://localhost:8000/v1/agents/customer-support-agent/tool-grants \
+curl http://localhost:8000/v1/tools
+
+curl -X POST http://localhost:8000/v1/tools/tool_example/evaluate
+
+curl -X POST http://localhost:8000/v1/agents/banking-account-inquiry-agent/tool-grants \
   -H "Content-Type: application/json" \
-  -d '{"tool_name":"search_customers"}'
+  -d '{"tool_name":"get_account_summary"}'
 ```
 
 Evaluate-only mode:
@@ -93,7 +97,7 @@ Evaluate-only mode:
 ```bash
 curl -X POST http://localhost:8000/v1/evaluate-tool-call \
   -H "Content-Type: application/json" \
-  -d '{"agent_id":"customer-support-agent","session_id":"sess_demo","user_query":"Show recent transactions for customer C123","tool_name":"get_customer_transactions","tool_args":{"customer_id":"C123"}}'
+  -d '{"agent_id":"banking-account-inquiry-agent","session_id":"sess_demo","user_query":"Summarize account activity for authenticated account A123","tool_name":"get_account_summary","tool_args":{"account_id":"A123"}}'
 ```
 
 Gateway mode:
@@ -101,7 +105,7 @@ Gateway mode:
 ```bash
 curl -X POST http://localhost:8000/v1/governed-tool-call \
   -H "Content-Type: application/json" \
-  -d '{"agent_id":"customer-support-agent","session_id":"sess_demo","user_query":"Show recent transactions for customer C123","tool_name":"get_customer_transactions","tool_args":{"customer_id":"C123"}}'
+  -d '{"agent_id":"banking-account-inquiry-agent","session_id":"sess_demo","user_query":"Summarize account activity for authenticated account A123","tool_name":"get_account_summary","tool_args":{"account_id":"A123"}}'
 ```
 
 Agent demo mode:
@@ -117,7 +121,7 @@ Multi-agent workflow mode:
 ```bash
 curl -X POST http://localhost:8000/v1/multi-agent-runs \
   -H "Content-Type: application/json" \
-  -d '{"query":"Investigate recent transactions for customer C123 and prepare a safe support summary"}'
+  -d '{"query":"Prepare a safe account inquiry response for authenticated account A123"}'
 
 curl http://localhost:8000/v1/workflows
 ```

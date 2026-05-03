@@ -24,8 +24,8 @@ export function WorkspaceShell({
   onEnvironmentSelect,
   onLogout,
   onRefresh,
+  onWorkflowAuditSelect,
   onViewSelect,
-  onWorkflowTraceSelect,
   selectedEnvironment,
   selectedTraceWorkflowId,
   user,
@@ -39,13 +39,16 @@ export function WorkspaceShell({
   onEnvironmentSelect: (environment: string) => void;
   onLogout: () => void;
   onRefresh: () => void;
+  onWorkflowAuditSelect: (workflowIdOrSessionId: string) => void;
   onViewSelect: (view: WorkspaceView) => void;
-  onWorkflowTraceSelect: (workflowId: string) => void;
   selectedEnvironment: string;
   selectedTraceWorkflowId: string;
   user: AuthUser | null;
 }) {
   const active = workspaceViews.find((view) => view.id === activeView) || workspaceViews[0];
+  const platformViews = workspaceViews.filter((view) => view.group === "platform");
+  const controlViews = workspaceViews.filter((view) => view.group === "control");
+  const runtimeViews = workspaceViews.filter((view) => view.group === "runtime");
   const environmentOptions = ["all", ...data.environments.filter((environment) => environment !== "all")];
   const [platformTime, setPlatformTime] = useState(formatPlatformTime);
 
@@ -114,30 +117,32 @@ export function WorkspaceShell({
       </section>
 
       <div className="grid min-h-screen lg:grid-cols-[352px_minmax(0,1fr)]">
-        <aside className="border-b border-line bg-panel/82 p-6 backdrop-blur-xl lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r">
+        <aside className="border-b border-line bg-panel/82 p-6 backdrop-blur-xl lg:sticky lg:top-[68px] lg:h-[calc(100vh-68px)] lg:overflow-y-auto lg:border-b-0 lg:border-r">
           <div className="flex h-full flex-col gap-7">
-            <nav className="grid gap-3.5" aria-label="Platform sections">
-              {workspaceViews.map((view) => (
-                <a
-                  key={view.id}
-                  href={`/platform/?view=${view.id}`}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    onViewSelect(view.id);
-                  }}
-                  className={`rounded-[26px] border px-5 py-4 text-base font-semibold leading-tight transition focus:outline-none focus:ring-2 focus:ring-accent/40 ${
-                    activeView === view.id
-                      ? "border-accent/55 bg-accent/[0.14] text-textPrimary shadow-[inset_5px_0_0_rgb(var(--color-accent))]"
-                      : "border-transparent bg-white/[0.025] text-textSecondary hover:border-line hover:bg-white/[0.07] hover:text-textPrimary"
-                  }`}
-                >
-                  <span className="block">{view.label}</span>
-                </a>
-              ))}
+            <nav className="grid gap-6" aria-label="Platform sections">
+              <WorkspaceNavStandalone
+                activeView={activeView}
+                onViewSelect={onViewSelect}
+                views={platformViews}
+              />
+              <WorkspaceNavGroup
+                activeView={activeView}
+                label="Control Plane"
+                onViewSelect={onViewSelect}
+                tone="control"
+                views={controlViews}
+              />
+              <WorkspaceNavGroup
+                activeView={activeView}
+                label="Runtime Plane"
+                onViewSelect={onViewSelect}
+                tone="runtime"
+                views={runtimeViews}
+              />
             </nav>
 
-            <div className="mt-auto grid gap-3">
-              <div className="flex items-center gap-3 rounded-2xl border border-line bg-white/[0.06] p-3">
+            <div className="mt-auto grid gap-3 border-t border-line pt-4">
+              <div className="flex items-center gap-3 rounded-2xl border border-line bg-ink/45 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 items-center gap-2 text-sm font-semibold">
                     <KeyRound className="shrink-0 text-accent" size={16} aria-hidden="true" />
@@ -148,7 +153,7 @@ export function WorkspaceShell({
                 <button
                   type="button"
                   onClick={onLogout}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-line bg-ink/55 text-textSecondary transition hover:border-accent/45 hover:bg-accent/10 hover:text-textPrimary focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-line bg-white/[0.04] text-textSecondary transition hover:border-accent/45 hover:bg-accent/10 hover:text-textPrimary focus:outline-none focus:ring-2 focus:ring-accent/40"
                   aria-label="Logout"
                   title="Logout"
                 >
@@ -183,8 +188,8 @@ export function WorkspaceShell({
             data={data}
             dataStatus={dataStatus}
             onComponentSelect={onComponentSelect}
+            onWorkflowAuditSelect={onWorkflowAuditSelect}
             onRefresh={onRefresh}
-            onWorkflowTraceSelect={onWorkflowTraceSelect}
             selectedEnvironment={selectedEnvironment}
             selectedTraceWorkflowId={selectedTraceWorkflowId}
           />
@@ -192,5 +197,90 @@ export function WorkspaceShell({
       </div>
       <FacilitatorBot />
     </main>
+  );
+}
+
+function WorkspaceNavStandalone({
+  activeView,
+  onViewSelect,
+  views,
+}: {
+  activeView: WorkspaceView;
+  onViewSelect: (view: WorkspaceView) => void;
+  views: typeof workspaceViews;
+}) {
+  return (
+    <div className="grid gap-2">
+      {views.map((view) => (
+        <WorkspaceNavItem
+          key={view.id}
+          activeView={activeView}
+          onViewSelect={onViewSelect}
+          view={view}
+        />
+      ))}
+    </div>
+  );
+}
+
+function WorkspaceNavGroup({
+  activeView,
+  label,
+  onViewSelect,
+  tone,
+  views,
+}: {
+  activeView: WorkspaceView;
+  label: string;
+  onViewSelect: (view: WorkspaceView) => void;
+  tone: "control" | "runtime";
+  views: typeof workspaceViews;
+}) {
+  const toneClasses = tone === "control" ? "border-cyan-300/40" : "border-amber-300/40";
+  const labelClasses = tone === "control" ? "text-cyan-100/75" : "text-amber-100/75";
+
+  return (
+    <div className={`border-l-2 pl-3 ${toneClasses}`}>
+      <p className={`px-2 text-[11px] font-semibold uppercase tracking-[0.22em] ${labelClasses}`}>
+        {label}
+      </p>
+      <div className="mt-3 grid gap-1">
+        {views.map((view) => (
+          <WorkspaceNavItem
+            key={view.id}
+            activeView={activeView}
+            onViewSelect={onViewSelect}
+            view={view}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceNavItem({
+  activeView,
+  onViewSelect,
+  view,
+}: {
+  activeView: WorkspaceView;
+  onViewSelect: (view: WorkspaceView) => void;
+  view: (typeof workspaceViews)[number];
+}) {
+  return (
+    <a
+      href={`/platform/?view=${view.id}`}
+      onClick={(event) => {
+        event.preventDefault();
+        onViewSelect(view.id);
+      }}
+      className={`rounded-xl px-4 py-3 text-sm font-semibold leading-tight transition focus:outline-none focus:ring-2 focus:ring-accent/40 ${
+        activeView === view.id
+          ? "bg-accent/[0.12] text-textPrimary shadow-[inset_3px_0_0_rgb(var(--color-accent))]"
+          : "text-textSecondary hover:bg-white/[0.045] hover:text-textPrimary"
+      }`}
+    >
+      <span className="block">{view.label}</span>
+    </a>
   );
 }

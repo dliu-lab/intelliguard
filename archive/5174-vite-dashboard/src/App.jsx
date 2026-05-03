@@ -2131,7 +2131,7 @@ if (decision.status === "blocked") {
           <a href="#developers">Developers</a>
           <a href="#contact">Contact</a>
         </nav>
-        <small>Copyright 2026 IntelliGuard. All rights reserved.</small>
+        <small>Copyright 2026 IntelliData Consulting Pty Ltd. All rights reserved.</small>
       </footer>
 
       {authMode ? (

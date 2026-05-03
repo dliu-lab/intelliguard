@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { CheckCircle2, ChevronDown, FileJson, Search, SlidersHorizontal, XCircle } from "lucide-react";
-import { getSession, resolveReview, type ApiRecord, type PlatformData } from "@/lib/api";
-import { ComponentRow } from "./shared";
-import { formatCount, formatTimestamp, joinParts, readNestedText, readText } from "./utils";
+import type { FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { CheckCircle2, ChevronDown, FileJson, PlayCircle, RotateCw, Search, SlidersHorizontal, XCircle } from "lucide-react";
+import { getSession, resolveReview, runMultiAgentWorkflow, type ApiRecord, type PlatformData } from "@/lib/api";
+import { ComponentRow, PlatformSurface } from "./shared";
+import { formatCount, formatTimestamp, isErrorMessage, joinParts, readNestedText, readText } from "./utils";
 
 function workflowRunId(workflow: ApiRecord) {
   return readText(workflow, ["workflow_id", "id", "session_id"]) || "";
@@ -29,6 +30,8 @@ function workflowRunSearchText(workflow: ApiRecord) {
     readText(workflow, ["name", "workflow_id", "id", "session_id"]),
     readText(workflow, ["summary", "user_goal"]),
     readText(workflow, ["decision", "status"]),
+    readNestedText(workflow, ["metadata", "workflow_definition_id"]),
+    readNestedText(workflow, ["metadata", "domain"]),
     readText(workflow, ["created_at", "updated_at"]),
   ]
     .filter(Boolean)
@@ -36,68 +39,362 @@ function workflowRunSearchText(workflow: ApiRecord) {
     .toLowerCase();
 }
 
+function workflowDefinitionId(workflow: ApiRecord, detail?: ApiRecord) {
+  return (
+    readText(workflow, ["workflow_definition_id"])
+    || readNestedText(workflow, ["metadata", "workflow_definition_id"])
+    || (detail ? readText(detail, ["workflow_definition_id"]) : undefined)
+    || readNestedText(detail || {}, ["metadata", "workflow_definition_id"])
+    || ""
+  );
+}
+
+function workflowDomain(workflow: ApiRecord, detail?: ApiRecord) {
+  return (
+    readText(workflow, ["domain"])
+    || readNestedText(workflow, ["metadata", "domain"])
+    || (detail ? readText(detail, ["domain"]) : undefined)
+    || readNestedText(detail || {}, ["metadata", "domain"])
+    || "general"
+  );
+}
+
+function workflowPendingReviews(workflow: ApiRecord, detail: ApiRecord, reviewQueue: ApiRecord[]) {
+  const workflowId = workflowRunId(workflow) || readText(detail, ["workflow_id"]);
+  const sessions = asRecords(detail.sessions);
+  const sessionIds = new Set(sessions.map((session) => readText(session, ["session_id"])).filter(Boolean));
+
+  return reviewQueue.filter((review) => {
+    if ((readText(review, ["status"]) || "PENDING") !== "PENDING") {
+      return false;
+    }
+    return (
+      Boolean(workflowId && readText(review, ["workflow_id"]) === workflowId)
+      || Boolean(readText(review, ["session_id"]) && sessionIds.has(readText(review, ["session_id"]) || ""))
+    );
+  });
+}
+
+type WorkflowRunBucket = "running" | "successful" | "failed" | "pending_human";
+type WorkflowRunView = "all" | WorkflowRunBucket;
+
+function workflowRunBucket(workflow: ApiRecord, detail: ApiRecord, reviewQueue: ApiRecord[]): WorkflowRunBucket {
+  const value = (joinParts([
+    readText(workflow, ["status", "decision"]),
+    readText(detail, ["status", "decision"]),
+  ]) || "").toUpperCase();
+
+  if (workflowPendingReviews(workflow, detail, reviewQueue).length || value.includes("REVIEW")) {
+    return "pending_human";
+  }
+  if (value.includes("FAIL") || value.includes("ERROR") || value.includes("BLOCK") || value.includes("DENIED")) {
+    return "failed";
+  }
+  if (value.includes("SUCCESS") || value.includes("COMPLETE") || value.includes("ALLOW") || value.includes("APPROVED")) {
+    return "successful";
+  }
+  return "running";
+}
+
+const WORKFLOW_BUCKETS: Array<{ id: WorkflowRunBucket; label: string; detail: string }> = [
+  { id: "running", label: "Running", detail: "Active or recently started workflow executions." },
+  { id: "pending_human", label: "Pending on Human", detail: "Workflow executions waiting for reviewer action." },
+  { id: "successful", label: "Successful", detail: "Workflow executions completed without a blocking decision." },
+  { id: "failed", label: "Failed", detail: "Workflow executions blocked, failed, or denied." },
+];
+
+const WORKFLOW_RUN_VIEWS: Array<{ id: WorkflowRunView; label: string; detail: string }> = [
+  { id: "all", label: "All", detail: "Every workflow run available in the current environment." },
+  ...WORKFLOW_BUCKETS,
+];
+
 export function WorkflowTraceWorkspace({
   data,
+  onAuditEventsSelect,
+  onRefresh,
   selectedWorkflowId,
 }: {
   data: PlatformData;
+  onAuditEventsSelect: (workflowIdOrSessionId: string) => void;
+  onRefresh: () => void;
   selectedWorkflowId: string;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
-  const filteredWorkflowRuns = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) {
-      return selectedWorkflowId
-        ? data.workflows.filter((workflow) => recordMatchesWorkflow(workflow, selectedWorkflowId))
-        : data.workflows;
+  const [selectedWorkflowDefinitionId, setSelectedWorkflowDefinitionId] = useState("");
+  const [runQuery, setRunQuery] = useState("I need to check my bank account.");
+  const [message, setMessage] = useState("");
+  const [runningWorkflowDefinitionId, setRunningWorkflowDefinitionId] = useState("");
+  const [expandedWorkflowIds, setExpandedWorkflowIds] = useState<Record<string, boolean>>({});
+  const [runView, setRunView] = useState<WorkflowRunView>("all");
+
+  useEffect(() => {
+    const workflowIds = data.workflowDefinitions
+      .map((workflow) => readText(workflow, ["workflow_definition_id"]))
+      .filter(Boolean) as string[];
+
+    if (!workflowIds.length) {
+      setSelectedWorkflowDefinitionId("");
+      return;
     }
 
-    return data.workflows.filter((workflow) => workflowRunSearchText(workflow).includes(query));
-  }, [data.workflows, searchQuery, selectedWorkflowId]);
+    if (!selectedWorkflowDefinitionId || !workflowIds.includes(selectedWorkflowDefinitionId)) {
+      setSelectedWorkflowDefinitionId(workflowIds[0]);
+    }
+  }, [data.workflowDefinitions, selectedWorkflowDefinitionId]);
 
-  const workflowRuns = filteredWorkflowRuns;
+  useEffect(() => {
+    if (!selectedWorkflowId) {
+      return;
+    }
+    setExpandedWorkflowIds((current) => ({ ...current, [selectedWorkflowId]: true }));
+  }, [selectedWorkflowId]);
 
-  if (!data.workflows.length) {
-    return (
-      <section className="glass-card rounded-3xl p-6">
-        <ComponentRow title="No workflow traces" detail="Run a workflow to create grouped trace evidence." />
-      </section>
+  const workflowRows = useMemo(() => {
+    const visibleWorkflows = selectedWorkflowId
+      ? data.workflows.filter((workflow) => recordMatchesWorkflow(workflow, selectedWorkflowId))
+      : data.workflows;
+
+    return visibleWorkflows.map((workflow) => {
+      const detail = data.workflowDetails.find((item) => readText(item, ["workflow_id"]) === readText(workflow, ["workflow_id"])) || workflow;
+      return {
+        bucket: workflowRunBucket(workflow, detail, data.reviewQueue),
+        detail,
+        workflow,
+      };
+    });
+  }, [data.workflowDetails, data.reviewQueue, data.workflows, selectedWorkflowId]);
+
+  const searchedWorkflowRows = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+
+    if (!query) {
+      return workflowRows;
+    }
+
+    return workflowRows.filter(({ workflow }) => workflowRunSearchText(workflow).includes(query));
+  }, [searchQuery, workflowRows]);
+
+  const visibleWorkflowRows = useMemo(() => {
+    if (runView === "all") {
+      return searchedWorkflowRows;
+    }
+
+    return searchedWorkflowRows.filter((row) => row.bucket === runView);
+  }, [runView, searchedWorkflowRows]);
+
+  const workflowRunCounts = useMemo(() => {
+    return WORKFLOW_RUN_VIEWS.reduce<Record<WorkflowRunView, number>>(
+      (counts, view) => {
+        counts[view.id] = view.id === "all" ? workflowRows.length : workflowRows.filter((row) => row.bucket === view.id).length;
+        return counts;
+      },
+      {
+        all: 0,
+        failed: 0,
+        pending_human: 0,
+        running: 0,
+        successful: 0,
+      },
     );
+  }, [workflowRows]);
+
+  const activeRunView = WORKFLOW_RUN_VIEWS.find((view) => view.id === runView) || WORKFLOW_RUN_VIEWS[0];
+
+  async function executeWorkflow(workflowDefinitionId: string, query: string) {
+    setMessage("");
+
+    const session = getSession();
+    if (!session?.token) {
+      setMessage("Session expired. Login again before running a workflow.");
+      return;
+    }
+    if (!workflowDefinitionId) {
+      setMessage("Select a workflow definition before running.");
+      return;
+    }
+
+    try {
+      setRunningWorkflowDefinitionId(workflowDefinitionId);
+      await runMultiAgentWorkflow(session.token, {
+        query,
+        workflow_definition_id: workflowDefinitionId,
+      });
+      setMessage("Workflow run started.");
+      await onRefresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to run workflow.");
+    } finally {
+      setRunningWorkflowDefinitionId("");
+    }
+  }
+
+  async function runWorkflow(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await executeWorkflow(selectedWorkflowDefinitionId, runQuery);
+  }
+
+  function rerunWorkflow(workflow: ApiRecord, detail: ApiRecord) {
+    const definitionId = workflowDefinitionId(workflow, detail);
+    void executeWorkflow(definitionId, readText(workflow, ["user_goal"]) || readText(detail, ["user_goal"]) || runQuery);
+  }
+
+  function toggleWorkflow(workflowId: string) {
+    setExpandedWorkflowIds((current) => ({ ...current, [workflowId]: !current[workflowId] }));
   }
 
   return (
     <section className="grid gap-5">
-      <section className="glass-card rounded-3xl p-5">
-        <label className="flex min-h-11 items-center gap-2 rounded-2xl border border-line bg-ink/55 px-3 text-sm text-textSecondary">
-          <Search size={16} aria-hidden="true" />
-          <input
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search workflow traces..."
-            className="min-w-0 flex-1 bg-transparent text-textPrimary outline-none placeholder:text-textSecondary"
-          />
-        </label>
-      </section>
+      {message ? (
+        <div
+          className={`rounded-3xl border p-4 text-sm ${
+            isErrorMessage(message)
+              ? "border-red-400/45 bg-red-500/10 text-red-200"
+              : "border-line bg-white/[0.04] text-textSecondary"
+          }`}
+        >
+          {message}
+        </div>
+      ) : null}
 
-      {workflowRuns.length ? (
-        workflowRuns.map((workflow) => (
-          <WorkflowTraceGroup
-            key={workflowRunId(workflow) || readText(workflow, ["session_id"])}
-            auditEvents={data.auditEvents}
-            detail={
-              data.workflowDetails.find(
-                (item) => readText(item, ["workflow_id"]) === readText(workflow, ["workflow_id"]),
-              ) || workflow
-            }
-            reviewQueue={data.reviewQueue}
-            workflow={workflow}
-          />
-        ))
-      ) : (
-        <section className="glass-card rounded-3xl p-6">
-          <ComponentRow title="No matching workflow traces" detail="Adjust the search to find another trace." />
+      <PlatformSurface tone="sky">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,0.8fr)_minmax(420px,1.2fr)] xl:items-end">
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Workflow Runner</span>
+            <h4 className="mt-2 text-xl font-semibold tracking-[-0.02em] text-textPrimary">
+              Run and inspect workflows
+            </h4>
+            <p className="mt-2 text-sm leading-6 text-textSecondary">
+              Start a workflow definition, then filter runtime traces by execution state.
+            </p>
+          </div>
+
+          <form className="grid gap-3 lg:grid-cols-[minmax(220px,0.42fr)_minmax(0,1fr)_auto]" onSubmit={runWorkflow}>
+            <label className="grid gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+              Definition
+              <select
+                value={selectedWorkflowDefinitionId}
+                onChange={(event) => setSelectedWorkflowDefinitionId(event.target.value)}
+                className="field-input"
+              >
+                {data.workflowDefinitions.map((workflow) => (
+                  <option key={String(workflow.workflow_definition_id)} value={String(workflow.workflow_definition_id)}>
+                    {joinParts([
+                      readText(workflow, ["name", "workflow_definition_id"]) || "Workflow definition",
+                      readText(workflow, ["environment"]),
+                    ])}
+                  </option>
+                ))}
+                {!data.workflowDefinitions.length ? <option value="">No workflow definitions</option> : null}
+              </select>
+            </label>
+            <label className="grid gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+              Goal
+              <input value={runQuery} onChange={(event) => setRunQuery(event.target.value)} className="field-input" />
+            </label>
+            <button
+              type="submit"
+              disabled={Boolean(runningWorkflowDefinitionId)}
+              className="inline-flex min-h-11 items-center justify-center gap-2 self-end rounded-full border border-accent/35 bg-accent/10 px-5 text-sm font-semibold text-textPrimary transition hover:border-accent/55 hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <PlayCircle size={16} aria-hidden="true" />
+              {runningWorkflowDefinitionId ? "Running" : "Run"}
+            </button>
+          </form>
+        </div>
+      </PlatformSurface>
+
+      <section className="grid gap-5 xl:grid-cols-[minmax(290px,0.34fr)_minmax(0,1fr)]">
+        <PlatformSurface tone="sky">
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Runtime traces</span>
+            <h4 className="mt-2 text-xl font-semibold tracking-[-0.02em] text-textPrimary">
+              Filter workflow runs
+            </h4>
+            <p className="mt-2 text-sm leading-6 text-textSecondary">
+              Review workflow executions by runtime state before opening trace detail.
+            </p>
+          </div>
+
+          <div className="mt-5 border-t border-line pt-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-textSecondary">
+              Runs
+            </p>
+            <div className="mt-3 grid gap-2">
+              {WORKFLOW_RUN_VIEWS.map((view) => (
+                <button
+                  key={view.id}
+                  type="button"
+                  onClick={() => setRunView(view.id)}
+                  className={`flex items-center justify-between rounded-xl border px-3 py-2 text-left text-sm font-semibold transition hover:border-accent/45 hover:bg-accent/10 ${
+                    runView === view.id ? "border-accent/45 bg-accent/10 text-textPrimary" : "border-line bg-ink/45 text-textSecondary"
+                  }`}
+                >
+                  <span>{view.label}</span>
+                  <span>{workflowRunCounts[view.id]}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </PlatformSurface>
+
+        <section className="rounded-3xl border border-line bg-white/[0.035] p-5">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.55fr)] lg:items-end">
+            <div>
+              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Agentic workflows</span>
+              <h3 className="mt-2 text-xl font-semibold text-textPrimary">{activeRunView.label} runs</h3>
+              <p className="mt-1 text-sm leading-6 text-textSecondary">
+                {selectedWorkflowId
+                  ? `Showing audit-linked trace ${selectedWorkflowId}.`
+                  : activeRunView.detail}
+              </p>
+            </div>
+            <label className="flex min-h-11 items-center gap-3 rounded-2xl border border-line bg-ink/65 px-4 py-3 text-sm text-textSecondary">
+              <Search size={17} aria-hidden="true" />
+              <input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search workflow runs, definitions, domains, or goals..."
+                className="w-full bg-transparent text-textPrimary outline-none placeholder:text-textSecondary"
+              />
+            </label>
+          </div>
+
+          <div className="mt-4 grid gap-3">
+            {visibleWorkflowRows.length ? (
+              visibleWorkflowRows.map(({ detail, workflow }) => {
+                const id = workflowRunId(workflow) || readText(detail, ["workflow_id"]);
+                return (
+                  <WorkflowTraceGroup
+                    key={id || readText(workflow, ["session_id"])}
+                    auditEvents={data.auditEvents}
+                    detail={detail}
+                    expanded={Boolean(id && expandedWorkflowIds[id])}
+                    onAuditEventsSelect={onAuditEventsSelect}
+                    onRerun={() => rerunWorkflow(workflow, detail)}
+                    onToggle={() => id && toggleWorkflow(id)}
+                    reviewQueue={data.reviewQueue}
+                    running={runningWorkflowDefinitionId === workflowDefinitionId(workflow, detail)}
+                    workflow={workflow}
+                    workflowDefinitions={data.workflowDefinitions}
+                  />
+                );
+              })
+            ) : (
+              <ComponentRow
+                title={workflowRows.length ? "No matching workflow runs" : "No workflow runs"}
+                detail={workflowRows.length ? "Adjust the search or status filter." : "Run a workflow to create the first runtime trace."}
+              />
+            )}
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4 text-sm text-textSecondary">
+            <span>
+              Showing {visibleWorkflowRows.length} of {workflowRows.length}
+            </span>
+            {searchQuery ? <span>Search results filtered by "{searchQuery}"</span> : null}
+          </div>
         </section>
-      )}
+      </section>
     </section>
   );
 }
@@ -275,16 +572,312 @@ function decisionBadgeTone(decision: string | undefined, riskScore = 0): "allow"
   return "neutral";
 }
 
-function WorkflowTraceGroup({
+type RuntimeGraphStatus = "pending" | "running" | "success" | "failed" | "review";
+
+type RuntimeGraphNode = {
+  agentId: string;
+  id: string;
+  label: string;
+  nodeType: string;
+  status: RuntimeGraphStatus;
+};
+
+type RuntimeGraphEdge = {
+  from: string;
+  status: RuntimeGraphStatus;
+  to: string;
+};
+
+function runtimeStatusTone(status: RuntimeGraphStatus) {
+  return {
+    failed: "border-rose-300/60 bg-rose-300/15 text-rose-100",
+    pending: "border-line bg-white/[0.04] text-textSecondary",
+    review: "border-amber-300/60 bg-amber-300/15 text-amber-100",
+    running: "border-sky-300/60 bg-sky-300/15 text-sky-100",
+    success: "border-accent/50 bg-accent/12 text-accent",
+  }[status];
+}
+
+function runtimeStatusStroke(status: RuntimeGraphStatus) {
+  return {
+    failed: "#fb7185",
+    pending: "rgba(255,255,255,0.24)",
+    review: "#fbbf24",
+    running: "#38bdf8",
+    success: "#2bd4aa",
+  }[status];
+}
+
+function runtimeStatusLabel(status: RuntimeGraphStatus) {
+  return {
+    failed: "Failed",
+    pending: "Pending",
+    review: "Review",
+    running: "Running",
+    success: "Done",
+  }[status];
+}
+
+function sessionStepId(session: ApiRecord, index: number) {
+  return readNestedText(session, ["metadata", "step_id"])
+    || readText(session, ["role", "agent_id"])
+    || `step-${index + 1}`;
+}
+
+function sessionRuntimeStatus(session: ApiRecord, auditEvents: ApiRecord[], reviewItems: ApiRecord[]): RuntimeGraphStatus {
+  const value = (joinParts([
+    readNestedText(session, ["session", "status"]),
+    ...auditEvents.map((event) => readText(event, ["decision"])),
+    ...reviewItems.map((review) => readText(review, ["status"])),
+    ...asRecords(session.events).map((event) => readText(event, ["status", "event_type"])),
+  ]) || "").toUpperCase();
+
+  if (reviewItems.some((review) => (readText(review, ["status"]) || "PENDING") === "PENDING") || value.includes("REVIEW")) {
+    return "review";
+  }
+  if (value.includes("BLOCK") || value.includes("FAIL") || value.includes("ERROR") || value.includes("DENIED")) {
+    return "failed";
+  }
+  if (value.includes("RUNNING") || value.includes("STARTED") || value.includes("IN_PROGRESS")) {
+    return "running";
+  }
+  if (value.includes("COMPLETE") || value.includes("ALLOW") || value.includes("APPROVED")) {
+    return "success";
+  }
+  return "pending";
+}
+
+function workflowGraphDefinitionNodes(workflow: ApiRecord, workflowDefinition: ApiRecord | undefined, sessions: ApiRecord[]) {
+  const definitionNodes = asRecords(workflowDefinition?.nodes);
+  if (definitionNodes.length) {
+    return definitionNodes.map((node) => ({
+      agentId: readText(node, ["agent_id"]) || "",
+      id: readText(node, ["node_id", "step_id"]) || "",
+      label: readText(node, ["label", "node_id", "step_id"]) || "Workflow node",
+      nodeType: readText(node, ["node_type"]) || "task_agent",
+    })).filter((node) => node.id);
+  }
+
+  const definitionSteps = asRecords(workflowDefinition?.steps);
+  if (definitionSteps.length) {
+    return [
+      {
+        agentId: readText(workflow, ["lead_agent_id"]) || readText(workflowDefinition || {}, ["lead_agent_id"]) || "",
+        id: "lead",
+        label: "Lead routing",
+        nodeType: "lead_agent",
+      },
+      ...definitionSteps.map((step) => ({
+        agentId: readText(step, ["agent_id"]) || "",
+        id: readText(step, ["step_id"]) || "",
+        label: readText(step, ["label", "step_id"]) || "Workflow step",
+        nodeType: readText(step, ["node_type"]) || "task_agent",
+      })).filter((node) => node.id),
+    ];
+  }
+
+  return sessions.map((session, index) => ({
+    agentId: readText(session, ["agent_id"]) || "",
+    id: sessionStepId(session, index),
+    label: readText(session, ["role"]) || sessionStepId(session, index),
+    nodeType: readNestedText(session, ["agent_identity", "agent_type"]) || "agent",
+  }));
+}
+
+function workflowGraphDefinitionEdges(nodes: RuntimeGraphNode[], workflowDefinition: ApiRecord | undefined, workflow: ApiRecord) {
+  const definitionEdges = asRecords(workflowDefinition?.edges);
+  const metadata = objectValue(workflow, "metadata");
+  const metadataEdges = asRecords(metadata.workflow_connections);
+  const edges = definitionEdges.length ? definitionEdges : metadataEdges;
+
+  if (edges.length) {
+    return edges.map((edge) => ({
+      from: readText(edge, ["from_node_id", "from"]) || "",
+      to: readText(edge, ["to_node_id", "to"]) || "",
+    })).filter((edge) => edge.from && edge.to);
+  }
+
+  return nodes.slice(1).map((node, index) => ({
+    from: nodes[index].id,
+    to: node.id,
+  }));
+}
+
+function runtimeGraphModel({
   auditEvents,
   detail,
-  reviewQueue,
+  reviewItems,
   workflow,
+  workflowDefinition,
 }: {
   auditEvents: ApiRecord[];
   detail: ApiRecord;
-  reviewQueue: ApiRecord[];
+  reviewItems: ApiRecord[];
   workflow: ApiRecord;
+  workflowDefinition: ApiRecord | undefined;
+}) {
+  const sessions = asRecords(detail.sessions);
+  const sessionStatuses = new Map<string, RuntimeGraphStatus>();
+  sessions.forEach((session, index) => {
+    const sessionId = readText(session, ["session_id"]);
+    const stepId = sessionStepId(session, index);
+    const sessionAudits = auditEvents.filter((event) => readText(event, ["session_id"]) === sessionId);
+    const sessionReviews = reviewItems.filter((review) => readText(review, ["session_id"]) === sessionId);
+    sessionStatuses.set(stepId, sessionRuntimeStatus(session, sessionAudits, sessionReviews));
+  });
+
+  const nodes: RuntimeGraphNode[] = workflowGraphDefinitionNodes(workflow, workflowDefinition, sessions).map((node, index) => {
+    const status = sessionStatuses.get(node.id)
+      || (index === 0 && !sessions.length && String(readText(workflow, ["status"]) || "").toUpperCase().includes("RUNNING") ? "running" : "pending");
+    return { ...node, status };
+  });
+
+  const runningWorkflow = String(readText(workflow, ["status"]) || "").toUpperCase().includes("RUNNING");
+  if (runningWorkflow && nodes.length && !nodes.some((node) => node.status === "running" || node.status === "failed" || node.status === "review")) {
+    const firstPending = nodes.find((node) => node.status === "pending");
+    if (firstPending) {
+      firstPending.status = "running";
+    }
+  }
+
+  const edgeSpecs = workflowGraphDefinitionEdges(nodes, workflowDefinition, workflow);
+  const edges: RuntimeGraphEdge[] = edgeSpecs.map((edge) => {
+    const target = nodes.find((node) => node.id === edge.to);
+    const source = nodes.find((node) => node.id === edge.from);
+    const status = target?.status === "failed" || source?.status === "failed"
+      ? "failed"
+      : target?.status === "review" || source?.status === "review"
+        ? "review"
+        : target?.status === "running" || source?.status === "running"
+          ? "running"
+          : target?.status === "success" && source?.status === "success"
+            ? "success"
+            : "pending";
+    return { ...edge, status };
+  });
+
+  return { edges, nodes };
+}
+
+function WorkflowRuntimeGraph({
+  auditEvents,
+  detail,
+  reviewItems,
+  workflow,
+  workflowDefinition,
+}: {
+  auditEvents: ApiRecord[];
+  detail: ApiRecord;
+  reviewItems: ApiRecord[];
+  workflow: ApiRecord;
+  workflowDefinition: ApiRecord | undefined;
+}) {
+  const { edges, nodes } = runtimeGraphModel({ auditEvents, detail, reviewItems, workflow, workflowDefinition });
+  const width = Math.max(760, nodes.length * 210);
+  const height = 260;
+  const positions = new Map(
+    nodes.map((node, index) => [
+      node.id,
+      {
+        x: 90 + index * Math.max(160, (width - 180) / Math.max(1, nodes.length - 1)),
+        y: index % 2 ? 152 : 88,
+      },
+    ]),
+  );
+
+  if (!nodes.length) {
+    return (
+      <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+        <ComponentRow title="No runtime graph" detail="This run does not have a registered graph or linked step sessions yet." />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-textPrimary">Runtime graph</p>
+          <p className="mt-1 text-xs text-textSecondary">Node and edge state is derived from workflow sessions, review items, and audit events.</p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs text-textSecondary">
+          {(["running", "success", "review", "failed", "pending"] as RuntimeGraphStatus[]).map((status) => (
+            <span key={status} className={`rounded-full border px-2.5 py-1 ${runtimeStatusTone(status)}`}>
+              {runtimeStatusLabel(status)}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="mt-4 overflow-x-auto">
+        <div className="relative" style={{ width, height }}>
+          <svg className="absolute inset-0 h-full w-full" viewBox={`0 0 ${width} ${height}`}>
+            {edges.map((edge) => {
+              const from = positions.get(edge.from);
+              const to = positions.get(edge.to);
+              if (!from || !to) {
+                return null;
+              }
+              return (
+                <line
+                  key={`${edge.from}->${edge.to}`}
+                  x1={from.x + 72}
+                  y1={from.y + 38}
+                  x2={to.x - 72}
+                  y2={to.y + 38}
+                  stroke={runtimeStatusStroke(edge.status)}
+                  strokeDasharray={edge.status === "pending" ? "6 6" : undefined}
+                  strokeLinecap="round"
+                  strokeWidth={3}
+                />
+              );
+            })}
+          </svg>
+          {nodes.map((node) => {
+            const position = positions.get(node.id) || { x: 0, y: 0 };
+            return (
+              <div
+                key={node.id}
+                className={`absolute w-40 rounded-2xl border p-3 shadow-lg ${runtimeStatusTone(node.status)}`}
+                style={{ left: position.x - 80, top: position.y }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-xs font-semibold uppercase tracking-[0.12em]">{runtimeStatusLabel(node.status)}</span>
+                  <span className={`h-2.5 w-2.5 rounded-full ${node.status === "running" ? "animate-pulse bg-sky-300" : "bg-current"}`} />
+                </div>
+                <p className="mt-2 truncate text-sm font-semibold text-textPrimary">{node.label}</p>
+                <p className="mt-1 truncate text-xs text-textSecondary">{joinParts([node.id, node.nodeType])}</p>
+                {node.agentId ? <p className="mt-1 truncate text-xs text-textSecondary">{node.agentId}</p> : null}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WorkflowTraceGroup({
+  auditEvents,
+  detail,
+  expanded,
+  onAuditEventsSelect,
+  onRerun,
+  onToggle,
+  reviewQueue,
+  running,
+  workflow,
+  workflowDefinitions,
+}: {
+  auditEvents: ApiRecord[];
+  detail: ApiRecord;
+  expanded: boolean;
+  onAuditEventsSelect: (workflowIdOrSessionId: string) => void;
+  onRerun: () => void;
+  onToggle: () => void;
+  reviewQueue: ApiRecord[];
+  running: boolean;
+  workflow: ApiRecord;
+  workflowDefinitions: ApiRecord[];
 }) {
   const workflowId = readText(workflow, ["workflow_id"]) || readText(detail, ["workflow_id"]) || "";
   const sessions = asRecords(detail.sessions);
@@ -298,6 +891,12 @@ function WorkflowTraceGroup({
   const decision = readText(workflow, ["decision", "status"]) || readText(detail, ["decision", "status"]);
   const createdAt = formatTimestamp(readText(workflow, ["created_at"]) || readText(detail, ["created_at"]));
   const updatedAt = formatTimestamp(readText(workflow, ["updated_at"]) || readText(detail, ["updated_at"]));
+  const definitionId = workflowDefinitionId(workflow, detail);
+  const workflowDefinition = workflowDefinitions.find(
+    (definition) => readText(definition, ["workflow_definition_id"]) === definitionId,
+  );
+  const domain = workflowDomain(workflow, detail);
+  const metadata = objectValue(workflow, "metadata");
 
   return (
     <article className="glass-card rounded-3xl p-5">
@@ -310,41 +909,95 @@ function WorkflowTraceGroup({
           <p className="mt-2 text-sm leading-6 text-textSecondary">
             {readText(workflow, ["user_goal", "summary"]) || readText(detail, ["user_goal", "summary"]) || "Grouped workflow trace."}
           </p>
-          <p className="mt-2 text-xs text-textSecondary">
-            {joinParts([workflowId, createdAt ? `Created ${createdAt}` : undefined, updatedAt ? `Updated ${updatedAt}` : undefined])}
-          </p>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-textSecondary">
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{workflowId || "workflow"}</span>
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{definitionId || "no definition"}</span>
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{domain}</span>
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{readText(workflow, ["lead_agent_id"]) || "lead unknown"}</span>
+            {createdAt ? <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">created {createdAt}</span> : null}
+            {updatedAt ? <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">updated {updatedAt}</span> : null}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 lg:justify-end">
           <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${decisionTone(decision, maxRisk)}`}>
             {decision || "RUNNING"}
           </span>
           <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs text-textSecondary">
             {sessions.length || readText(workflow, ["session_count"]) || 0} steps
           </span>
+          <button
+            type="button"
+            disabled={!workflowId}
+            onClick={() => onAuditEventsSelect(workflowId)}
+            className="rounded-full border border-fuchsia-300/25 bg-fuchsia-300/10 px-3 py-1 text-xs font-semibold text-fuchsia-100 transition hover:border-fuchsia-300/45 hover:bg-fuchsia-300/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {formatCount(workflowAudits.length, "audit event")}
+          </button>
           <span className={`rounded-full border px-3 py-1 text-xs text-textSecondary ${decisionTone(undefined, maxRisk)}`}>
             risk {maxRisk}
           </span>
+          <button
+            type="button"
+            disabled={!definitionId || running}
+            onClick={onRerun}
+            className="inline-flex items-center gap-2 rounded-full border border-accent/25 bg-accent/10 px-3 py-1 text-xs font-semibold text-accent transition hover:border-accent/45 hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RotateCw size={13} aria-hidden="true" />
+            {running ? "Running" : "Run again"}
+          </button>
+          <button
+            type="button"
+            onClick={onToggle}
+            className="inline-flex items-center gap-2 rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs font-semibold text-textPrimary transition hover:border-accent/35 hover:bg-accent/10"
+            aria-expanded={expanded}
+          >
+            <ChevronDown size={13} className={`transition ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />
+            {expanded ? "Hide details" : "Details"}
+          </button>
         </div>
       </div>
 
-      <div className="mt-5 grid gap-3">
-        {sessions.length ? (
-          sessions.map((session, index) => (
-            <WorkflowStepTrace
-              key={readText(session, ["session_id"]) || index}
-              auditEvents={workflowAudits.filter((event) => readText(event, ["session_id"]) === readText(session, ["session_id"]))}
-              index={index}
-              reviewItems={workflowReviews.filter((review) => readText(review, ["session_id"]) === readText(session, ["session_id"]))}
-              session={session}
-            />
-          ))
-        ) : (
-          <ComponentRow
-            title="No step detail available"
-            detail="This run has no linked step sessions yet. New workflow executions will appear here by step."
+      {expanded ? (
+        <div className="mt-5 grid gap-4">
+          <WorkflowRuntimeGraph
+            auditEvents={workflowAudits}
+            detail={detail}
+            reviewItems={workflowReviews}
+            workflow={workflow}
+            workflowDefinition={workflowDefinition}
           />
-        )}
-      </div>
+
+          <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
+              <FileJson size={15} className="text-accent" aria-hidden="true" />
+              Workflow metadata
+            </div>
+            <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-ink/70 p-3 font-mono text-xs leading-5 text-textPrimary">
+              {compactJson({ workflow_id: workflowId, workflow_definition_id: definitionId, domain, ...metadata })}
+            </pre>
+          </div>
+
+          <div className="grid gap-3">
+            {sessions.length ? (
+              sessions.map((session, index) => (
+                <WorkflowStepTrace
+                  key={readText(session, ["session_id"]) || index}
+                  auditEvents={workflowAudits.filter((event) => readText(event, ["session_id"]) === readText(session, ["session_id"]))}
+                  index={index}
+                  onAuditEventsSelect={onAuditEventsSelect}
+                  reviewItems={workflowReviews.filter((review) => readText(review, ["session_id"]) === readText(session, ["session_id"]))}
+                  session={session}
+                />
+              ))
+            ) : (
+              <ComponentRow
+                title="No step detail available"
+                detail="This run has no linked step sessions yet. New workflow executions will appear here by step."
+              />
+            )}
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -352,15 +1005,18 @@ function WorkflowTraceGroup({
 function WorkflowStepTrace({
   auditEvents,
   index,
+  onAuditEventsSelect,
   reviewItems,
   session,
 }: {
   auditEvents: ApiRecord[];
   index: number;
+  onAuditEventsSelect: (workflowIdOrSessionId: string) => void;
   reviewItems: ApiRecord[];
   session: ApiRecord;
 }) {
   const events = asRecords(session.events);
+  const sessionId = readText(session, ["session_id"]) || "";
   const eventStatuses = events.map((event) => readText(event, ["status", "event_type"])).filter(Boolean);
   const decisions = [
     ...auditEvents.map((event) => readText(event, ["decision"])),
@@ -418,6 +1074,14 @@ function WorkflowStepTrace({
         ) : null}
       </div>
       <div className="flex flex-wrap gap-2 lg:justify-end">
+        <button
+          type="button"
+          disabled={!sessionId}
+          onClick={() => onAuditEventsSelect(sessionId)}
+          className="rounded-full border border-fuchsia-300/25 bg-fuchsia-300/10 px-3 py-1 text-xs font-semibold text-fuchsia-100 transition hover:border-fuchsia-300/45 hover:bg-fuchsia-300/15 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {formatCount(auditEvents.length, "audit event")}
+        </button>
         <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${decisionTone(decision, maxRisk)}`}>
           {decision}
         </span>
@@ -1068,7 +1732,13 @@ function AuditEventGroup({
   );
 }
 
-export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
+export function AuditEventsWorkspace({
+  data,
+  selectedWorkflowId,
+}: {
+  data: PlatformData;
+  selectedWorkflowId: string;
+}) {
   const [decisionFilter, setDecisionFilter] = useState("ALL");
   const [stageFilter, setStageFilter] = useState("ALL");
   const [riskTypeFilter, setRiskTypeFilter] = useState("ALL");
@@ -1114,6 +1784,7 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
       || (decisionFilter === "ALLOW" && tone === "allow");
     return (
       matchesDecision
+      && (!selectedWorkflowId || recordMatchesWorkflow(event, selectedWorkflowId))
       && (stageFilter === "ALL" || stage === stageFilter)
       && (riskTypeFilter === "ALL" || riskType === riskTypeFilter)
       && (agentFilter === "ALL" || agentId === agentFilter)
@@ -1158,6 +1829,11 @@ export function AuditEventsWorkspace({ data }: { data: PlatformData }) {
       {/* Filter bar: pill buttons for decision + dropdowns for risk type / stage */}
       <section className="glass-card rounded-3xl p-5">
         <div className="grid gap-4">
+          {selectedWorkflowId ? (
+            <div className="rounded-2xl border border-fuchsia-300/25 bg-fuchsia-300/10 px-4 py-3 text-sm text-fuchsia-100">
+              Showing audit evidence for workflow/session <span className="font-semibold">{selectedWorkflowId}</span>.
+            </div>
+          ) : null}
           <label className="flex min-h-11 items-center gap-2 rounded-2xl border border-line bg-ink/55 px-3 text-sm text-textSecondary">
             <Search size={16} aria-hidden="true" />
             <input

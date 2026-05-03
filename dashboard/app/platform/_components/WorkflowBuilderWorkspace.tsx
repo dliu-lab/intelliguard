@@ -2,8 +2,8 @@
 
 import type { CSSProperties, ChangeEvent, FormEvent, KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, GitBranch, ListTree, Plus, Play, Search, UploadCloud, X, ZoomIn, ZoomOut } from "lucide-react";
-import { createWorkflowDefinition, getSession, runMultiAgentWorkflow, type ApiRecord, type PlatformData } from "@/lib/api";
+import { GitBranch, ListTree, Plus, UploadCloud, X, ZoomIn, ZoomOut } from "lucide-react";
+import { createWorkflowDefinition, getSession, type ApiRecord, type PlatformData } from "@/lib/api";
 import { ComponentRow } from "./shared";
 import {
   formatCount,
@@ -307,10 +307,6 @@ function cleanWorkflowDraft(
   };
 }
 
-function workflowId(workflow: ApiRecord) {
-  return readText(workflow, ["workflow_id", "id", "session_id"]) || "";
-}
-
 function safeOption(value: string | undefined, fallback: string) {
   return value && value.trim() ? value : fallback;
 }
@@ -335,6 +331,15 @@ function getAgentTools(agent: ApiRecord | undefined) {
 
   const tools = (permissions as Record<string, unknown>).tools;
   return Array.isArray(tools) ? tools.map(String).filter(Boolean) : [];
+}
+
+function certificationStatus(record: ApiRecord | undefined) {
+  const certification = record?.certification;
+  if (!certification || typeof certification !== "object" || Array.isArray(certification)) {
+    return "DRAFT";
+  }
+
+  return readText(certification as ApiRecord, ["status"]) || "DRAFT";
 }
 
 function lookupDisplayName(records: ApiRecord[], idKey: string, id: string | undefined) {
@@ -436,27 +441,13 @@ function validateWorkflowDraft(draft: WorkflowDraft) {
   return undefined;
 }
 
-function workflowRunSearchText(workflow: ApiRecord) {
-  return [
-    readText(workflow, ["name", "workflow_id", "id", "session_id"]),
-    readText(workflow, ["summary", "user_goal"]),
-    readText(workflow, ["decision", "status"]),
-    readText(workflow, ["created_at", "updated_at"]),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-}
-
 export function WorkflowBuilderWorkspace({
   data,
   onRefresh,
-  onWorkflowTraceSelect,
   selectedEnvironment,
 }: {
   data: PlatformData;
   onRefresh: () => void;
-  onWorkflowTraceSelect: (workflowId: string) => void;
   selectedEnvironment: string;
 }) {
   const [designerOpen, setDesignerOpen] = useState(false);
@@ -467,24 +458,28 @@ export function WorkflowBuilderWorkspace({
   const [connectionsTouched, setConnectionsTouched] = useState(false);
   const [linkingNodeId, setLinkingNodeId] = useState("");
   const [canvasZoom, setCanvasZoom] = useState(1);
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
-  const [runQuery, setRunQuery] = useState("I need to check my bank account.");
   const [message, setMessage] = useState("");
-  const [workflowRunSearch, setWorkflowRunSearch] = useState("");
-  const [workflowRunsExpanded, setWorkflowRunsExpanded] = useState(false);
 
   const agentOptions = useMemo(
     () =>
       data.agents.map((agent) => ({
         id: readText(agent, ["agent_id"]) || "",
-        label: readText(agent, ["display_name", "agent_id"]) || "Agent",
+        label: joinParts([
+          readText(agent, ["display_name", "agent_id"]) || "Agent",
+          certificationStatus(agent),
+        ]) || "Agent",
         agentType: normalizeAgentType(readText(agent, ["agent_type"])),
+        certificationStatus: certificationStatus(agent),
         record: agent,
       })),
     [data.agents],
   );
   const agentTypesById = useMemo(
     () => Object.fromEntries(agentOptions.map((agent) => [agent.id, agent.agentType]).filter(([agentId]) => agentId)),
+    [agentOptions],
+  );
+  const agentCertificationById = useMemo(
+    () => Object.fromEntries(agentOptions.map((agent) => [agent.id, agent.certificationStatus]).filter(([agentId]) => agentId)),
     [agentOptions],
   );
 
@@ -522,9 +517,10 @@ export function WorkflowBuilderWorkspace({
     ? data.agentAssignments[selectedStep.agent_id] || { guardrails: [], evaluators: [], knowledge: [] }
     : { guardrails: [], evaluators: [], knowledge: [] };
   const selectedAgentToolNames = getAgentTools(selectedAgent);
-  const selectedAgentToolLabels = selectedAgentToolNames.map(
-    (toolName) => lookupDisplayName(data.tools, "tool_name", toolName) || toolName,
-  );
+  const selectedAgentToolLabels = selectedAgentToolNames.map((toolName) => {
+    const tool = data.tools.find((record) => readText(record, ["tool_name"]) === toolName);
+    return joinParts([lookupDisplayName(data.tools, "tool_name", toolName) || toolName, certificationStatus(tool)]) || toolName;
+  });
   const selectedStepToolLabel = selectedStep?.tool_name
     ? lookupDisplayName(data.tools, "tool_name", selectedStep.tool_name) || selectedStep.tool_name
     : "No tool request";
@@ -549,21 +545,6 @@ export function WorkflowBuilderWorkspace({
   );
   const leadAgentLabel =
     agentOptions.find((agent) => agent.id === draft.lead_agent_id)?.label || draft.lead_agent_id || "Lead agent";
-  const filteredWorkflowRuns = useMemo(() => {
-    const query = workflowRunSearch.trim().toLowerCase();
-    if (!query) {
-      return data.workflows;
-    }
-
-    return data.workflows.filter((workflow) => workflowRunSearchText(workflow).includes(query));
-  }, [data.workflows, workflowRunSearch]);
-
-  useEffect(() => {
-    if (!selectedWorkflowId && data.workflowDefinitions[0]) {
-      setSelectedWorkflowId(String(data.workflowDefinitions[0].workflow_definition_id || ""));
-    }
-  }, [data.workflowDefinitions, selectedWorkflowId]);
-
   useEffect(() => {
     if (designerOpen) {
       setMessage("");
@@ -815,35 +796,12 @@ export function WorkflowBuilderWorkspace({
 
       const payload = cleanWorkflowDraft(draft, nodePositions, connections, agentTypesById);
       await createWorkflowDefinition(session.token, payload);
-      setSelectedWorkflowId(String(payload.workflow_definition_id || ""));
       setMessage("Workflow definition created.");
       setDesignerOpen(false);
       resetTemplate(false);
       await onRefresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Unable to create workflow definition.");
-    }
-  }
-
-  async function runWorkflow(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setMessage("");
-
-    const session = getSession();
-    if (!session?.token) {
-      setMessage("Session expired. Login again before running a workflow.");
-      return;
-    }
-
-    try {
-      await runMultiAgentWorkflow(session.token, {
-        query: runQuery,
-        workflow_definition_id: selectedWorkflowId || undefined,
-      });
-      setMessage("Workflow run started.");
-      await onRefresh();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to run workflow.");
     }
   }
 
@@ -874,128 +832,6 @@ export function WorkflowBuilderWorkspace({
           Workflow Designer
         </button>
       </div>
-
-      <section className="glass-card rounded-3xl p-5">
-        <div className="grid gap-4 xl:grid-cols-[1fr_minmax(320px,0.65fr)] xl:items-start">
-          <div>
-            <h3 className="text-xl font-semibold">Traceable workflow runs</h3>
-            <p className="mt-1 text-sm text-textSecondary">
-              {workflowRunSearch
-                ? `${filteredWorkflowRuns.length} of ${formatCount(data.workflows.length, "run")}`
-                : formatCount(data.workflows.length, "run")}
-            </p>
-          </div>
-          <div className="flex flex-col gap-3 sm:flex-row xl:justify-end">
-            <label className="flex min-h-11 flex-1 items-center gap-2 rounded-2xl border border-line bg-ink/55 px-3 text-sm text-textSecondary">
-              <Search size={16} aria-hidden="true" />
-              <input
-                value={workflowRunSearch}
-                onChange={(event) => {
-                  setWorkflowRunSearch(event.target.value);
-                  setWorkflowRunsExpanded(true);
-                }}
-                placeholder="Filter runs..."
-                className="min-w-0 flex-1 bg-transparent text-textPrimary outline-none placeholder:text-textSecondary"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => setWorkflowRunsExpanded((current) => !current)}
-              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-line bg-ink/55 px-4 text-sm font-semibold text-textPrimary transition hover:border-accent/40 hover:bg-accent/10"
-              aria-expanded={workflowRunsExpanded}
-            >
-              <ChevronDown
-                size={16}
-                className={`transition ${workflowRunsExpanded ? "" : "-rotate-90"}`}
-                aria-hidden="true"
-              />
-              {workflowRunsExpanded ? "Collapse" : "Expand"}
-            </button>
-          </div>
-        </div>
-
-        {workflowRunsExpanded ? (
-          <div className="mt-5 grid max-h-[560px] gap-3 overflow-y-auto pr-1">
-            {filteredWorkflowRuns.length ? (
-              filteredWorkflowRuns.map((workflow) => {
-                const id = workflowId(workflow);
-                const createdAt = formatTimestamp(readText(workflow, ["created_at"]));
-                const stepCount = Number(readText(workflow, ["session_count"]));
-                return (
-                  <div
-                    key={id || String(workflow.session_id)}
-                    className="grid gap-3 rounded-2xl border border-line bg-white/[0.035] p-4 lg:grid-cols-[1fr_auto] lg:items-center"
-                  >
-                    <div>
-                      <p className="font-semibold text-textPrimary">
-                        {readText(workflow, ["name", "workflow_id", "session_id"]) || "Workflow run"}
-                      </p>
-                      <p className="mt-1 text-sm leading-6 text-textSecondary">
-                        {readText(workflow, ["summary", "user_goal"]) || "Traceable workflow execution."}
-                      </p>
-                      <p className="mt-2 text-xs text-textSecondary">
-                        {joinParts([
-                          id,
-                          createdAt,
-                          readText(workflow, ["decision", "status"]),
-                          Number.isFinite(stepCount) ? formatCount(stepCount, "step") : undefined,
-                        ])}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onWorkflowTraceSelect(id)}
-                      className="rounded-full border border-accent/25 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent transition hover:border-accent/45 hover:bg-accent/15"
-                    >
-                      Trace
-                    </button>
-                  </div>
-                );
-              })
-            ) : (
-              <ComponentRow
-                title={data.workflows.length ? "No matching workflow runs" : "No workflow runs"}
-                detail={data.workflows.length ? "Adjust the filter to find another run." : "Run a workflow and its trace will appear here."}
-              />
-            )}
-          </div>
-        ) : null}
-      </section>
-
-      <section className="glass-card rounded-3xl p-5">
-        <div>
-          <h3 className="text-xl font-semibold">Run workflow</h3>
-        </div>
-
-        <form className="mt-5 grid gap-3 lg:grid-cols-[minmax(220px,0.45fr)_minmax(0,1fr)_auto]" onSubmit={runWorkflow}>
-          <BuilderField label="Definition">
-            <select
-              value={selectedWorkflowId}
-              onChange={(event) => setSelectedWorkflowId(event.target.value)}
-              className="field-input"
-            >
-              {data.workflowDefinitions.map((workflow) => (
-                <option key={String(workflow.workflow_definition_id)} value={String(workflow.workflow_definition_id)}>
-                  {readText(workflow, ["name", "workflow_definition_id"]) || "Workflow definition"}
-                </option>
-              ))}
-              {!data.workflowDefinitions.length ? <option value="">Default banking workflow</option> : null}
-            </select>
-          </BuilderField>
-
-          <BuilderField label="Goal">
-            <input value={runQuery} onChange={(event) => setRunQuery(event.target.value)} className="field-input" />
-          </BuilderField>
-
-          <button
-            type="submit"
-            className="inline-flex items-center justify-center gap-2 self-end rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90"
-          >
-            <Play size={16} aria-hidden="true" />
-            Run
-          </button>
-        </form>
-      </section>
 
       {designerOpen ? (
         <div className="fixed inset-0 z-[80] grid place-items-center bg-black/60 p-4 backdrop-blur-md" role="dialog" aria-modal="true">
@@ -1080,6 +916,7 @@ export function WorkflowBuilderWorkspace({
               <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_344px]">
                 <WorkflowCanvas
                   agentTypesById={agentTypesById}
+                  agentCertificationById={agentCertificationById}
                   connections={connections}
                   draft={draft}
                   linkingNodeId={linkingNodeId}
@@ -1164,6 +1001,7 @@ export function WorkflowBuilderWorkspace({
                         />
                       </BuilderField>
                       <AgentControlSnapshot
+                        certificationStatus={certificationStatus(selectedAgent)}
                         evaluators={selectedAgentEvaluators}
                         guardrails={selectedAgentGuardrails}
                         knowledge={selectedAgentKnowledge}
@@ -1200,11 +1038,13 @@ function BuilderField({ children, label }: { children: ReactNode; label: string 
 }
 
 function AgentControlSnapshot({
+  certificationStatus,
   evaluators,
   guardrails,
   knowledge,
   tools,
 }: {
+  certificationStatus: string;
   evaluators: string[];
   guardrails: string[];
   knowledge: string[];
@@ -1212,7 +1052,12 @@ function AgentControlSnapshot({
 }) {
   return (
     <section className="rounded-3xl border border-line bg-white/[0.035] p-4">
-      <h5 className="text-sm font-semibold text-textPrimary">Registered agent controls</h5>
+      <div className="flex items-center justify-between gap-3">
+        <h5 className="text-sm font-semibold text-textPrimary">Registered agent controls</h5>
+        <span className="rounded-full border border-line bg-ink/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-textSecondary">
+          {certificationStatus}
+        </span>
+      </div>
       <div className="mt-3 grid gap-3">
         <SnapshotList emptyText="No tool grants" items={tools} label="Tools" />
         <SnapshotList emptyText="No guardrail policy assigned" items={guardrails} label="Guardrails" />
@@ -1251,6 +1096,7 @@ function SnapshotList({
 }
 
 function WorkflowCanvas({
+  agentCertificationById,
   agentTypesById,
   connections,
   draft,
@@ -1266,6 +1112,7 @@ function WorkflowCanvas({
   selectedStepId,
   zoom,
 }: {
+  agentCertificationById: Record<string, string>;
   agentTypesById: Record<string, string>;
   connections: WorkflowConnection[];
   draft: WorkflowDraft;
@@ -1309,6 +1156,7 @@ function WorkflowCanvas({
       label: "Lead",
       meta: draft.lead_agent_id || "lead-agent",
       nodeType: "lead_agent",
+      certificationStatus: agentCertificationById[draft.lead_agent_id] || "DRAFT",
       isLead: true,
     },
     ...draft.steps.map((step) => ({
@@ -1316,6 +1164,7 @@ function WorkflowCanvas({
       label: step.label || step.step_id,
       meta: step.agent_id,
       nodeType: agentTypesById[step.agent_id] || normalizeAgentType(step.node_type) || "task_agent",
+      certificationStatus: agentCertificationById[step.agent_id] || "DRAFT",
       isLead: false,
     })),
   ];
@@ -1694,6 +1543,7 @@ function WorkflowCanvas({
               label={node.label}
               meta={node.meta}
               nodeType={node.nodeType}
+              certificationStatus={node.certificationStatus}
               onPortClick={handlePortClick}
               onPortPointerDown={startLinkDrag}
               onPortPointerUp={finishLinkDrag}
@@ -1725,6 +1575,7 @@ function WorkflowCanvas({
 }
 
 function WorkflowNode({
+  certificationStatus,
   isLead,
   isLinkInvalidTarget,
   isLinking,
@@ -1741,6 +1592,7 @@ function WorkflowNode({
   onStartDrag,
   position,
 }: {
+  certificationStatus: string;
   isLead: boolean;
   isLinkInvalidTarget: boolean;
   isLinking: boolean;
@@ -1832,6 +1684,9 @@ function WorkflowNode({
         <span className="block truncate text-sm font-semibold text-textPrimary">{label}</span>
         <span className="mt-1 block truncate text-xs text-textSecondary">{meta}</span>
         <span className="mt-1 block truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-accent">{nodeType}</span>
+        <span className="mt-1 block truncate text-[10px] font-semibold uppercase tracking-[0.08em] text-textSecondary">
+          {certificationStatus}
+        </span>
         {isLead ? <span className="sr-only">Lead agent</span> : null}
       </div>
     </div>

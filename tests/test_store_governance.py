@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from agent_governance.models import GuardrailPolicy, EvaluatorTemplate, new_id
 from agent_governance.store import GovernanceStore
 
@@ -7,6 +9,40 @@ from agent_governance.store import GovernanceStore
 def test_models_importable():
     assert GuardrailPolicy.__tablename__ == "guardrail_policies"
     assert EvaluatorTemplate.__tablename__ == "evaluator_templates"
+
+
+def register_test_agent(store: GovernanceStore, agent_id: str = "test-agent") -> dict:
+    return store.upsert_agent_identity(
+        {
+            "agent_id": agent_id,
+            "display_name": agent_id.replace("-", " ").title(),
+            "agent_type": "task_agent",
+            "owner": "Tests",
+            "environment": "demo",
+            "purpose": "Registered explicitly by tests.",
+            "permissions": {"tools": ["get_data"]},
+            "metadata": {"domain": "test"},
+        }
+    )
+
+
+def test_runtime_store_paths_do_not_auto_register_missing_agent(
+    store: GovernanceStore,
+) -> None:
+    with pytest.raises(ValueError, match="Agent 'missing-runtime-agent' not found"):
+        store.ensure_agent_session("sess_missing_agent", "missing-runtime-agent", "test query")
+
+    with pytest.raises(ValueError, match="Agent 'missing-runtime-agent' not found"):
+        store.create_agent_workflow(
+            name="Missing Agent Workflow",
+            user_goal="test",
+            lead_agent_id="missing-runtime-agent",
+        )
+
+    with pytest.raises(ValueError, match="Agent 'missing-runtime-agent' not found"):
+        store.grant_agent_tool("missing-runtime-agent", "get_data")
+
+    assert store.find_agent_identity("missing-runtime-agent") is None
 
 
 def test_upsert_and_get_guardrail_policy(store):
@@ -180,7 +216,34 @@ def test_evaluation_result_lifecycle(store):
     assert any(r["session_id"] == session_id for r in all_results)
 
 
+def test_agent_certification_invalidates_on_tool_grant(store: GovernanceStore) -> None:
+    agent = store.upsert_agent_identity(
+        {
+            "agent_id": "cert-agent",
+            "display_name": "Certification Agent",
+            "agent_type": "task_agent",
+            "owner": "Tests",
+            "environment": "demo",
+            "purpose": "Agent used for certification invalidation tests.",
+            "permissions": {"tools": []},
+            "metadata": {"domain": "banking", "llm": {"model": "test/model"}},
+        }
+    )
+    store.create_agent_certification(agent["agent_id"], "hash_1")
+    store.update_agent_certification(
+        agent["agent_id"],
+        {"status": "CERTIFIED", "certified_by": "tester@example.com"},
+    )
+
+    store.grant_agent_tool(agent["agent_id"], "lookup_account")
+    cert = store.get_agent_certification(agent["agent_id"])
+
+    assert cert["status"] == "NEEDS_REEVALUATION"
+    assert cert["invalidation_reason"] == "tool grants changed"
+
+
 def test_list_review_queue_returns_all_statuses(store: GovernanceStore) -> None:
+    register_test_agent(store)
     store.ensure_agent_session("sess_rev_all", "test-agent", "test query")
     rev_id = store.add_review_item(
         session_id="sess_rev_all",
@@ -207,6 +270,7 @@ def test_list_review_queue_returns_all_statuses(store: GovernanceStore) -> None:
 
 
 def test_audit_event_records_policy_id_and_stage(store: GovernanceStore) -> None:
+    register_test_agent(store)
     store.ensure_agent_session("sess_policy_audit", "test-agent", "test query")
     event_id = store.add_audit_event(
         session_id="sess_policy_audit",
@@ -284,3 +348,41 @@ def test_workflow_definition_normalizes_graph_and_validates_node_type(
         assert "registered agent" in str(error)
     else:
         raise AssertionError("Expected workflow graph validation to reject mismatched node_type")
+
+
+def test_workflow_certification_invalidates_on_graph_update(
+    store: GovernanceStore,
+) -> None:
+    definition = store.upsert_workflow_definition(
+        {
+            "workflow_definition_id": "certified-workflow-graph",
+            "name": "Certified Workflow Graph",
+            "description": "Workflow certification invalidation test.",
+            "owner": "Tests",
+            "environment": "demo",
+            "domain": "banking",
+            "lead_agent_id": "banking-lead-agent",
+            "steps": [
+                {
+                    "step_id": "auth_gate",
+                    "label": "Auth",
+                    "agent_id": "banking-auth-gate-agent",
+                    "node_type": "gate_agent",
+                    "activation_policy": "always",
+                    "activation_stage": "pre_route",
+                    "task": "Authenticate account scope.",
+                }
+            ],
+        }
+    )
+    store.create_workflow_certification(definition["workflow_definition_id"], "hash_1")
+    store.update_workflow_certification(
+        definition["workflow_definition_id"],
+        {"status": "CERTIFIED", "certified_by": "tester@example.com"},
+    )
+
+    store.upsert_workflow_definition({**definition, "description": "Changed graph."})
+    cert = store.get_workflow_certification(definition["workflow_definition_id"])
+
+    assert cert["status"] == "NEEDS_REEVALUATION"
+    assert cert["invalidation_reason"] == "workflow graph changed"

@@ -98,7 +98,7 @@ export default function PlatformPage() {
 
   function switchWorkspaceView(view: WorkspaceView) {
     setActiveView(view);
-    if (view !== "trace") {
+    if (view !== "agentic-workflows") {
       setSelectedTraceWorkflowId("");
     }
     window.history.replaceState(null, "", `/platform/?view=${view}`);
@@ -115,13 +115,15 @@ export default function PlatformPage() {
     window.history.replaceState(null, "", `/platform/?view=${workspaceViewForComponent(component)}&component=${component}`);
   }
 
-  function openWorkflowTrace(workflowId: string) {
-    setSelectedTraceWorkflowId(workflowId);
-    setActiveView("trace");
+  function openWorkflowAudit(workflowIdOrSessionId: string) {
+    setSelectedTraceWorkflowId(workflowIdOrSessionId);
+    setActiveView("audit");
     window.history.replaceState(
       null,
       "",
-      workflowId ? `/platform/?view=trace&workflow=${encodeURIComponent(workflowId)}` : "/platform/?view=trace",
+      workflowIdOrSessionId
+        ? `/platform/?view=audit&workflow=${encodeURIComponent(workflowIdOrSessionId)}`
+        : "/platform/?view=audit",
     );
   }
 
@@ -145,7 +147,7 @@ export default function PlatformPage() {
       onLogout={logout}
       onRefresh={refreshWorkspace}
       onViewSelect={switchWorkspaceView}
-      onWorkflowTraceSelect={openWorkflowTrace}
+      onWorkflowAuditSelect={openWorkflowAudit}
       selectedEnvironment={selectedEnvironment}
       selectedTraceWorkflowId={selectedTraceWorkflowId}
       user={user}

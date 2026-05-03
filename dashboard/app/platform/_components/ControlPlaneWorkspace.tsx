@@ -1,14 +1,13 @@
 "use client";
 
 import type { ChangeEvent, FormEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Bot, FileJson, MoreHorizontal, Search, UploadCloud, X } from "lucide-react";
 import {
   createAgent,
   createEvaluatorTemplate,
   createGuardrailPolicy,
   createKnowledgeBase,
-  createTool,
   deleteAgent as deleteAgentIdentity,
   getSession,
   type ApiRecord,
@@ -16,6 +15,7 @@ import {
 } from "@/lib/api";
 import { ComponentRow, JsonBuilder, PlatformSurface, ResourceGrid } from "./shared";
 import { SelectedAgentModal } from "./SelectedAgentModal";
+import { ToolRegistryWorkspace } from "./ToolRegistryWorkspace";
 import type { BackendComponentKey } from "./types";
 import {
   agentVersion,
@@ -31,20 +31,37 @@ import {
   templateJson,
 } from "./utils";
 
+type AgentSort = "updated_desc" | "name_asc" | "domain_asc" | "type_asc";
+
+function agentDomainFilterValue(agent: ApiRecord) {
+  return agentDomain(agent) || "unassigned";
+}
+
+function agentDomainLabel(agent: ApiRecord) {
+  return agentDomain(agent) || "Unassigned";
+}
+
+function agentUpdatedAt(agent: ApiRecord) {
+  const value = readText(agent, ["updated_at", "created_at"]);
+  return value ? Date.parse(value) || 0 : 0;
+}
+
 export function ControlPlaneWorkspace({
   activeComponent,
   data,
+  lockedTab,
   onRefresh,
   onSelect,
 }: {
   activeComponent: BackendComponentKey;
   data: PlatformData;
   dataStatus: "loading" | "ready" | "error";
+  lockedTab?: "agents" | "tools" | "guardrails" | "evaluators" | "knowledge";
   onRefresh: () => void;
   onSelect: (component: BackendComponentKey) => void;
 }) {
   type ControlTab = "agents" | "tools" | "guardrails" | "evaluators" | "knowledge";
-  type AgentModalTab = "profile" | "tools" | "guardrails" | "evaluators" | "knowledge";
+  type AgentModalTab = "profile" | "tools" | "guardrails" | "evaluators" | "knowledge" | "certification";
 
   const initialTab: ControlTab =
     activeComponent === "tools" ||
@@ -53,19 +70,19 @@ export function ControlPlaneWorkspace({
     activeComponent === "knowledge"
       ? activeComponent
       : "agents";
-  const [tab, setTab] = useState<ControlTab>(initialTab);
+  const [tab, setTab] = useState<ControlTab>(lockedTab || initialTab);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [modalAgentId, setModalAgentId] = useState<string | null>(null);
   const [modalTab, setModalTab] = useState<AgentModalTab>("profile");
   const [agentSearch, setAgentSearch] = useState("");
+  const [agentSort, setAgentSort] = useState<AgentSort>("updated_desc");
+  const [selectedAgentDomain, setSelectedAgentDomain] = useState("all");
   const [showAgentBuilder, setShowAgentBuilder] = useState(false);
   const [message, setMessage] = useState("");
   const [agentJson, setAgentJson] = useState(templateJson("agent"));
-  const [toolJson, setToolJson] = useState(templateJson("tool"));
   const [guardrailJson, setGuardrailJson] = useState(templateJson("guardrail"));
   const [evaluatorJson, setEvaluatorJson] = useState(templateJson("evaluator"));
   const [knowledgeJson, setKnowledgeJson] = useState(templateJson("knowledge"));
-  const agentImportInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!selectedAgentId && data.agents[0]) {
@@ -73,7 +90,16 @@ export function ControlPlaneWorkspace({
     }
   }, [data.agents, selectedAgentId]);
 
+  useEffect(() => {
+    if (lockedTab) {
+      setTab(lockedTab);
+    }
+  }, [lockedTab]);
+
   function selectTab(nextTab: ControlTab) {
+    if (lockedTab) {
+      return;
+    }
     setTab(nextTab);
     onSelect(nextTab);
   }
@@ -164,25 +190,53 @@ export function ControlPlaneWorkspace({
   }
 
   const modalAgent = data.agents.find((agent) => String(agent.agent_id || "") === modalAgentId) || null;
-  const filteredAgents = data.agents.filter((agent) => {
-    const query = agentSearch.trim().toLowerCase();
-    if (!query) {
-      return true;
-    }
+  const agentDomainFilters = Array.from(
+    data.agents.reduce<Map<string, { label: string; count: number }>>((domains, agent) => {
+      const domain = agentDomainFilterValue(agent);
+      const current = domains.get(domain);
+      domains.set(domain, { label: current?.label || agentDomainLabel(agent), count: (current?.count || 0) + 1 });
+      return domains;
+    }, new Map()),
+    ([domain, value]) => ({ domain, ...value }),
+  ).sort((left, right) => left.label.localeCompare(right.label));
+  const filteredAgents = data.agents
+    .filter((agent) => {
+      const query = agentSearch.trim().toLowerCase();
+      const matchesDomain = selectedAgentDomain === "all" || agentDomainFilterValue(agent) === selectedAgentDomain;
+      if (!matchesDomain) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
 
-                    return [
-                      readText(agent, ["display_name", "agent_id"]),
-                      readText(agent, ["purpose"]),
-                      readText(agent, ["owner"]),
-                      readText(agent, ["environment"]),
-                      agentDomain(agent),
-                      readText(agent, ["agent_type"]),
-                      `${data.agentAssignmentCounts[String(agent.agent_id || "")]?.guardrails || 0} guardrails`,
-                      `${data.agentAssignmentCounts[String(agent.agent_id || "")]?.evaluators || 0} evaluators`,
-                      `${data.agentAssignmentCounts[String(agent.agent_id || "")]?.knowledge || 0} KBs`,
-                      ...getAgentTools(agent),
-                    ].some((item) => item?.toLowerCase().includes(query));
-  });
+      return [
+        readText(agent, ["display_name", "agent_id"]),
+        readText(agent, ["purpose"]),
+        readText(agent, ["owner"]),
+        readText(agent, ["environment"]),
+        agentDomainLabel(agent),
+        readText(agent, ["agent_type"]),
+        `${data.agentAssignmentCounts[String(agent.agent_id || "")]?.guardrails || 0} guardrails`,
+        `${data.agentAssignmentCounts[String(agent.agent_id || "")]?.evaluators || 0} evaluators`,
+        `${data.agentAssignmentCounts[String(agent.agent_id || "")]?.knowledge || 0} KBs`,
+        ...getAgentTools(agent),
+      ].some((item) => item?.toLowerCase().includes(query));
+    })
+    .sort((left, right) => {
+      if (agentSort === "name_asc") {
+        return (readText(left, ["display_name", "agent_id"]) || "").localeCompare(
+          readText(right, ["display_name", "agent_id"]) || "",
+        );
+      }
+      if (agentSort === "domain_asc") {
+        return agentDomainLabel(left).localeCompare(agentDomainLabel(right));
+      }
+      if (agentSort === "type_asc") {
+        return (readText(left, ["agent_type"]) || "").localeCompare(readText(right, ["agent_type"]) || "");
+      }
+      return agentUpdatedAt(right) - agentUpdatedAt(left);
+    });
 
   const controlTabs: Array<{ id: ControlTab; label: string; count?: number }> = [
     { id: "agents", label: "Agents", count: data.agents.length },
@@ -207,27 +261,29 @@ export function ControlPlaneWorkspace({
       ) : null}
 
       <div className="glass-card overflow-hidden rounded-3xl">
-        <div className="border-b border-line px-5 py-4">
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {controlTabs.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => selectTab(item.id)}
-                className={`inline-flex min-h-11 shrink-0 items-center gap-2 rounded-2xl border px-4 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-accent/40 ${
-                  tab === item.id
-                    ? "border-accent/45 bg-accent text-ink"
-                    : "border-line bg-white/[0.04] text-textPrimary hover:border-accent/40 hover:bg-accent/10"
-                }`}
-              >
-                {item.label}
-                {typeof item.count === "number" ? (
-                  <span className={tab === item.id ? "text-ink/70" : "text-textSecondary"}>{item.count}</span>
-                ) : null}
-              </button>
-            ))}
+        {!lockedTab ? (
+          <div className="border-b border-line px-5 py-4">
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {controlTabs.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => selectTab(item.id)}
+                  className={`inline-flex min-h-11 shrink-0 items-center gap-2 rounded-2xl border px-4 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-accent/40 ${
+                    tab === item.id
+                      ? "border-accent/45 bg-accent text-ink"
+                      : "border-line bg-white/[0.04] text-textPrimary hover:border-accent/40 hover:bg-accent/10"
+                  }`}
+                >
+                  {item.label}
+                  {typeof item.count === "number" ? (
+                    <span className={tab === item.id ? "text-ink/70" : "text-textSecondary"}>{item.count}</span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        ) : null}
 
         <div className="p-5">
           {tab === "agents" ? (
@@ -263,23 +319,18 @@ export function ControlPlaneWorkspace({
                       <strong className="ml-3 align-middle">Register from Template</strong>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => agentImportInputRef.current?.click()}
-                      className="rounded-2xl border border-line bg-ink/45 p-4 text-left transition hover:border-accent/45 hover:bg-accent/10"
-                    >
+                    <label className="cursor-pointer rounded-2xl border border-line bg-ink/45 p-4 text-left transition hover:border-accent/45 hover:bg-accent/10">
                       <span className="inline-grid h-10 w-10 place-items-center rounded-xl border border-accent/25 bg-accent/10 text-accent">
                         <UploadCloud size={18} aria-hidden="true" />
                       </span>
                       <strong className="ml-3 align-middle">Import JSON</strong>
-                    </button>
-                    <input
-                      ref={agentImportInputRef}
-                      className="sr-only"
-                      type="file"
-                      accept="application/json,.json"
-                      onChange={importAgentJson}
-                    />
+                      <input
+                        className="sr-only"
+                        type="file"
+                        accept="application/json,.json"
+                        onChange={importAgentJson}
+                      />
+                    </label>
                   </div>
                 </div>
               </PlatformSurface>
@@ -327,18 +378,67 @@ export function ControlPlaneWorkspace({
                       <p className="mt-1">tool grants</p>
                     </div>
                   </div>
+                  <div className="mt-6 border-t border-line pt-5">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-textSecondary">
+                      Domain
+                    </p>
+                    <div className="mt-3 grid gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAgentDomain("all")}
+                        className={`flex items-center justify-between rounded-xl border px-3 py-2 text-left text-sm font-semibold transition hover:border-accent/45 hover:bg-accent/10 ${
+                          selectedAgentDomain === "all"
+                            ? "border-accent/45 bg-accent/10 text-textPrimary"
+                            : "border-line bg-ink/45 text-textSecondary"
+                        }`}
+                      >
+                        <span>All domains</span>
+                        <span>{data.agents.length}</span>
+                      </button>
+                      {agentDomainFilters.map((item) => (
+                        <button
+                          key={item.domain}
+                          type="button"
+                          onClick={() => setSelectedAgentDomain(item.domain)}
+                          className={`flex items-center justify-between rounded-xl border px-3 py-2 text-left text-sm font-semibold transition hover:border-accent/45 hover:bg-accent/10 ${
+                            selectedAgentDomain === item.domain
+                              ? "border-accent/45 bg-accent/10 text-textPrimary"
+                              : "border-line bg-ink/45 text-textSecondary"
+                          }`}
+                        >
+                          <span className="truncate">{item.label}</span>
+                          <span>{item.count}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </PlatformSurface>
 
                 <section className="rounded-3xl border border-line bg-white/[0.035] p-5">
-                  <label className="flex items-center gap-3 rounded-2xl border border-line bg-ink/65 px-4 py-3 text-sm text-textSecondary">
-                    <Search size={17} aria-hidden="true" />
-                    <input
-                      className="w-full bg-transparent text-textPrimary outline-none placeholder:text-textSecondary"
-                      placeholder="Search agents by name, domain, type, control, or tool..."
-                      value={agentSearch}
-                      onChange={(event) => setAgentSearch(event.target.value)}
-                    />
-                  </label>
+                  <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+                    <label className="flex items-center gap-3 rounded-2xl border border-line bg-ink/65 px-4 py-3 text-sm text-textSecondary">
+                      <Search size={17} aria-hidden="true" />
+                      <input
+                        className="w-full bg-transparent text-textPrimary outline-none placeholder:text-textSecondary"
+                        placeholder="Search agents by name, domain, type, control, or tool..."
+                        value={agentSearch}
+                        onChange={(event) => setAgentSearch(event.target.value)}
+                      />
+                    </label>
+                    <label className="rounded-2xl border border-line bg-ink/65 px-4 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                      Sort
+                      <select
+                        value={agentSort}
+                        onChange={(event) => setAgentSort(event.target.value as AgentSort)}
+                        className="mt-1 block w-full bg-transparent text-sm normal-case tracking-normal text-textPrimary outline-none [&>option]:bg-ink"
+                      >
+                        <option value="updated_desc">Recently updated</option>
+                        <option value="name_asc">Name A-Z</option>
+                        <option value="domain_asc">Domain</option>
+                        <option value="type_asc">Agent type</option>
+                      </select>
+                    </label>
+                  </div>
 
                   <div className="mt-4 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
                     {filteredAgents.map((agent) => {
@@ -447,11 +547,9 @@ export function ControlPlaneWorkspace({
                               {readText(agent, ["environment"])}
                             </span>
                           ) : null}
-                          {agentDomain(agent) ? (
-                            <span className="rounded-full border border-line bg-ink/60 px-2.5 py-1">
-                              {agentDomain(agent)}
-                            </span>
-                          ) : null}
+                          <span className="rounded-full border border-line bg-ink/60 px-2.5 py-1">
+                            {agentDomainLabel(agent)}
+                          </span>
                           {readText(agent, ["agent_type"]) ? (
                             <span className="rounded-full border border-line bg-ink/60 px-2.5 py-1">
                               {readText(agent, ["agent_type"])}
@@ -481,25 +579,7 @@ export function ControlPlaneWorkspace({
           ) : null}
 
           {tab === "tools" ? (
-            <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
-              <JsonBuilder
-                endpoint="/v1/tool-marketplace"
-                json={toolJson}
-                onChange={setToolJson}
-                onReset={() => setToolJson(templateJson("tool"))}
-                onSubmit={(event) => submitJson(event, "Tool", toolJson, createTool)}
-                submitLabel="Register Tool"
-                title="Tool contract"
-              />
-              <ResourceGrid
-                emptyText="No tools registered."
-                rows={data.tools.map((tool) => ({
-                  title: readText(tool, ["display_name", "tool_name", "name"]) || "Unnamed tool",
-                  detail: readText(tool, ["description", "category"]) || "Tool marketplace record.",
-                  meta: joinParts([readText(tool, ["category"]), readText(tool, ["environment"])]),
-                }))}
-              />
-            </div>
+            <ToolRegistryWorkspace data={data} onRefresh={onRefresh} />
           ) : null}
 
           {tab === "guardrails" ? (

@@ -14,19 +14,25 @@ from agent_governance.models import (
     AgentGuardrailAssignment,
     AgentIdentity,
     AgentKBAssignment,
+    AgentCertification,
     AgentSession,
     AgentWorkflow,
     AuditEvent,
+    EvaluationCriterionResult,
+    EvaluationRun,
     EvaluationResult,
     EvaluatorTemplate,
     GuardrailPolicy,
     KnowledgeBase,
     PolicyDecision,
     ReviewQueueItem,
+    ToolCertification,
     ToolCall,
+    ToolRecord,
     User,
     UserSession,
     UserEnvironmentAccess,
+    WorkflowCertification,
     WorkflowDefinition,
     WorkflowEvent,
     WorkflowSessionLink,
@@ -39,12 +45,6 @@ from agent_governance.workflow_graph import (
     normalize_workflow_graph,
 )
 
-
-DEFAULT_AGENT_PERMISSIONS = {
-    "tools": ["get_customer_profile", "get_customer_transactions"],
-    "actions": ["read_customer_profile", "read_transactions"],
-    "scopes": {"customer_access": "customer_id", "pii_exposure": "blocked_by_default"},
-}
 
 DEFAULT_AGENT_LLM_CONFIG = {
     "gateway": "litellm",
@@ -297,26 +297,13 @@ class GovernanceStore:
             rows = db.scalars(select(User).order_by(User.email)).all()
             return [self._user_context_from_row(db, row) for row in rows if row.password_hash]
 
-    def ensure_agent_identity(self, agent_id: str) -> dict[str, Any]:
+    def find_agent_identity(self, agent_id: str) -> dict[str, Any] | None:
         with self.session() as db:
             identity = db.get(AgentIdentity, agent_id)
             if not identity:
-                identity = AgentIdentity(
-                    agent_id=agent_id,
-                    display_name=agent_id.replace("-", " ").title(),
-                    agent_type="task_agent",
-                    owner="Unassigned",
-                    environment="local",
-                    purpose="Auto-registered agent. Review and grant permissions before production use.",
-                    permissions=DEFAULT_AGENT_PERMISSIONS,
-                    metadata_json={
-                        "identity_provider": "auto-registered",
-                        "llm": {**DEFAULT_AGENT_LLM_CONFIG},
-                    },
-                )
-                db.add(identity)
-                db.flush()
-            return self._agent_identity_to_dict(identity)
+                return None
+            cert = db.scalar(select(AgentCertification).where(AgentCertification.agent_id == agent_id))
+            return self._agent_identity_to_dict(identity, cert)
 
     def list_agents(self, environment: str | list[str] | None = None) -> list[dict[str, Any]]:
         with self.session() as db:
@@ -326,7 +313,17 @@ class GovernanceStore:
             elif environment and environment != "all":
                 stmt = stmt.where(AgentIdentity.environment == environment)
             rows = db.scalars(stmt).all()
-            return [self._agent_identity_to_dict(row) for row in rows]
+            return [
+                self._agent_identity_to_dict(
+                    row,
+                    db.scalar(
+                        select(AgentCertification).where(
+                            AgentCertification.agent_id == row.agent_id
+                        )
+                    ),
+                )
+                for row in rows
+            ]
 
     def list_environments(self) -> list[str]:
         with self.session() as db:
@@ -339,10 +336,15 @@ class GovernanceStore:
     def agent_environment(self, agent_id: str) -> str:
         with self.session() as db:
             identity = db.get(AgentIdentity, agent_id)
-            return identity.environment if identity else "local"
+            if not identity:
+                raise ValueError(f"Agent '{agent_id}' not found")
+            return identity.environment
 
     def get_agent_identity(self, agent_id: str) -> dict[str, Any]:
-        return self.ensure_agent_identity(agent_id)
+        identity = self.find_agent_identity(agent_id)
+        if not identity:
+            raise ValueError(f"Agent '{agent_id}' not found")
+        return identity
 
     def upsert_agent_identity(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
@@ -368,8 +370,16 @@ class GovernanceStore:
                 identity.permissions = payload.get("permissions") or {}
                 identity.metadata_json = metadata_with_default_llm(payload.get("metadata"))
                 identity.updated_at = utc_now()
+                self._invalidate_agent_cert_if_certified(
+                    db, payload["agent_id"], "agent configuration updated"
+                )
             db.flush()
-            return self._agent_identity_to_dict(identity)
+            cert = db.scalar(
+                select(AgentCertification).where(
+                    AgentCertification.agent_id == identity.agent_id
+                )
+            )
+            return self._agent_identity_to_dict(identity, cert)
 
     def delete_agent_identity(self, agent_id: str) -> bool:
         with self.session() as db:
@@ -388,6 +398,11 @@ class GovernanceStore:
                 )
             ).all():
                 db.delete(assignment)
+            cert = db.scalar(
+                select(AgentCertification).where(AgentCertification.agent_id == agent_id)
+            )
+            if cert:
+                db.delete(cert)
             db.delete(identity)
             return True
 
@@ -401,12 +416,30 @@ class GovernanceStore:
             elif environment and environment != "all":
                 stmt = stmt.where(WorkflowDefinition.environment == environment)
             rows = db.scalars(stmt).all()
-            return [self._workflow_definition_to_dict(row) for row in rows]
+            return [
+                self._workflow_definition_to_dict(
+                    row,
+                    db.scalar(
+                        select(WorkflowCertification).where(
+                            WorkflowCertification.workflow_definition_id
+                            == row.workflow_definition_id
+                        )
+                    ),
+                )
+                for row in rows
+            ]
 
     def get_workflow_definition(self, workflow_definition_id: str) -> dict[str, Any] | None:
         with self.session() as db:
             definition = db.get(WorkflowDefinition, workflow_definition_id)
-            return self._workflow_definition_to_dict(definition) if definition else None
+            if not definition:
+                return None
+            cert = db.scalar(
+                select(WorkflowCertification).where(
+                    WorkflowCertification.workflow_definition_id == workflow_definition_id
+                )
+            )
+            return self._workflow_definition_to_dict(definition, cert)
 
     def workflow_definition_environment(self, workflow_definition_id: str) -> str | None:
         with self.session() as db:
@@ -479,8 +512,17 @@ class GovernanceStore:
                 definition.graph_version_hash = graph["graph_version_hash"]
                 definition.metadata_json = metadata
                 definition.updated_at = utc_now()
+                self._invalidate_workflow_cert_if_certified(
+                    db, payload["workflow_definition_id"], "workflow graph changed"
+                )
             db.flush()
-            return self._workflow_definition_to_dict(definition)
+            cert = db.scalar(
+                select(WorkflowCertification).where(
+                    WorkflowCertification.workflow_definition_id
+                    == definition.workflow_definition_id
+                )
+            )
+            return self._workflow_definition_to_dict(definition, cert)
 
     def list_guardrail_policies(
         self, environment: str | list[str] | None = None
@@ -585,6 +627,9 @@ class GovernanceStore:
                 row.mode = mode
                 row.threshold_overrides = threshold_overrides or {}
                 row.updated_at = utc_now()
+            self._invalidate_agent_cert_if_certified(
+                db, agent_id, "guardrail assignments changed"
+            )
             db.flush()
             return self._guardrail_assignment_to_dict(row)
 
@@ -593,6 +638,9 @@ class GovernanceStore:
             row = db.get(AgentGuardrailAssignment, assignment_id)
             if not row:
                 return False
+            self._invalidate_agent_cert_if_certified(
+                db, row.agent_id, "guardrail assignments changed"
+            )
             db.delete(row)
             return True
 
@@ -745,6 +793,9 @@ class GovernanceStore:
                 row.trigger = trigger
                 row.config = config or {}
                 row.updated_at = utc_now()
+            self._invalidate_agent_cert_if_certified(
+                db, agent_id, "evaluator assignments changed"
+            )
             db.flush()
             return self._evaluator_assignment_to_dict(row)
 
@@ -753,6 +804,9 @@ class GovernanceStore:
             row = db.get(AgentEvaluatorAssignment, assignment_id)
             if not row:
                 return False
+            self._invalidate_agent_cert_if_certified(
+                db, row.agent_id, "evaluator assignments changed"
+            )
             db.delete(row)
             return True
 
@@ -867,51 +921,605 @@ class GovernanceStore:
             "created_at": row.created_at.isoformat(),
         }
 
+    def create_tool_record(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from agent_governance.evaluation.tool_evaluators import compute_config_hash
+
+        tool_id = payload.get("tool_id") or new_id("tool")
+        config_hash = compute_config_hash(payload)
+        with self.session() as db:
+            if db.get(ToolRecord, tool_id):
+                raise ValueError(f"Tool ID '{tool_id}' already exists")
+            if db.scalar(select(ToolRecord).where(ToolRecord.tool_name == payload["tool_name"])):
+                raise ValueError(f"Tool name '{payload['tool_name']}' already exists")
+
+            record = ToolRecord(
+                tool_id=tool_id,
+                tool_name=payload["tool_name"],
+                display_name=payload.get("display_name")
+                or payload["tool_name"].replace("_", " ").title(),
+                description=payload.get("description", ""),
+                category=payload.get("category", "custom"),
+                side_effect_level=payload.get("side_effect_level", "read_only"),
+                input_schema=payload.get("input_schema") or {},
+                output_schema=payload.get("output_schema") or {},
+                permissions=payload.get("permissions") or {},
+                allowed_actions=payload.get("allowed_actions") or [],
+                environment=payload.get("environment", "demo"),
+                owner=payload.get("owner", "Unassigned"),
+                config_hash=config_hash,
+                artifact_digest=payload.get("artifact_digest"),
+                metadata_json=payload.get("metadata") or {},
+            )
+            db.add(record)
+            db.flush()
+            cert = ToolCertification(
+                certification_id=new_id("cert"),
+                tool_id=tool_id,
+                status="DRAFT",
+                config_hash=config_hash,
+                artifact_digest=payload.get("artifact_digest"),
+            )
+            db.add(cert)
+            db.flush()
+            return self._tool_record_to_dict(record, cert)
+
+    def upsert_tool_record(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from agent_governance.evaluation.tool_evaluators import compute_config_hash
+
+        config_hash = compute_config_hash(payload)
+        tool_id = payload.get("tool_id") or new_id("tool")
+        with self.session() as db:
+            record = db.get(ToolRecord, tool_id)
+            if not record and payload.get("tool_name"):
+                record = db.scalar(
+                    select(ToolRecord).where(ToolRecord.tool_name == payload["tool_name"])
+                )
+            if not record:
+                record = ToolRecord(
+                    tool_id=tool_id,
+                    tool_name=payload["tool_name"],
+                    display_name=payload.get("display_name")
+                    or payload["tool_name"].replace("_", " ").title(),
+                    description=payload.get("description", ""),
+                    category=payload.get("category", "custom"),
+                    side_effect_level=payload.get("side_effect_level", "read_only"),
+                    input_schema=payload.get("input_schema") or {},
+                    output_schema=payload.get("output_schema") or {},
+                    permissions=payload.get("permissions") or {},
+                    allowed_actions=payload.get("allowed_actions") or [],
+                    environment=payload.get("environment", "demo"),
+                    owner=payload.get("owner", "Unassigned"),
+                    config_hash=config_hash,
+                    artifact_digest=payload.get("artifact_digest"),
+                    metadata_json=payload.get("metadata") or {},
+                )
+                db.add(record)
+                db.flush()
+            else:
+                if payload.get("tool_name") and payload["tool_name"] != record.tool_name:
+                    duplicate = db.scalar(
+                        select(ToolRecord).where(ToolRecord.tool_name == payload["tool_name"])
+                    )
+                    if duplicate and duplicate.tool_id != record.tool_id:
+                        raise ValueError(f"Tool name '{payload['tool_name']}' already exists")
+                    record.tool_name = payload["tool_name"]
+                record.display_name = payload.get("display_name") or record.display_name
+                record.description = payload.get("description", "")
+                record.category = payload.get("category", "custom")
+                record.side_effect_level = payload.get("side_effect_level", "read_only")
+                record.input_schema = payload.get("input_schema") or {}
+                record.output_schema = payload.get("output_schema") or {}
+                record.permissions = payload.get("permissions") or {}
+                record.allowed_actions = payload.get("allowed_actions") or []
+                record.environment = payload.get("environment", record.environment)
+                record.owner = payload.get("owner", record.owner)
+                record.config_hash = config_hash
+                record.artifact_digest = payload.get("artifact_digest")
+                record.metadata_json = payload.get("metadata") or {}
+                record.updated_at = utc_now()
+
+            cert = db.scalar(select(ToolCertification).where(ToolCertification.tool_id == record.tool_id))
+            if not cert:
+                cert = ToolCertification(
+                    certification_id=new_id("cert"),
+                    tool_id=record.tool_id,
+                    status=payload.get("certification_status", "DRAFT"),
+                    config_hash=config_hash,
+                    artifact_digest=payload.get("artifact_digest"),
+                )
+                db.add(cert)
+            else:
+                requested_status = payload.get("certification_status")
+                if requested_status:
+                    cert.status = requested_status
+                elif cert.status == "CERTIFIED" and cert.config_hash != config_hash:
+                    cert.status = "NEEDS_REEVALUATION"
+                    cert.failure_reason = "Tool configuration changed after certification."
+                cert.config_hash = config_hash
+                cert.artifact_digest = payload.get("artifact_digest")
+                cert.updated_at = utc_now()
+            if payload.get("certified_by"):
+                cert.certified_by = payload["certified_by"]
+            if payload.get("certified_at"):
+                cert.certified_at = payload["certified_at"]
+            db.flush()
+            return self._tool_record_to_dict(record, cert)
+
+    def list_tool_records(
+        self, environment: str | list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(select(ToolRecord).order_by(ToolRecord.display_name)).all()
+            result = []
+            for row in rows:
+                if not self._environment_matches(row.environment, environment):
+                    continue
+                cert = db.scalar(
+                    select(ToolCertification).where(ToolCertification.tool_id == row.tool_id)
+                )
+                result.append(self._tool_record_to_dict(row, cert))
+            return result
+
+    def get_tool_record(self, tool_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(ToolRecord, tool_id)
+            if not row:
+                return None
+            cert = db.scalar(select(ToolCertification).where(ToolCertification.tool_id == tool_id))
+            return self._tool_record_to_dict(row, cert)
+
+    def get_tool_record_by_name(self, tool_name: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.scalar(select(ToolRecord).where(ToolRecord.tool_name == tool_name))
+            if not row:
+                return None
+            cert = db.scalar(
+                select(ToolCertification).where(ToolCertification.tool_id == row.tool_id)
+            )
+            return self._tool_record_to_dict(row, cert)
+
+    def get_tool_certification(self, tool_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            cert = db.scalar(select(ToolCertification).where(ToolCertification.tool_id == tool_id))
+            return self._tool_certification_to_dict(cert) if cert else None
+
+    def update_tool_certification(
+        self, tool_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            cert = db.scalar(select(ToolCertification).where(ToolCertification.tool_id == tool_id))
+            if not cert:
+                raise ValueError(f"No certification record for tool '{tool_id}'")
+            for field in (
+                "status",
+                "config_hash",
+                "artifact_digest",
+                "last_evaluation_run_id",
+                "certified_by",
+                "certified_at",
+                "expires_at",
+                "failure_reason",
+            ):
+                if field in payload:
+                    setattr(cert, field, payload[field])
+            cert.updated_at = utc_now()
+            db.flush()
+            return self._tool_certification_to_dict(cert)
+
+    def create_evaluation_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            run = EvaluationRun(
+                run_id=new_id("run"),
+                target_type=payload["target_type"],
+                target_id=payload["target_id"],
+                config_hash=payload["config_hash"],
+                artifact_digest=payload.get("artifact_digest"),
+                triggered_by=payload["triggered_by"],
+                status="RUNNING",
+                metadata_json=payload.get("metadata") or {},
+            )
+            db.add(run)
+            db.flush()
+            return self._evaluation_run_to_dict(run)
+
+    def complete_evaluation_run(
+        self,
+        run_id: str,
+        *,
+        overall_result: str,
+        criteria_total: int,
+        criteria_passed: int,
+        duration_ms: int,
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            run = db.get(EvaluationRun, run_id)
+            if not run:
+                raise ValueError(f"Evaluation run '{run_id}' not found")
+            run.status = "COMPLETED"
+            run.overall_result = overall_result
+            run.criteria_total = criteria_total
+            run.criteria_passed = criteria_passed
+            run.duration_ms = duration_ms
+            run.completed_at = utc_now()
+            db.flush()
+            return self._evaluation_run_to_dict(run)
+
+    def add_evaluation_criterion_results(
+        self, run_id: str, results: list[dict[str, Any]]
+    ) -> None:
+        with self.session() as db:
+            for result in results:
+                db.add(
+                    EvaluationCriterionResult(
+                        criterion_result_id=new_id("crit"),
+                        run_id=run_id,
+                        evaluator_id=result["evaluator_id"],
+                        criterion_name=result["criterion_name"],
+                        status=result["status"],
+                        score=result.get("score"),
+                        evidence_sentence=result["evidence_sentence"],
+                        observed_value=result.get("observed_value") or {},
+                        expected_value=result.get("expected_value") or {},
+                        metadata_json=result.get("metadata") or {},
+                        input_snapshot=result.get("input_snapshot") or {},
+                    )
+                )
+
+    def list_evaluation_runs_for_tool(self, tool_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(EvaluationRun)
+                .where(EvaluationRun.target_type == "tool", EvaluationRun.target_id == tool_id)
+                .order_by(desc(EvaluationRun.created_at))
+            ).all()
+            return [self._evaluation_run_to_dict(row) for row in rows]
+
+    def list_evaluation_criterion_results(self, run_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(EvaluationCriterionResult)
+                .where(EvaluationCriterionResult.run_id == run_id)
+                .order_by(EvaluationCriterionResult.created_at)
+            ).all()
+            return [self._evaluation_criterion_to_dict(row) for row in rows]
+
+    def create_agent_certification(
+        self, agent_id: str, config_hash: str
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            existing = db.scalar(
+                select(AgentCertification).where(AgentCertification.agent_id == agent_id)
+            )
+            if existing:
+                return self._agent_certification_to_dict(existing)
+            cert = AgentCertification(
+                certification_id=new_id("acert"),
+                agent_id=agent_id,
+                status="DRAFT",
+                config_hash=config_hash,
+            )
+            db.add(cert)
+            db.flush()
+            return self._agent_certification_to_dict(cert)
+
+    def get_agent_certification(self, agent_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            cert = db.scalar(
+                select(AgentCertification).where(AgentCertification.agent_id == agent_id)
+            )
+            return self._agent_certification_to_dict(cert) if cert else None
+
+    def update_agent_certification(
+        self, agent_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            cert = db.scalar(
+                select(AgentCertification).where(AgentCertification.agent_id == agent_id)
+            )
+            if not cert:
+                raise ValueError(f"No certification record for agent '{agent_id}'")
+            for field in (
+                "status",
+                "config_hash",
+                "invalidation_reason",
+                "last_evaluation_run_id",
+                "certified_by",
+                "certified_at",
+                "expires_at",
+                "failure_reason",
+            ):
+                if field in payload:
+                    setattr(cert, field, payload[field])
+            cert.updated_at = utc_now()
+            db.flush()
+            return self._agent_certification_to_dict(cert)
+
+    def list_evaluation_runs_for_agent(self, agent_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(EvaluationRun)
+                .where(EvaluationRun.target_type == "agent", EvaluationRun.target_id == agent_id)
+                .order_by(desc(EvaluationRun.created_at))
+            ).all()
+            return [self._evaluation_run_to_dict(row) for row in rows]
+
+    def create_workflow_certification(
+        self, workflow_definition_id: str, config_hash: str
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            cert = WorkflowCertification(
+                certification_id=new_id("cert"),
+                workflow_definition_id=workflow_definition_id,
+                status="DRAFT",
+                config_hash=config_hash,
+            )
+            db.add(cert)
+            db.flush()
+            return self._workflow_certification_to_dict(cert)
+
+    def get_workflow_certification(
+        self, workflow_definition_id: str
+    ) -> dict[str, Any] | None:
+        with self.session() as db:
+            cert = db.scalar(
+                select(WorkflowCertification).where(
+                    WorkflowCertification.workflow_definition_id == workflow_definition_id
+                )
+            )
+            return self._workflow_certification_to_dict(cert) if cert else None
+
+    def update_workflow_certification(
+        self, workflow_definition_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            cert = db.scalar(
+                select(WorkflowCertification).where(
+                    WorkflowCertification.workflow_definition_id == workflow_definition_id
+                )
+            )
+            if not cert:
+                raise ValueError(
+                    f"No certification record for workflow '{workflow_definition_id}'"
+                )
+            for field in (
+                "status",
+                "config_hash",
+                "invalidation_reason",
+                "last_evaluation_run_id",
+                "certified_by",
+                "certified_at",
+                "expires_at",
+                "failure_reason",
+            ):
+                if field in payload:
+                    setattr(cert, field, payload[field])
+            cert.updated_at = utc_now()
+            db.flush()
+            return self._workflow_certification_to_dict(cert)
+
+    def list_evaluation_runs_for_workflow(
+        self, workflow_definition_id: str
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(EvaluationRun)
+                .where(
+                    EvaluationRun.target_type == "workflow",
+                    EvaluationRun.target_id == workflow_definition_id,
+                )
+                .order_by(desc(EvaluationRun.created_at))
+            ).all()
+            return [self._evaluation_run_to_dict(row) for row in rows]
+
+    def list_evaluation_runs(
+        self,
+        *,
+        target_type: str | None = None,
+        environment: str | list[str] | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            stmt = select(EvaluationRun).order_by(desc(EvaluationRun.created_at)).limit(limit)
+            if target_type:
+                stmt = stmt.where(EvaluationRun.target_type == target_type)
+            rows = db.scalars(stmt).all()
+
+            runs = []
+            for row in rows:
+                if environment and not self._evaluation_run_environment_matches(
+                    db, row, environment
+                ):
+                    continue
+                runs.append(self._evaluation_run_to_dict(row))
+            return runs
+
+    @staticmethod
+    def _tool_record_to_dict(
+        row: ToolRecord | None, cert: ToolCertification | None = None
+    ) -> dict[str, Any]:
+        if not row:
+            return {}
+        metadata = row.metadata_json or {}
+        return {
+            "tool_id": row.tool_id,
+            "tool_name": row.tool_name,
+            "display_name": row.display_name,
+            "description": row.description,
+            "domain": metadata.get("domain") or metadata.get("data_domain") or row.category,
+            "category": row.category,
+            "side_effect_level": row.side_effect_level,
+            "input_schema": row.input_schema or {},
+            "output_schema": row.output_schema or {},
+            "permissions": row.permissions or {},
+            "allowed_actions": row.allowed_actions or [],
+            "environment": row.environment,
+            "owner": row.owner,
+            "config_hash": row.config_hash,
+            "artifact_digest": row.artifact_digest,
+            "metadata": metadata,
+            "certification": GovernanceStore._tool_certification_to_dict(cert) if cert else None,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _tool_certification_to_dict(cert: ToolCertification | None) -> dict[str, Any]:
+        if not cert:
+            return {}
+        return {
+            "certification_id": cert.certification_id,
+            "tool_id": cert.tool_id,
+            "status": cert.status,
+            "config_hash": cert.config_hash,
+            "artifact_digest": cert.artifact_digest,
+            "last_evaluation_run_id": cert.last_evaluation_run_id,
+            "certified_by": cert.certified_by,
+            "certified_at": cert.certified_at.isoformat() if cert.certified_at else None,
+            "expires_at": cert.expires_at.isoformat() if cert.expires_at else None,
+            "failure_reason": cert.failure_reason,
+            "created_at": cert.created_at.isoformat(),
+            "updated_at": cert.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _evaluation_run_to_dict(row: EvaluationRun | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "run_id": row.run_id,
+            "target_type": row.target_type,
+            "target_id": row.target_id,
+            "config_hash": row.config_hash,
+            "artifact_digest": row.artifact_digest,
+            "triggered_by": row.triggered_by,
+            "status": row.status,
+            "overall_result": row.overall_result,
+            "criteria_total": row.criteria_total,
+            "criteria_passed": row.criteria_passed,
+            "duration_ms": row.duration_ms,
+            "metadata": row.metadata_json or {},
+            "created_at": row.created_at.isoformat(),
+            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        }
+
+    @staticmethod
+    def _evaluation_criterion_to_dict(row: EvaluationCriterionResult) -> dict[str, Any]:
+        return {
+            "criterion_result_id": row.criterion_result_id,
+            "run_id": row.run_id,
+            "evaluator_id": row.evaluator_id,
+            "criterion_name": row.criterion_name,
+            "status": row.status,
+            "score": row.score,
+            "evidence_sentence": row.evidence_sentence,
+            "observed_value": row.observed_value or {},
+            "expected_value": row.expected_value or {},
+            "metadata": row.metadata_json or {},
+            "input_snapshot": row.input_snapshot or {},
+            "created_at": row.created_at.isoformat(),
+        }
+
+    @staticmethod
+    def _agent_certification_to_dict(cert: AgentCertification | None) -> dict[str, Any]:
+        if not cert:
+            return {}
+        return {
+            "certification_id": cert.certification_id,
+            "agent_id": cert.agent_id,
+            "status": cert.status,
+            "config_hash": cert.config_hash,
+            "invalidation_reason": cert.invalidation_reason,
+            "last_evaluation_run_id": cert.last_evaluation_run_id,
+            "certified_by": cert.certified_by,
+            "certified_at": cert.certified_at.isoformat() if cert.certified_at else None,
+            "expires_at": cert.expires_at.isoformat() if cert.expires_at else None,
+            "failure_reason": cert.failure_reason,
+            "created_at": cert.created_at.isoformat(),
+            "updated_at": cert.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _workflow_certification_to_dict(
+        cert: WorkflowCertification | None,
+    ) -> dict[str, Any]:
+        if not cert:
+            return {}
+        return {
+            "certification_id": cert.certification_id,
+            "workflow_definition_id": cert.workflow_definition_id,
+            "status": cert.status,
+            "config_hash": cert.config_hash,
+            "invalidation_reason": cert.invalidation_reason,
+            "last_evaluation_run_id": cert.last_evaluation_run_id,
+            "certified_by": cert.certified_by,
+            "certified_at": cert.certified_at.isoformat() if cert.certified_at else None,
+            "expires_at": cert.expires_at.isoformat() if cert.expires_at else None,
+            "failure_reason": cert.failure_reason,
+            "created_at": cert.created_at.isoformat(),
+            "updated_at": cert.updated_at.isoformat(),
+        }
+
+    def _invalidate_agent_cert_if_certified(
+        self, db: Session, agent_id: str, reason: str
+    ) -> None:
+        cert = db.scalar(select(AgentCertification).where(AgentCertification.agent_id == agent_id))
+        if cert and cert.status not in {"DRAFT", "NEEDS_REEVALUATION"}:
+            cert.status = "NEEDS_REEVALUATION"
+            cert.invalidation_reason = reason
+            cert.updated_at = utc_now()
+
+    def _invalidate_workflow_cert_if_certified(
+        self, db: Session, workflow_definition_id: str, reason: str
+    ) -> None:
+        cert = db.scalar(
+            select(WorkflowCertification).where(
+                WorkflowCertification.workflow_definition_id == workflow_definition_id
+            )
+        )
+        if cert and cert.status not in {"DRAFT", "NEEDS_REEVALUATION"}:
+            cert.status = "NEEDS_REEVALUATION"
+            cert.invalidation_reason = reason
+            cert.updated_at = utc_now()
+
+    def _evaluation_run_environment_matches(
+        self, db: Session, row: EvaluationRun, environment: str | list[str]
+    ) -> bool:
+        if row.target_type == "tool":
+            tool = db.get(ToolRecord, row.target_id)
+            return self._environment_matches(tool.environment if tool else None, environment)
+        if row.target_type == "agent":
+            identity = db.get(AgentIdentity, row.target_id)
+            return self._environment_matches(
+                identity.environment if identity else None, environment
+            )
+        if row.target_type == "workflow":
+            definition = db.get(WorkflowDefinition, row.target_id)
+            return self._environment_matches(
+                definition.environment if definition else None, environment
+            )
+        return True
+
     def grant_agent_tool(self, agent_id: str, tool_name: str) -> dict[str, Any]:
         with self.session() as db:
             identity = db.get(AgentIdentity, agent_id)
             if not identity:
-                identity = AgentIdentity(
-                    agent_id=agent_id,
-                    display_name=agent_id.replace("-", " ").title(),
-                    agent_type="custom_agent",
-                    owner="Unassigned",
-                    environment="local",
-                    purpose="Auto-registered agent.",
-                    permissions=DEFAULT_AGENT_PERMISSIONS,
-                    metadata_json={
-                        "identity_provider": "auto-registered",
-                        "llm": {**DEFAULT_AGENT_LLM_CONFIG},
-                    },
-                )
-                db.add(identity)
+                raise ValueError(f"Agent '{agent_id}' not found")
 
             permissions = dict(identity.permissions or {})
             tools = sorted(set(permissions.get("tools", [])) | {tool_name})
             permissions["tools"] = tools
             identity.permissions = permissions
             identity.updated_at = utc_now()
+            self._invalidate_agent_cert_if_certified(db, agent_id, "tool grants changed")
             db.flush()
-            return self._agent_identity_to_dict(identity)
+            cert = db.scalar(select(AgentCertification).where(AgentCertification.agent_id == agent_id))
+            return self._agent_identity_to_dict(identity, cert)
 
     def revoke_agent_tool(self, agent_id: str, tool_name: str) -> dict[str, Any]:
         with self.session() as db:
             identity = db.get(AgentIdentity, agent_id)
             if not identity:
-                identity = AgentIdentity(
-                    agent_id=agent_id,
-                    display_name=agent_id.replace("-", " ").title(),
-                    agent_type="custom_agent",
-                    owner="Unassigned",
-                    environment="local",
-                    purpose="Auto-registered agent.",
-                    permissions=DEFAULT_AGENT_PERMISSIONS,
-                    metadata_json={
-                        "identity_provider": "auto-registered",
-                        "llm": {**DEFAULT_AGENT_LLM_CONFIG},
-                    },
-                )
-                db.add(identity)
+                raise ValueError(f"Agent '{agent_id}' not found")
 
             permissions = dict(identity.permissions or {})
             permissions["tools"] = [
@@ -919,12 +1527,15 @@ class GovernanceStore:
             ]
             identity.permissions = permissions
             identity.updated_at = utc_now()
+            self._invalidate_agent_cert_if_certified(db, agent_id, "tool grants changed")
             db.flush()
-            return self._agent_identity_to_dict(identity)
+            cert = db.scalar(select(AgentCertification).where(AgentCertification.agent_id == agent_id))
+            return self._agent_identity_to_dict(identity, cert)
 
     def ensure_agent_session(self, session_id: str, agent_id: str, user_query: str) -> None:
-        self.ensure_agent_identity(agent_id)
         with self.session() as db:
+            if not db.get(AgentIdentity, agent_id):
+                raise ValueError(f"Agent '{agent_id}' not found")
             existing = db.get(AgentSession, session_id)
             if existing:
                 existing.updated_at = utc_now()
@@ -948,8 +1559,9 @@ class GovernanceStore:
         metadata: dict[str, Any] | None = None,
     ) -> str:
         workflow_id = new_id("flow")
-        self.ensure_agent_identity(lead_agent_id)
         with self.session() as db:
+            if not db.get(AgentIdentity, lead_agent_id):
+                raise ValueError(f"Agent '{lead_agent_id}' not found")
             db.add(
                 AgentWorkflow(
                     workflow_id=workflow_id,
@@ -972,8 +1584,9 @@ class GovernanceStore:
         parent_session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        self.ensure_agent_identity(agent_id)
         with self.session() as db:
+            if not db.get(AgentIdentity, agent_id):
+                raise ValueError(f"Agent '{agent_id}' not found")
             existing = db.scalar(
                 select(WorkflowSessionLink).where(
                     WorkflowSessionLink.workflow_id == workflow_id,
@@ -1454,7 +2067,9 @@ class GovernanceStore:
             return [self._workflow_event_to_dict(row) for row in rows]
 
     @staticmethod
-    def _agent_identity_to_dict(identity: AgentIdentity | None) -> dict[str, Any]:
+    def _agent_identity_to_dict(
+        identity: AgentIdentity | None, cert: AgentCertification | None = None
+    ) -> dict[str, Any]:
         if not identity:
             return {}
         return {
@@ -1466,12 +2081,18 @@ class GovernanceStore:
             "purpose": identity.purpose,
             "permissions": identity.permissions or {},
             "metadata": identity.metadata_json or {},
+            "certification": GovernanceStore._agent_certification_to_dict(cert)
+            if cert
+            else None,
             "created_at": identity.created_at.isoformat(),
             "updated_at": identity.updated_at.isoformat(),
         }
 
     @staticmethod
-    def _workflow_definition_to_dict(definition: WorkflowDefinition | None) -> dict[str, Any]:
+    def _workflow_definition_to_dict(
+        definition: WorkflowDefinition | None,
+        cert: WorkflowCertification | None = None,
+    ) -> dict[str, Any]:
         if not definition:
             return {}
         return {
@@ -1490,6 +2111,9 @@ class GovernanceStore:
             "review_rules": definition.review_rules or {},
             "graph_version_hash": definition.graph_version_hash,
             "metadata": definition.metadata_json or {},
+            "certification": GovernanceStore._workflow_certification_to_dict(cert)
+            if cert
+            else None,
             "created_at": definition.created_at.isoformat(),
             "updated_at": definition.updated_at.isoformat(),
         }
@@ -1650,6 +2274,9 @@ class GovernanceStore:
                 db.add(row)
             else:
                 row.access_mode = access_mode
+            self._invalidate_agent_cert_if_certified(
+                db, agent_id, "knowledge base assignments changed"
+            )
             db.flush()
             return self._kb_assignment_to_dict(row)
 
@@ -1658,6 +2285,9 @@ class GovernanceStore:
             row = db.get(AgentKBAssignment, assignment_id)
             if not row:
                 return False
+            self._invalidate_agent_cert_if_certified(
+                db, row.agent_id, "knowledge base assignments changed"
+            )
             db.delete(row)
             return True
 

@@ -23,6 +23,7 @@ services:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       POLICY_PATH: policies/policy.yaml
       AUTO_INIT_DB: "true"
+      SEED_DEMO_DATA: "false"
     ports:
       - "8000:8000"
     depends_on:

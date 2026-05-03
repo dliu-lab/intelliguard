@@ -225,18 +225,23 @@ export function isBackendComponentKey(value: string | null): value is BackendCom
     value === "knowledge" ||
     value === "reviews" ||
     value === "audit" ||
+    value === "monitoring" ||
     value === "environments"
   );
 }
 export function isWorkspaceView(value: string | null): value is WorkspaceView {
   return (
     value === "overview" ||
-    value === "workflows" ||
-    value === "trace" ||
-    value === "control" ||
-    value === "policies" ||
+    value === "tool-registry" ||
+    value === "agent-registry" ||
+    value === "workflow-designer" ||
+    value === "knowledge-bases" ||
+    value === "guardrail-policies" ||
+    value === "evaluation-center" ||
+    value === "agentic-workflows" ||
     value === "reviews" ||
-    value === "audit"
+    value === "audit" ||
+    value === "monitoring"
   );
 }
 export function workspaceViewFromUrl(): WorkspaceView {
@@ -254,16 +259,28 @@ export function workspaceViewFromUrl(): WorkspaceView {
   return "overview";
 }
 export function workspaceViewForComponent(component: BackendComponentKey): WorkspaceView {
+  if (component === "tools") {
+    return "tool-registry";
+  }
+
+  if (component === "agents") {
+    return "agent-registry";
+  }
+
   if (component === "workflows") {
-    return "workflows";
+    return "workflow-designer";
   }
 
   if (component === "guardrails") {
-    return "policies";
+    return "guardrail-policies";
   }
 
-  if (component === "evaluators" || component === "knowledge") {
-    return "control";
+  if (component === "evaluators") {
+    return "evaluation-center";
+  }
+
+  if (component === "knowledge") {
+    return "knowledge-bases";
   }
 
   if (component === "reviews") {
@@ -274,7 +291,11 @@ export function workspaceViewForComponent(component: BackendComponentKey): Works
     return "audit";
   }
 
-  return "control";
+  if (component === "monitoring") {
+    return "monitoring";
+  }
+
+  return "overview";
 }
 export function formatCount(value: number, label: string) {
   return `${value} ${label}${value === 1 ? "" : "s"}`;

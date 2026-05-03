@@ -918,6 +918,33 @@ This tells the core product story:
 
 ## Implementation Plan For Further Work
 
+### Implementation Status
+
+#### Ready for Review
+
+| Item | Phase | Notes |
+|---|---|---|
+| Audit Events row redesign — stats bar, colored evidence badges, column reorder (Agent, Reason, Stage, Risk, Decision, Time), decision filter pills, left-border accent | Phase 1 | Implemented in dashboard; light/dark mode contrast fixed via CSS class overrides |
+| Review Queue populated states — agent, tool, user query, risk score, reason, approve/deny actions, reviewer note required for denial, status filter (All/Pending/Approved/Denied) | Phase 1 | Implemented in dashboard |
+| Landing page product-neutral copy and gateway wording | Positioning | Commits landed |
+
+#### To Be Started
+
+| Item | Phase |
+|---|---|
+| Runtime Policies summary cards — thresholds, allowed/blocked tools, review routing, PII behavior | Phase 1 |
+| Domain workflow surfaces reframe — graph nodes, node types, activation stages, edges, policy bindings | Phase 1B |
+| Close audit backend gaps — `policy_id`, `policy_version`, promote `stage` to first-class field | Phase 2 |
+| Tool argument validation and session scope binding | Phase 3 |
+| Rate limiting controls (session-level) | Phase 3 |
+| Domain workflow graph definition with lead-routing audit payload | Phase 4 |
+| Workflow pause/resume after human approval | Phase 4 |
+| Model gateway guardrails | Phase 5 |
+| Policy simulation and audit export | Phase 6 |
+| Evaluator system — tool/agent/workflow certification, LLM-as-judge, judge calibration | Evaluation Center |
+
+---
+
 ### RBAC Principle
 
 All new features must respect the three existing roles. New capabilities default to the most restrictive access level and are explicitly relaxed only where justified.

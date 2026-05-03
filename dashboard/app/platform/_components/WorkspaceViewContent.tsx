@@ -1,8 +1,11 @@
 import type { PlatformData } from "@/lib/api";
 import { ControlPlaneWorkspace } from "./ControlPlaneWorkspace";
+import { EvaluationCenterWorkspace } from "./EvaluationCenterWorkspace";
+import { MonitoringWorkspace } from "./MonitoringWorkspace";
 import { OverviewWorkspace } from "./OverviewWorkspace";
-import { AuditEventsWorkspace, ReviewQueueWorkspace, RuntimePoliciesWorkspace, WorkflowTraceWorkspace } from "./RecordListWorkspace";
+import { AuditEventsWorkspace, ReviewQueueWorkspace, WorkflowTraceWorkspace } from "./RecordListWorkspace";
 import type { BackendComponentKey, DataStatus, WorkspaceView } from "./types";
+import { ToolRegistryWorkspace } from "./ToolRegistryWorkspace";
 import { WorkflowBuilderWorkspace } from "./WorkflowBuilderWorkspace";
 
 export function WorkspaceViewContent({
@@ -11,8 +14,8 @@ export function WorkspaceViewContent({
   data,
   dataStatus,
   onComponentSelect,
+  onWorkflowAuditSelect,
   onRefresh,
-  onWorkflowTraceSelect,
   selectedEnvironment,
   selectedTraceWorkflowId,
 }: {
@@ -21,8 +24,8 @@ export function WorkspaceViewContent({
   data: PlatformData;
   dataStatus: DataStatus;
   onComponentSelect: (component: BackendComponentKey) => void;
+  onWorkflowAuditSelect: (workflowIdOrSessionId: string) => void;
   onRefresh: () => void;
-  onWorkflowTraceSelect: (workflowId: string) => void;
   selectedEnvironment: string;
   selectedTraceWorkflowId: string;
 }) {
@@ -30,40 +33,81 @@ export function WorkspaceViewContent({
     return <OverviewWorkspace data={data} dataStatus={dataStatus} onComponentSelect={onComponentSelect} />;
   }
 
-  if (activeView === "control") {
+  if (activeView === "tool-registry") {
+    return <ToolRegistryWorkspace data={data} onRefresh={onRefresh} />;
+  }
+
+  if (activeView === "agent-registry") {
     return (
       <ControlPlaneWorkspace
         activeComponent={activeComponent}
         data={data}
         dataStatus={dataStatus}
+        lockedTab="agents"
         onRefresh={onRefresh}
         onSelect={onComponentSelect}
       />
     );
   }
 
-  if (activeView === "workflows") {
+  if (activeView === "workflow-designer") {
     return (
       <WorkflowBuilderWorkspace
         data={data}
         onRefresh={onRefresh}
-        onWorkflowTraceSelect={onWorkflowTraceSelect}
         selectedEnvironment={selectedEnvironment}
       />
     );
   }
 
-  if (activeView === "trace") {
-    return <WorkflowTraceWorkspace data={data} selectedWorkflowId={selectedTraceWorkflowId} />;
+  if (activeView === "knowledge-bases") {
+    return (
+      <ControlPlaneWorkspace
+        activeComponent="knowledge"
+        data={data}
+        dataStatus={dataStatus}
+        lockedTab="knowledge"
+        onRefresh={onRefresh}
+        onSelect={onComponentSelect}
+      />
+    );
   }
 
-  if (activeView === "policies") {
-    return <RuntimePoliciesWorkspace data={data} />;
+  if (activeView === "guardrail-policies") {
+    return (
+      <ControlPlaneWorkspace
+        activeComponent="guardrails"
+        data={data}
+        dataStatus={dataStatus}
+        lockedTab="guardrails"
+        onRefresh={onRefresh}
+        onSelect={onComponentSelect}
+      />
+    );
+  }
+
+  if (activeView === "evaluation-center") {
+    return <EvaluationCenterWorkspace data={data} dataStatus={dataStatus} />;
+  }
+
+  if (activeView === "agentic-workflows") {
+    return (
+      <WorkflowTraceWorkspace
+        data={data}
+        onAuditEventsSelect={onWorkflowAuditSelect}
+        onRefresh={onRefresh}
+        selectedWorkflowId={selectedTraceWorkflowId}
+      />
+    );
   }
 
   if (activeView === "reviews") {
     return <ReviewQueueWorkspace data={data} onRefresh={onRefresh} />;
   }
 
-  return <AuditEventsWorkspace data={data} />;
+  if (activeView === "monitoring") {
+    return <MonitoringWorkspace data={data} dataStatus={dataStatus} />;
+  }
+
+  return <AuditEventsWorkspace data={data} selectedWorkflowId={selectedTraceWorkflowId} />;
 }

@@ -5,17 +5,17 @@ import { formatCount, workspaceViewForComponent } from "./utils";
 
 const moduleDefinitions = [
   {
-    title: "Control Plane",
-    description: "Register platform resources.",
-    componentKey: "agents" as const,
-    metric: (data: PlatformData) => formatCount(data.agents.length, "agent"),
+    title: "Tool Registry",
+    description: "Register and certify tool contracts.",
+    componentKey: "tools" as const,
+    metric: (data: PlatformData) => formatCount(data.tools.length, "tool"),
     detail: (data: PlatformData) =>
-      `${formatCount(data.tools.length, "tool")}, ${formatCount(data.guardrailPolicies.length, "guardrail")}`,
+      `${formatCount(data.agents.length, "agent")}, ${formatCount(data.guardrailPolicies.length, "guardrail")}`,
     tone: "emerald" as const,
   },
   {
-    title: "Agentic Workflows",
-    description: "Build and run multi-agent flows.",
+    title: "Workflow Designer",
+    description: "Build governed agent graphs.",
     componentKey: "workflows" as const,
     metric: (data: PlatformData) => formatCount(data.workflowDefinitions.length, "workflow"),
     detail: (data: PlatformData) =>
@@ -23,11 +23,11 @@ const moduleDefinitions = [
     tone: "sky" as const,
   },
   {
-    title: "Runtime Policies",
-    description: "Evaluate runtime actions.",
-    componentKey: "guardrails" as const,
-    metric: (data: PlatformData) => formatCount(data.reviewQueue.length, "review"),
-    detail: (data: PlatformData) => `${formatCount(data.guardrailPolicies.length, "policy")} available`,
+    title: "Evaluation Center",
+    description: "Review evaluator and certification coverage.",
+    componentKey: "evaluators" as const,
+    metric: (data: PlatformData) => formatCount(data.evaluatorTemplates.length, "evaluator"),
+    detail: (data: PlatformData) => `${formatCount(data.reviewQueue.length, "review")} open`,
     tone: "amber" as const,
   },
   {

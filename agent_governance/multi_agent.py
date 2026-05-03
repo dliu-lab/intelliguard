@@ -14,52 +14,6 @@ from agent_governance.workflow_graph import workflow_graph_hash
 CUSTOMER_ID_RE = re.compile(r"\bC\d{3,}\b", re.IGNORECASE)
 LEAD_NODE_ID = "lead"
 
-DEFAULT_CUSTOMER_SUPPORT_WORKFLOW = {
-    "workflow_definition_id": "customer-support-investigation",
-    "name": "Customer Support Investigation",
-    "description": "Verify customer context, review recent transactions, and record a governed response recommendation.",
-    "environment": "demo",
-    "lead_agent_id": "customer-support-lead-agent",
-    "domain": "customer_support",
-    "steps": [
-        {
-            "step_id": "identity",
-            "label": "Verify customer profile",
-            "role": "gate_agent:identity",
-            "agent_id": "identity-verification-agent",
-            "node_type": "gate_agent",
-            "activation_policy": "always",
-            "activation_stage": "pre_route",
-            "task": "Verify customer profile scope.",
-            "tool_name": "get_customer_profile",
-            "tool_args": {"customer_id": "{{customer_id}}"},
-        },
-        {
-            "step_id": "transactions",
-            "label": "Retrieve recent transactions",
-            "role": "task_agent:transactions",
-            "agent_id": "transaction-analyst-agent",
-            "node_type": "task_agent",
-            "activation_policy": "conditional",
-            "activation_stage": "routed",
-            "task": "Retrieve recent transactions.",
-            "tool_name": "get_customer_transactions",
-            "tool_args": {"customer_id": "{{customer_id}}"},
-        },
-        {
-            "step_id": "risk_review",
-            "label": "Review workflow outputs",
-            "role": "review_agent:risk_review",
-            "agent_id": "risk-review-agent",
-            "node_type": "review_agent",
-            "activation_policy": "on_risk",
-            "activation_stage": "final_review",
-            "task": "Review outputs for safe response composition.",
-        },
-    ],
-}
-
-
 def _workflow_connections(workflow_definition: dict, steps: list[dict]) -> list[dict]:
     step_ids: list[str] = []
     for step in steps:
@@ -150,8 +104,10 @@ def run_customer_support_workflow(
     query: str,
     workflow_definition: dict | None = None,
 ) -> dict:
+    if workflow_definition is None:
+        raise ValueError("workflow_definition is required")
+
     store = GovernanceStore(database_url)
-    workflow_definition = workflow_definition or DEFAULT_CUSTOMER_SUPPORT_WORKFLOW
     steps = _workflow_steps(workflow_definition)
     connections = _workflow_connections(workflow_definition, steps)
     incoming_by_step = _incoming_connections(connections)
@@ -486,7 +442,7 @@ def _workflow_summary(
 
 
 def _workflow_steps(workflow_definition: dict) -> list[dict]:
-    steps = workflow_definition.get("steps") or DEFAULT_CUSTOMER_SUPPORT_WORKFLOW["steps"]
+    steps = workflow_definition.get("steps") or []
     nodes = (
         workflow_definition.get("nodes")
         if isinstance(workflow_definition.get("nodes"), list)

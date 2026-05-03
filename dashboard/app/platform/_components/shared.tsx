@@ -150,13 +150,6 @@ export function JsonBuilder({
     <form className="glass-card rounded-3xl p-5" onSubmit={onSubmit}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <h3 className="text-xl font-semibold">{title}</h3>
-        <button
-          type="button"
-          onClick={onReset}
-          className="rounded-full border border-line bg-white/[0.04] px-4 py-2 text-sm font-semibold transition hover:border-accent/40 hover:bg-accent/10"
-        >
-          Use Template
-        </button>
       </div>
       <textarea
         className="mt-5 min-h-[360px] w-full resize-y rounded-2xl border border-line bg-ink/80 p-4 font-mono text-xs leading-6 text-textPrimary outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/20"
@@ -170,6 +163,13 @@ export function JsonBuilder({
           className="rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90"
         >
           {submitLabel}
+        </button>
+        <button
+          type="button"
+          onClick={onReset}
+          className="rounded-full border border-line bg-white/[0.04] px-5 py-3 text-sm font-semibold text-textPrimary transition hover:border-accent/40 hover:bg-accent/10"
+        >
+          Reset
         </button>
         {onCancel ? (
           <button

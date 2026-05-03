@@ -22,6 +22,7 @@ def main() -> None:
     settings = load_settings()
     if settings.auto_init_db:
         init_db(settings.database_url)
+    if settings.seed_demo_data:
         GovernanceStore(settings.database_url).seed_demo_data()
 
     runner = GovernedToolRunner(
@@ -45,4 +46,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

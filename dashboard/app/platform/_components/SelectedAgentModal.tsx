@@ -2,7 +2,7 @@
 
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { Bot, CheckCircle2, Database, Plus, ShieldCheck, Wrench, X } from "lucide-react";
+import { BadgeCheck, Bot, CheckCircle2, Database, Plus, ShieldCheck, Wrench, X } from "lucide-react";
 import {
   assignAgentEvaluator,
   assignAgentGuardrail,
@@ -11,14 +11,22 @@ import {
   deleteAgentEvaluator,
   deleteAgentGuardrail,
   deleteAgentKnowledgeBase,
+  evaluateAgent,
+  getAgentCertification,
   getSession,
   grantAgentTool,
+  listAgentEvaluationRuns,
   listAgentEvaluators,
   listAgentGuardrails,
   listAgentKnowledgeBases,
+  listEvaluationCriteriaResults,
   revokeAgentTool,
+  type AgentCertification,
   type ApiRecord,
+  type CriterionResult,
+  type EvaluationRun,
 } from "@/lib/api";
+import { AgentCertificationPanel } from "./AgentCertificationPanel";
 import { ComponentRow } from "./shared";
 import type { AgentModalTab } from "./types";
 import {
@@ -27,6 +35,7 @@ import {
   getAgentTools,
   isErrorMessage,
   joinParts,
+  readNestedText,
   readText,
   validateAgentType,
   validateLowerToken,
@@ -82,6 +91,10 @@ export function SelectedAgentModal({
   const [guardrailAssignments, setGuardrailAssignments] = useState<ApiRecord[]>([]);
   const [evaluatorAssignments, setEvaluatorAssignments] = useState<ApiRecord[]>([]);
   const [knowledgeAssignments, setKnowledgeAssignments] = useState<ApiRecord[]>([]);
+  const [certification, setCertification] = useState<AgentCertification | null>(null);
+  const [certRuns, setCertRuns] = useState<EvaluationRun[]>([]);
+  const [certCriteria, setCertCriteria] = useState<CriterionResult[]>([]);
+  const [evaluating, setEvaluating] = useState(false);
   const [selectedTool, setSelectedTool] = useState("");
   const [selectedPolicyId, setSelectedPolicyId] = useState("");
   const [guardrailMode, setGuardrailMode] = useState("enforce");
@@ -94,7 +107,10 @@ export function SelectedAgentModal({
   const toolOptions = useMemo(
     () =>
       tools
-        .map((tool) => ({ id: toolName(tool), label: displayTool(tool) }))
+        .map((tool) => {
+          const status = readNestedText(tool, ["certification", "status"]) || "DRAFT";
+          return { id: toolName(tool), label: `${displayTool(tool)} (${status})` };
+        })
         .filter((tool) => tool.id),
     [tools],
   );
@@ -149,6 +165,39 @@ export function SelectedAgentModal({
   }, [agentId]);
 
   useEffect(() => {
+    let active = true;
+
+    async function loadCertification() {
+      const session = getSession();
+      if (!session?.token || !agentId) {
+        return;
+      }
+
+      const [cert, runs] = await Promise.all([
+        getAgentCertification(session.token, agentId).catch(() => null),
+        listAgentEvaluationRuns(session.token, agentId).catch(() => []),
+      ]);
+      const criteria = runs[0]?.run_id
+        ? await listEvaluationCriteriaResults(session.token, runs[0].run_id).catch(() => [])
+        : [];
+
+      if (!active) {
+        return;
+      }
+
+      setCertification(cert);
+      setCertRuns(runs);
+      setCertCriteria(criteria);
+    }
+
+    loadCertification();
+
+    return () => {
+      active = false;
+    };
+  }, [agentId]);
+
+  useEffect(() => {
     if (!availableTools.some((tool) => tool.id === selectedTool)) {
       setSelectedTool(availableTools[0]?.id || "");
     }
@@ -186,6 +235,24 @@ export function SelectedAgentModal({
     setGuardrailAssignments(guardrails);
     setEvaluatorAssignments(evaluators);
     setKnowledgeAssignments(knowledge);
+  }
+
+  async function refreshCertification() {
+    const session = getSession();
+    if (!session?.token || !agentId) {
+      return;
+    }
+
+    const [cert, runs] = await Promise.all([
+      getAgentCertification(session.token, agentId).catch(() => null),
+      listAgentEvaluationRuns(session.token, agentId).catch(() => []),
+    ]);
+    const criteria = runs[0]?.run_id
+      ? await listEvaluationCriteriaResults(session.token, runs[0].run_id).catch(() => [])
+      : [];
+    setCertification(cert);
+    setCertRuns(runs);
+    setCertCriteria(criteria);
   }
 
   async function runAction(action: (token: string) => Promise<void>, success: string) {
@@ -363,12 +430,34 @@ export function SelectedAgentModal({
     }, `${label} removed.`);
   }
 
+  async function runAgentCertificationEvaluation() {
+    setMessage("");
+    const session = getSession();
+    if (!session?.token) {
+      setMessage("Session expired. Login again before evaluating this agent.");
+      return;
+    }
+
+    setEvaluating(true);
+    try {
+      await evaluateAgent(session.token, agentId);
+      setMessage("Agent evaluation completed.");
+      await refreshCertification();
+      await Promise.resolve(onRefresh());
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to evaluate this agent.");
+    } finally {
+      setEvaluating(false);
+    }
+  }
+
   const tabs = [
     { id: "profile" as const, label: "Profile", icon: Bot, count: undefined },
     { id: "tools" as const, label: "Tools", icon: Wrench, count: toolGrants.length },
     { id: "guardrails" as const, label: "Guardrails", icon: ShieldCheck, count: guardrailAssignments.length },
     { id: "evaluators" as const, label: "Evaluators", icon: CheckCircle2, count: evaluatorAssignments.length },
     { id: "knowledge" as const, label: "Knowledge", icon: Database, count: knowledgeAssignments.length },
+    { id: "certification" as const, label: "Certification", icon: BadgeCheck, count: undefined },
   ];
 
   const guardrailItems: AssignmentItem[] = guardrailAssignments.map((assignment) => ({
@@ -702,6 +791,16 @@ export function SelectedAgentModal({
                   <AttachButton disabled={loading || !selectedKbId} />
                 </form>
               </AttachmentPanel>
+            ) : null}
+
+            {modalTab === "certification" ? (
+              <AgentCertificationPanel
+                certification={certification}
+                criteria={certCriteria}
+                evaluating={evaluating}
+                onEvaluate={runAgentCertificationEvaluation}
+                runs={certRuns}
+              />
             ) : null}
           </section>
         </div>

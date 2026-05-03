@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from agent_governance.customer_agent import run_customer_support_agent
 from agent_governance.db import init_db
+from agent_governance.models import utc_now
 from agent_governance.multi_agent import run_customer_support_workflow
 from agent_governance.policy import load_policy, policy_to_dict
 from agent_governance.runner import GovernedToolRunner
@@ -36,7 +37,7 @@ def build_runner(agent_id: str) -> GovernedToolRunner:
 app = FastAPI(
     title="IntelliGuard API",
     version="0.1.0",
-    description="Governance API with agent marketplace, tool marketplace, SDK, and microservice integrations.",
+    description="Governance API with agent, tool, workflow, and evaluator registration surfaces.",
 )
 
 app.add_middleware(
@@ -79,7 +80,7 @@ class AgentToolGrantRequest(BaseModel):
 class AgentCreateRequest(BaseModel):
     agent_id: str
     display_name: str
-    agent_type: str = "custom_agent"
+    agent_type: str = "task_agent"
     owner: str = "Unassigned"
     environment: str = "demo"
     purpose: str
@@ -90,12 +91,18 @@ class AgentCreateRequest(BaseModel):
 class ToolCreateRequest(BaseModel):
     tool_name: str
     display_name: str | None = None
+    domain: str | None = None
     category: str = "custom"
     description: str = ""
-    access_model: str = "grant_required"
+    side_effect_level: str = "read_only"
+    access_model: str | None = None
     environment: str = "demo"
+    owner: str = "Unassigned"
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
+    permissions: dict[str, Any] = Field(default_factory=dict)
+    allowed_actions: list[str] = Field(default_factory=list)
+    artifact_digest: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -282,11 +289,91 @@ def require_environment_access(
         )
 
 
+def require_agent_identity_for_access(
+    agent_id: str, user: dict[str, Any], permission: str = "read"
+) -> dict[str, Any]:
+    identity = store.find_agent_identity(agent_id)
+    if not identity:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_environment_access(user, identity.get("environment"), permission)
+    return identity
+
+
+def _tool_payload(request: ToolCreateRequest) -> dict[str, Any]:
+    payload = request.model_dump()
+    access_model = payload.pop("access_model", None)
+    domain = payload.pop("domain", None)
+    metadata = dict(payload.get("metadata") or {})
+    if domain and "domain" not in metadata:
+        metadata["domain"] = domain
+    payload["metadata"] = metadata
+    permissions = dict(payload.get("permissions") or {})
+    if access_model and "access_model" not in permissions:
+        permissions["access_model"] = access_model
+    if permissions and "requires_grant" not in permissions:
+        permissions["requires_grant"] = permissions.get("access_model") != "public"
+    payload["permissions"] = permissions or {"requires_grant": True}
+    return payload
+
+
+def _sync_configured_tools_into_runtime() -> None:
+    for tool in store.list_tool_records():
+        tool_name = str(tool.get("tool_name") or "")
+        if tool_name and tool_name not in registry.names():
+            registry.register_configured_tool(tool)
+
+
+def _agent_assignments_for_evaluation(agent: dict[str, Any]) -> dict[str, Any]:
+    agent_id = str(agent["agent_id"])
+    agent_tools = (agent.get("permissions") or {}).get("tools") or []
+    tool_records = [
+        tool
+        for tool_name in agent_tools
+        if (tool := store.get_tool_record_by_name(str(tool_name))) is not None
+    ]
+    return {
+        "evaluators": store.list_agent_evaluator_assignments(agent_id),
+        "guardrails": store.list_agent_guardrail_assignments(agent_id),
+        "knowledge": store.list_agent_kb_assignments(agent_id),
+        "tools": tool_records,
+    }
+
+
+def _workflow_assignments_for_evaluation(workflow: dict[str, Any]) -> dict[str, Any]:
+    agent_ids = {
+        str(workflow.get("lead_agent_id") or ""),
+        *[
+            str(node.get("agent_id") or "")
+            for node in workflow.get("nodes", [])
+            if isinstance(node, dict) and node.get("agent_id")
+        ],
+        *[
+            str(step.get("agent_id") or "")
+            for step in workflow.get("steps", [])
+            if isinstance(step, dict) and step.get("agent_id")
+        ],
+    }
+    agents = [
+        agent
+        for agent_id in sorted(agent_ids)
+        if agent_id and (agent := store.find_agent_identity(agent_id)) is not None
+    ]
+    return {
+        "agents": agents,
+        "agent_certifications": {
+            agent["agent_id"]: store.get_agent_certification(str(agent["agent_id"]))
+            for agent in agents
+        },
+    }
+
+
 @app.on_event("startup")
 def startup() -> None:
     if settings.auto_init_db:
         init_db(settings.database_url)
+    if settings.seed_demo_data:
         store.seed_demo_data()
+    _sync_configured_tools_into_runtime()
 
 
 @app.get("/health")
@@ -368,13 +455,11 @@ def create_user(
 
 
 @app.get("/v1/tools")
-def tools(user: dict[str, Any] = Depends(current_user)) -> list[str]:
-    return registry.names()
-
-
-@app.get("/v1/tool-marketplace")
-def tool_marketplace(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
-    return registry.marketplace()
+def tools(
+    environment: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    return store.list_tool_records(environment=visible_environment(environment, user))
 
 
 @app.get("/v1/policies")
@@ -405,23 +490,11 @@ def me(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     return user
 
 
-@app.get("/v1/agent-marketplace")
-def agent_marketplace(
-    environment: str | None = None, user: dict[str, Any] = Depends(current_user)
-) -> list[dict[str, Any]]:
-    return [
-        {
-            **agent,
-            "marketplace_status": "available",
-            "access_model": "identity_and_tool_grants",
-        }
-        for agent in store.list_agents(environment=visible_environment(environment, user))
-    ]
-
-
 @app.get("/v1/agents/{agent_id}")
 def agent_identity(agent_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    identity = store.get_agent_identity(agent_id)
+    identity = store.find_agent_identity(agent_id)
+    if not identity:
+        raise HTTPException(status_code=404, detail="Agent not found")
     require_environment_access(user, identity.get("environment"), "read")
     return identity
 
@@ -443,63 +516,490 @@ def delete_agent(agent_id: str, user: dict[str, Any] = Depends(current_user)) ->
     return {"ok": True}
 
 
-@app.post("/v1/tool-marketplace")
+@app.post("/v1/agents/{agent_id}/evaluate")
+def evaluate_agent(agent_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    from time import monotonic
+
+    from agent_governance.evaluation.agent_evaluators import (
+        compute_agent_config_hash,
+        run_agent_evaluators,
+    )
+    from agent_governance.evaluation.certification import (
+        CertificationError,
+        decide_certification,
+        validate_transition,
+    )
+
+    agent = store.find_agent_identity(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_environment_access(user, agent.get("environment"), "agent:create")
+
+    assignments = _agent_assignments_for_evaluation(agent)
+    config_hash = compute_agent_config_hash(agent, assignments)
+    cert = store.get_agent_certification(agent_id) or store.create_agent_certification(
+        agent_id, config_hash
+    )
+    if cert["status"] != "EVALUATING":
+        try:
+            validate_transition(cert["status"], "EVALUATING")
+        except CertificationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    store.update_agent_certification(
+        agent_id,
+        {"status": "EVALUATING", "config_hash": config_hash, "invalidation_reason": None},
+    )
+    run = store.create_evaluation_run(
+        {
+            "target_type": "agent",
+            "target_id": agent_id,
+            "config_hash": config_hash,
+            "triggered_by": user["email"],
+        }
+    )
+
+    started_at = monotonic()
+    criterion_results = run_agent_evaluators(agent, assignments)
+    duration_ms = int((monotonic() - started_at) * 1000)
+    result_records = [result.to_record(evaluator_id="agent_baseline") for result in criterion_results]
+    store.add_evaluation_criterion_results(run["run_id"], result_records)
+
+    decision = decide_certification(result_records)
+    criteria_passed = sum(1 for result in criterion_results if result.status == "PASS")
+    store.complete_evaluation_run(
+        run["run_id"],
+        overall_result=decision.status,
+        criteria_total=len(criterion_results),
+        criteria_passed=criteria_passed,
+        duration_ms=duration_ms,
+    )
+    store.update_agent_certification(
+        agent_id,
+        {
+            "status": decision.status,
+            "config_hash": config_hash,
+            "invalidation_reason": None,
+            "last_evaluation_run_id": run["run_id"],
+            "certified_by": user["email"] if decision.status == "CERTIFIED" else None,
+            "certified_at": utc_now() if decision.status == "CERTIFIED" else None,
+            "failure_reason": decision.failure_reason,
+        },
+    )
+
+    return {
+        "run_id": run["run_id"],
+        "agent_id": agent_id,
+        "overall_result": decision.status,
+        "criteria_total": len(criterion_results),
+        "criteria_passed": criteria_passed,
+        "duration_ms": duration_ms,
+        "criterion_results": result_records,
+    }
+
+
+@app.get("/v1/agents/{agent_id}/certification")
+def get_agent_certification_status(
+    agent_id: str, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
+    agent = store.find_agent_identity(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_environment_access(user, agent.get("environment"), "read")
+    cert = store.get_agent_certification(agent_id)
+    if not cert:
+        raise HTTPException(status_code=404, detail="No certification record for this agent")
+    return cert
+
+
+@app.get("/v1/agents/{agent_id}/evaluation-runs")
+def list_agent_evaluation_runs(
+    agent_id: str, user: dict[str, Any] = Depends(current_user)
+) -> list[dict[str, Any]]:
+    agent = store.find_agent_identity(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_environment_access(user, agent.get("environment"), "read")
+    return store.list_evaluation_runs_for_agent(agent_id)
+
+
+@app.post("/v1/tools")
 def create_tool(
     request: ToolCreateRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     require_environment_access(user, request.environment, "tool:create")
-    if request.tool_name in registry.names():
-        raise HTTPException(status_code=400, detail="Tool already exists")
-    return registry.register_configured_tool(request.model_dump())
+    try:
+        tool = store.create_tool_record(_tool_payload(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if request.tool_name not in registry.names():
+        registry.register_configured_tool(tool)
+    return tool
 
 
-@app.get("/v1/workflow-marketplace")
-def workflow_marketplace(
+@app.put("/v1/tools/{tool_id}")
+def update_tool(
+    tool_id: str,
+    request: ToolCreateRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    existing = store.get_tool_record(tool_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    require_environment_access(user, existing.get("environment"), "tool:create")
+    require_environment_access(user, request.environment, "tool:create")
+    try:
+        tool = store.upsert_tool_record({"tool_id": tool_id, **_tool_payload(request)})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if request.tool_name not in registry.names():
+        registry.register_configured_tool(tool)
+    return tool
+
+
+@app.get("/v1/tools/{tool_id}")
+def get_tool(tool_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    tool = store.get_tool_record(tool_id)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    require_environment_access(user, tool.get("environment"), "read")
+    return tool
+
+
+@app.post("/v1/tools/{tool_id}/evaluate")
+def evaluate_tool(tool_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    from time import monotonic
+
+    from agent_governance.evaluation.certification import (
+        CertificationError,
+        decide_certification,
+        validate_transition,
+    )
+    from agent_governance.evaluation.tool_evaluators import run_tool_evaluators
+
+    tool = store.get_tool_record(tool_id)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    require_environment_access(user, tool.get("environment"), "tool:create")
+
+    cert = store.get_tool_certification(tool_id)
+    current_status = cert["status"] if cert else "DRAFT"
+    if current_status != "EVALUATING":
+        try:
+            validate_transition(current_status, "EVALUATING")
+        except CertificationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    store.update_tool_certification(tool_id, {"status": "EVALUATING"})
+
+    run = store.create_evaluation_run(
+        {
+            "target_type": "tool",
+            "target_id": tool_id,
+            "config_hash": tool["config_hash"],
+            "artifact_digest": tool.get("artifact_digest"),
+            "triggered_by": user["email"],
+        }
+    )
+    started_at = monotonic()
+    criterion_results = run_tool_evaluators(tool)
+    duration_ms = int((monotonic() - started_at) * 1000)
+    result_records = [result.to_record() for result in criterion_results]
+    store.add_evaluation_criterion_results(run["run_id"], result_records)
+
+    decision = decide_certification(result_records)
+    criteria_passed = sum(1 for result in criterion_results if result.status == "PASS")
+    store.complete_evaluation_run(
+        run["run_id"],
+        overall_result=decision.status,
+        criteria_total=len(criterion_results),
+        criteria_passed=criteria_passed,
+        duration_ms=duration_ms,
+    )
+    store.update_tool_certification(
+        tool_id,
+        {
+            "status": decision.status,
+            "config_hash": tool["config_hash"],
+            "artifact_digest": tool.get("artifact_digest"),
+            "last_evaluation_run_id": run["run_id"],
+            "certified_by": user["email"] if decision.status == "CERTIFIED" else None,
+            "certified_at": utc_now() if decision.status == "CERTIFIED" else None,
+            "failure_reason": decision.failure_reason,
+        },
+    )
+
+    return {
+        "run_id": run["run_id"],
+        "tool_id": tool_id,
+        "overall_result": decision.status,
+        "criteria_total": len(criterion_results),
+        "criteria_passed": criteria_passed,
+        "duration_ms": duration_ms,
+        "criterion_results": result_records,
+    }
+
+
+@app.get("/v1/tools/{tool_id}/certification")
+def get_tool_certification(
+    tool_id: str, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
+    tool = store.get_tool_record(tool_id)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    require_environment_access(user, tool.get("environment"), "read")
+    cert = store.get_tool_certification(tool_id)
+    if not cert:
+        raise HTTPException(status_code=404, detail="Certification record not found")
+    return cert
+
+
+@app.get("/v1/tools/{tool_id}/evaluation-runs")
+def list_tool_evaluation_runs(
+    tool_id: str, user: dict[str, Any] = Depends(current_user)
+) -> list[dict[str, Any]]:
+    tool = store.get_tool_record(tool_id)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    require_environment_access(user, tool.get("environment"), "read")
+    return store.list_evaluation_runs_for_tool(tool_id)
+
+
+@app.get("/v1/evaluation-runs/{run_id}/criteria")
+def list_evaluation_criteria_results(
+    run_id: str, user: dict[str, Any] = Depends(current_user)
+) -> list[dict[str, Any]]:
+    return store.list_evaluation_criterion_results(run_id)
+
+
+@app.get("/v1/evaluation-runs")
+def list_evaluation_runs(
+    target_type: str | None = None,
+    environment: str | None = None,
+    limit: int = 100,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    if target_type and target_type not in {"tool", "agent", "workflow"}:
+        raise HTTPException(status_code=400, detail="target_type must be tool, agent, or workflow")
+    return store.list_evaluation_runs(
+        target_type=target_type,
+        environment=visible_environment(environment, user),
+        limit=limit,
+    )
+
+
+@app.get("/v1/monitoring/metrics")
+def monitoring_metrics(
+    environment: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    from agent_governance.monitoring import build_monitoring_metrics
+
+    return build_monitoring_metrics(store, visible_environment(environment, user))
+
+
+@app.get("/v1/workflow-definitions")
+def workflow_definitions(
     environment: str | None = None,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
     return store.list_workflow_definitions(environment=visible_environment(environment, user))
 
 
-@app.post("/v1/workflow-marketplace")
+@app.post("/v1/workflow-definitions")
 def create_workflow_definition(
     request: WorkflowDefinitionRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
+    from agent_governance.evaluation.enforcement import (
+        CertificationEnforcementError,
+        check_agent_certification,
+    )
+
     require_environment_access(user, request.environment, "workflow:create")
     if not request.steps and not request.nodes:
         raise HTTPException(status_code=400, detail="Workflow definition needs at least one node")
+    workflow_agent_ids = {
+        request.lead_agent_id,
+        *[
+            str(step.get("agent_id"))
+            for step in request.steps
+            if isinstance(step, dict) and step.get("agent_id")
+        ],
+        *[
+            str(node.get("agent_id"))
+            for node in request.nodes
+            if isinstance(node, dict) and node.get("agent_id")
+        ],
+    }
+    for workflow_agent_id in sorted(workflow_agent_ids):
+        try:
+            check_agent_certification(store, workflow_agent_id, request.environment)
+        except CertificationEnforcementError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     try:
         return store.upsert_workflow_definition(request.model_dump())
     except WorkflowGraphError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
+@app.post("/v1/workflow-definitions/{workflow_definition_id}/evaluate")
+def evaluate_workflow_definition(
+    workflow_definition_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    from time import monotonic
+
+    from agent_governance.evaluation.certification import (
+        CertificationError,
+        decide_certification,
+        validate_transition,
+    )
+    from agent_governance.evaluation.workflow_evaluators import (
+        compute_workflow_config_hash,
+        run_workflow_evaluators,
+    )
+
+    workflow = store.get_workflow_definition(workflow_definition_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    require_environment_access(user, workflow.get("environment"), "workflow:create")
+
+    config_hash = compute_workflow_config_hash(workflow)
+    cert = store.get_workflow_certification(workflow_definition_id) or store.create_workflow_certification(
+        workflow_definition_id, config_hash
+    )
+    if cert["status"] != "EVALUATING":
+        try:
+            validate_transition(cert["status"], "EVALUATING")
+        except CertificationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    store.update_workflow_certification(
+        workflow_definition_id,
+        {"status": "EVALUATING", "config_hash": config_hash, "invalidation_reason": None},
+    )
+    run = store.create_evaluation_run(
+        {
+            "target_type": "workflow",
+            "target_id": workflow_definition_id,
+            "config_hash": config_hash,
+            "triggered_by": user["email"],
+        }
+    )
+
+    started_at = monotonic()
+    criterion_results = run_workflow_evaluators(
+        workflow, _workflow_assignments_for_evaluation(workflow)
+    )
+    duration_ms = int((monotonic() - started_at) * 1000)
+    result_records = [
+        result.to_record(evaluator_id="workflow_graph_baseline")
+        for result in criterion_results
+    ]
+    store.add_evaluation_criterion_results(run["run_id"], result_records)
+
+    decision = decide_certification(result_records)
+    criteria_passed = sum(1 for result in criterion_results if result.status == "PASS")
+    store.complete_evaluation_run(
+        run["run_id"],
+        overall_result=decision.status,
+        criteria_total=len(criterion_results),
+        criteria_passed=criteria_passed,
+        duration_ms=duration_ms,
+    )
+    store.update_workflow_certification(
+        workflow_definition_id,
+        {
+            "status": decision.status,
+            "config_hash": config_hash,
+            "invalidation_reason": None,
+            "last_evaluation_run_id": run["run_id"],
+            "certified_by": user["email"] if decision.status == "CERTIFIED" else None,
+            "certified_at": utc_now() if decision.status == "CERTIFIED" else None,
+            "failure_reason": decision.failure_reason,
+        },
+    )
+
+    return {
+        "run_id": run["run_id"],
+        "workflow_definition_id": workflow_definition_id,
+        "overall_result": decision.status,
+        "criteria_total": len(criterion_results),
+        "criteria_passed": criteria_passed,
+        "duration_ms": duration_ms,
+        "criterion_results": result_records,
+    }
+
+
+@app.get("/v1/workflow-definitions/{workflow_definition_id}/certification")
+def get_workflow_certification_status(
+    workflow_definition_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    workflow = store.get_workflow_definition(workflow_definition_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    require_environment_access(user, workflow.get("environment"), "read")
+    cert = store.get_workflow_certification(workflow_definition_id)
+    if not cert:
+        raise HTTPException(status_code=404, detail="No certification record for this workflow")
+    return cert
+
+
+@app.get("/v1/workflow-definitions/{workflow_definition_id}/evaluation-runs")
+def list_workflow_evaluation_runs(
+    workflow_definition_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    workflow = store.get_workflow_definition(workflow_definition_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    require_environment_access(user, workflow.get("environment"), "read")
+    return store.list_evaluation_runs_for_workflow(workflow_definition_id)
+
+
 @app.post("/v1/agents/{agent_id}/tool-grants")
 def grant_agent_tool(
     agent_id: str, request: AgentToolGrantRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
-    if request.tool_name not in registry.names():
+    from agent_governance.evaluation.enforcement import (
+        CertificationEnforcementError,
+        check_tool_certification,
+    )
+
+    tool = store.get_tool_record_by_name(request.tool_name)
+    if not tool:
         raise HTTPException(status_code=400, detail="Unknown tool")
-    require_environment_access(user, store.agent_environment(agent_id), "tool:grant")
-    return store.grant_agent_tool(agent_id, request.tool_name)
+    agent = require_agent_identity_for_access(agent_id, user, "tool:grant")
+    agent_environment = str(agent["environment"])
+    try:
+        check_tool_certification(store, tool["tool_id"], agent_environment)
+    except CertificationEnforcementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if request.tool_name not in registry.names():
+        registry.register_configured_tool(tool)
+    try:
+        return store.grant_agent_tool(agent_id, request.tool_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.delete("/v1/agents/{agent_id}/tool-grants/{tool_name}")
 def revoke_agent_tool(
     agent_id: str, tool_name: str, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
-    if tool_name not in registry.names():
-        raise HTTPException(status_code=400, detail="Unknown tool")
-    require_environment_access(user, store.agent_environment(agent_id), "tool:grant")
-    return store.revoke_agent_tool(agent_id, tool_name)
+    require_agent_identity_for_access(agent_id, user, "tool:grant")
+    try:
+        return store.revoke_agent_tool(agent_id, tool_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/v1/evaluate-tool-call")
 def evaluate_tool_call(
     request: ToolCallRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
-    require_environment_access(user, store.agent_environment(request.agent_id), "agent:run")
+    require_agent_identity_for_access(request.agent_id, user, "agent:run")
     runner = build_runner(request.agent_id)
     result = runner.evaluate_tool_call(
         session_id=request.session_id,
@@ -522,7 +1022,7 @@ def evaluate_tool_call(
 def governed_tool_call(
     request: ToolCallRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
-    require_environment_access(user, store.agent_environment(request.agent_id), "agent:run")
+    require_agent_identity_for_access(request.agent_id, user, "agent:run")
     runner = build_runner(request.agent_id)
     result = runner.call_tool(
         session_id=request.session_id,
@@ -547,7 +1047,7 @@ def governed_tool_call(
 def agent_run(
     request: AgentRunRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
-    require_environment_access(user, store.agent_environment(request.agent_id), "agent:run")
+    require_agent_identity_for_access(request.agent_id, user, "agent:run")
     runner = build_runner(request.agent_id)
     return run_customer_support_agent(
         runner=runner, query=request.query, session_id=request.session_id
@@ -558,23 +1058,39 @@ def agent_run(
 def multi_agent_run(
     request: MultiAgentRunRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
-    workflow_definition = None
-    if request.workflow_definition_id:
-        workflow_definition = store.get_workflow_definition(request.workflow_definition_id)
-        if not workflow_definition:
-            raise HTTPException(status_code=404, detail="Workflow definition not found")
-        require_environment_access(user, workflow_definition["environment"], "workflow:run")
-    else:
-        require_environment_access(
-            user, store.agent_environment("customer-support-lead-agent"), "workflow:run"
-        )
-    return run_customer_support_workflow(
-        database_url=settings.database_url,
-        policy_path=settings.policy_path,
-        tools=registry,
-        query=request.query,
-        workflow_definition=workflow_definition,
+    from agent_governance.evaluation.enforcement import (
+        CertificationEnforcementError,
+        check_workflow_certification,
     )
+
+    workflow_definition = None
+    if not request.workflow_definition_id:
+        raise HTTPException(
+            status_code=400,
+            detail="workflow_definition_id is required. Create and select a workflow definition before running.",
+        )
+    workflow_definition = store.get_workflow_definition(request.workflow_definition_id)
+    if not workflow_definition:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    require_environment_access(user, workflow_definition["environment"], "workflow:run")
+    try:
+        check_workflow_certification(
+            store,
+            workflow_definition["workflow_definition_id"],
+            workflow_definition["environment"],
+        )
+    except CertificationEnforcementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    try:
+        return run_customer_support_workflow(
+            database_url=settings.database_url,
+            policy_path=settings.policy_path,
+            tools=registry,
+            query=request.query,
+            workflow_definition=workflow_definition,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/v1/workflows")
@@ -705,8 +1221,7 @@ def list_agent_guardrails(
     agent_id: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    identity = store.get_agent_identity(agent_id)
-    require_environment_access(user, identity.get("environment"), "read")
+    require_agent_identity_for_access(agent_id, user, "read")
     return store.list_agent_guardrail_assignments(agent_id)
 
 
@@ -716,8 +1231,8 @@ def assign_agent_guardrail(
     request: AgentGuardrailAssignmentRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    agent_environment = store.agent_environment(agent_id)
-    require_environment_access(user, agent_environment, "agent:create")
+    agent = require_agent_identity_for_access(agent_id, user, "agent:create")
+    agent_environment = str(agent["environment"])
     policy = store.get_guardrail_policy(request.policy_id)
     if not policy:
         raise HTTPException(status_code=400, detail="Policy not found")
@@ -742,7 +1257,7 @@ def update_agent_guardrail(
     request: AgentGuardrailAssignmentUpdateRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    require_environment_access(user, store.agent_environment(agent_id), "agent:create")
+    require_agent_identity_for_access(agent_id, user, "agent:create")
     assignments = store.list_agent_guardrail_assignments(agent_id)
     assignment = next((a for a in assignments if a["assignment_id"] == assignment_id), None)
     if not assignment:
@@ -762,7 +1277,7 @@ def delete_agent_guardrail(
     assignment_id: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, bool]:
-    require_environment_access(user, store.agent_environment(agent_id), "agent:create")
+    require_agent_identity_for_access(agent_id, user, "agent:create")
     deleted = store.delete_agent_guardrail_assignment(assignment_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Assignment not found")
@@ -791,8 +1306,7 @@ def list_agent_evaluators(
     agent_id: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    identity = store.get_agent_identity(agent_id)
-    require_environment_access(user, identity.get("environment"), "read")
+    require_agent_identity_for_access(agent_id, user, "read")
     return store.list_agent_evaluator_assignments(agent_id)
 
 
@@ -802,12 +1316,12 @@ def assign_agent_evaluator(
     request: AgentEvaluatorAssignmentRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    require_environment_access(user, store.agent_environment(agent_id), "agent:create")
+    agent = require_agent_identity_for_access(agent_id, user, "agent:create")
     if not store.get_evaluator_template(request.evaluator_id):
         raise HTTPException(status_code=400, detail="Evaluator template not found")
     return store.upsert_agent_evaluator_assignment(
         agent_id=agent_id,
-        environment=store.agent_environment(agent_id),
+        environment=str(agent["environment"]),
         evaluator_id=request.evaluator_id,
         trigger=request.trigger,
         config=request.config,
@@ -820,7 +1334,7 @@ def delete_agent_evaluator(
     assignment_id: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, bool]:
-    require_environment_access(user, store.agent_environment(agent_id), "agent:create")
+    require_agent_identity_for_access(agent_id, user, "agent:create")
     deleted = store.delete_agent_evaluator_assignment(assignment_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Assignment not found")
@@ -891,7 +1405,7 @@ def list_knowledge_bases(
     environment: str = "all",
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    return store.list_knowledge_bases(environment=environment if environment != "all" else None)
+    return store.list_knowledge_bases(environment=visible_environment(environment, user))
 
 
 @app.post("/v1/knowledge-bases")
@@ -908,10 +1422,7 @@ def list_agent_kb_assignments(
     agent_id: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    agent = store.get_agent_identity(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    require_environment_access(user, agent["environment"], "read")
+    require_agent_identity_for_access(agent_id, user, "read")
     return store.list_agent_kb_assignments(agent_id)
 
 
@@ -921,10 +1432,7 @@ def assign_kb_to_agent(
     body: AgentKBAssignmentRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    agent = store.get_agent_identity(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    require_environment_access(user, agent["environment"], "agent:create")
+    require_agent_identity_for_access(agent_id, user, "agent:create")
     kb = store.get_knowledge_base(body.kb_id)
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
@@ -939,10 +1447,7 @@ def delete_agent_kb_assignment(
     assignment_id: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    agent = store.get_agent_identity(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    require_environment_access(user, agent["environment"], "agent:create")
+    require_agent_identity_for_access(agent_id, user, "agent:create")
     deleted = store.delete_agent_kb_assignment(assignment_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Assignment not found")

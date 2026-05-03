@@ -34,9 +34,9 @@ class ToolRegistry:
         def configured_tool(_db: Session, **tool_args: Any) -> dict[str, Any]:
             return {
                 "tool_name": name,
-                "mode": "configured_marketplace_tool",
+                "mode": "configured_registry_tool",
                 "received_args": tool_args,
-                "message": "Configured marketplace tool executed without external side effects.",
+                "message": "Configured registry tool executed without external side effects.",
             }
 
         metadata = {
@@ -62,9 +62,6 @@ class ToolRegistry:
 
     def metadata_for(self, name: str) -> dict[str, Any]:
         return dict(self._metadata[name])
-
-    def marketplace(self) -> list[dict[str, Any]]:
-        return [self.metadata_for(name) for name in self.names()]
 
 
 def _customer_to_dict(customer: Customer, include_contact: bool = True) -> dict[str, Any]:

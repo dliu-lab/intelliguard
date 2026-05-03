@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from examples.review_trigger_workflow import (
     DEFAULT_LOCAL_DATABASE_URL,
     build_database_url,
@@ -235,6 +237,19 @@ def test_multi_agent_workflow_records_lead_routing_decision(store):
     assert routing_event["metadata"]["workflow_definition_id"] == "banking-account-inquiry"
     assert "auth_gate" in routing_event["metadata"]["selected_node_ids"]
     assert routing_event["metadata"]["handoff_edges_used"]
+
+
+def test_multi_agent_workflow_requires_explicit_definition(store):
+    with pytest.raises(ValueError, match="workflow_definition is required"):
+        run_customer_support_workflow(
+            database_url=store.session_factory.kw["bind"].url.render_as_string(
+                hide_password=False
+            ),
+            policy_path="policies/policy.yaml",
+            tools=build_customer_tool_registry(),
+            query="I need to check my bank account.",
+            workflow_definition=None,
+        )
 
 
 def test_review_trigger_workflow_cli_database_url_helpers(monkeypatch):

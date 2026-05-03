@@ -19,6 +19,54 @@ export type BootstrapStatus = {
 
 export type ApiRecord = Record<string, unknown>;
 
+export type CertificationStatus = "DRAFT" | "EVALUATING" | "CERTIFIED" | "FAILED" | "NEEDS_REEVALUATION";
+
+export type EvaluationRun = {
+  run_id: string;
+  target_type: string;
+  target_id: string;
+  config_hash: string;
+  artifact_digest?: string | null;
+  triggered_by: string;
+  status: string;
+  overall_result: string | null;
+  criteria_total: number;
+  criteria_passed: number;
+  duration_ms: number | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type CriterionResult = {
+  criterion_result_id: string;
+  run_id: string;
+  evaluator_id: string;
+  criterion_name: string;
+  status: "PASS" | "FAIL" | "REVIEW";
+  score: number | null;
+  evidence_sentence: string;
+  input_snapshot: Record<string, unknown>;
+  observed_value: Record<string, unknown>;
+  expected_value: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type AgentCertification = {
+  certification_id: string;
+  agent_id: string;
+  status: CertificationStatus;
+  config_hash: string;
+  invalidation_reason: string | null;
+  last_evaluation_run_id: string | null;
+  certified_by: string | null;
+  certified_at: string | null;
+  expires_at: string | null;
+  failure_reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type PlatformData = {
   agents: ApiRecord[];
   agentAssignmentCounts: Record<string, { guardrails: number; evaluators: number; knowledge: number }>;
@@ -31,8 +79,10 @@ export type PlatformData = {
   auditEvents: ApiRecord[];
   guardrailPolicies: ApiRecord[];
   evaluatorTemplates: ApiRecord[];
+  evaluationRuns: EvaluationRun[];
   knowledgeBases: ApiRecord[];
   tools: ApiRecord[];
+  monitoringMetrics: ApiRecord | null;
   environments: string[];
 };
 
@@ -134,8 +184,8 @@ export function getWorkflowDetail(token: string, workflowId: string) {
   });
 }
 
-export function listWorkflowMarketplace(token: string, environment = "all") {
-  return request<ApiRecord[]>(withParams("/v1/workflow-marketplace", { environment }), {
+export function listWorkflowDefinitions(token: string, environment = "all") {
+  return request<ApiRecord[]>(withParams("/v1/workflow-definitions", { environment }), {
     headers: authHeaders(token),
   });
 }
@@ -188,14 +238,20 @@ export function listKnowledgeBases(token: string, environment = "all") {
   });
 }
 
-export function listToolMarketplace(token: string) {
-  return request<ApiRecord[]>("/v1/tool-marketplace", {
+export function listTools(token: string, environment = "all") {
+  return request<ApiRecord[]>(withParams("/v1/tools", { environment }), {
     headers: authHeaders(token),
   });
 }
 
 export function listEnvironments(token: string) {
   return request<string[]>("/v1/environments", {
+    headers: authHeaders(token),
+  });
+}
+
+export function getMonitoringMetrics(token: string, environment = "all") {
+  return request<ApiRecord>(withParams("/v1/monitoring/metrics", { environment }), {
     headers: authHeaders(token),
   });
 }
@@ -216,10 +272,76 @@ export function deleteAgent(token: string, agentId: string) {
 }
 
 export function createTool(token: string, payload: ApiRecord) {
-  return request<ApiRecord>("/v1/tool-marketplace", {
+  return request<ApiRecord>("/v1/tools", {
     method: "POST",
     headers: authHeaders(token),
     body: JSON.stringify(payload),
+  });
+}
+
+export function updateTool(token: string, toolId: string, payload: ApiRecord) {
+  return request<ApiRecord>(`/v1/tools/${encodeURIComponent(toolId)}`, {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function evaluateTool(token: string, toolId: string) {
+  return request<ApiRecord>(`/v1/tools/${encodeURIComponent(toolId)}/evaluate`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export function getToolCertification(token: string, toolId: string) {
+  return request<ApiRecord>(`/v1/tools/${encodeURIComponent(toolId)}/certification`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function listToolEvaluationRuns(token: string, toolId: string) {
+  return request<ApiRecord[]>(`/v1/tools/${encodeURIComponent(toolId)}/evaluation-runs`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function listEvaluationCriteriaResults(token: string, runId: string) {
+  return request<CriterionResult[]>(`/v1/evaluation-runs/${encodeURIComponent(runId)}/criteria`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function listEvaluationRuns(
+  token: string,
+  limit = 100,
+  environment = "all",
+  targetType?: "tool" | "agent" | "workflow",
+) {
+  return request<EvaluationRun[]>(
+    withParams("/v1/evaluation-runs", { limit, environment, target_type: targetType }),
+    {
+      headers: authHeaders(token),
+    },
+  );
+}
+
+export function evaluateAgent(token: string, agentId: string) {
+  return request<ApiRecord>(`/v1/agents/${encodeURIComponent(agentId)}/evaluate`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export function getAgentCertification(token: string, agentId: string) {
+  return request<AgentCertification>(`/v1/agents/${encodeURIComponent(agentId)}/certification`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function listAgentEvaluationRuns(token: string, agentId: string) {
+  return request<EvaluationRun[]>(`/v1/agents/${encodeURIComponent(agentId)}/evaluation-runs`, {
+    headers: authHeaders(token),
   });
 }
 
@@ -248,16 +370,44 @@ export function createKnowledgeBase(token: string, payload: ApiRecord) {
 }
 
 export function createWorkflowDefinition(token: string, payload: ApiRecord) {
-  return request<ApiRecord>("/v1/workflow-marketplace", {
+  return request<ApiRecord>("/v1/workflow-definitions", {
     method: "POST",
     headers: authHeaders(token),
     body: JSON.stringify(payload),
   });
 }
 
+export function evaluateWorkflowDefinition(token: string, workflowDefinitionId: string) {
+  return request<ApiRecord>(
+    `/v1/workflow-definitions/${encodeURIComponent(workflowDefinitionId)}/evaluate`,
+    {
+      method: "POST",
+      headers: authHeaders(token),
+    },
+  );
+}
+
+export function getWorkflowCertification(token: string, workflowDefinitionId: string) {
+  return request<ApiRecord>(
+    `/v1/workflow-definitions/${encodeURIComponent(workflowDefinitionId)}/certification`,
+    {
+      headers: authHeaders(token),
+    },
+  );
+}
+
+export function listWorkflowEvaluationRuns(token: string, workflowDefinitionId: string) {
+  return request<EvaluationRun[]>(
+    `/v1/workflow-definitions/${encodeURIComponent(workflowDefinitionId)}/evaluation-runs`,
+    {
+      headers: authHeaders(token),
+    },
+  );
+}
+
 export function runMultiAgentWorkflow(
   token: string,
-  payload: { query: string; workflow_definition_id?: string },
+  payload: { query: string; workflow_definition_id: string },
 ) {
   return request<ApiRecord>("/v1/multi-agent-runs", {
     method: "POST",
@@ -357,20 +507,24 @@ export async function platformOverview(token: string, environment = "all"): Prom
     auditEvents,
     guardrailPolicies,
     evaluatorTemplates,
+    evaluationRuns,
     knowledgeBases,
     tools,
+    monitoringMetrics,
     environments,
   ] = await Promise.all([
     listAgents(token, environment),
-    listWorkflowMarketplace(token, environment),
+    listWorkflowDefinitions(token, environment),
     listWorkflows(token, 50, environment),
     listSessions(token, 50, environment),
     listReviewQueue(token, 100, environment),
     listAuditEvents(token, 100, environment),
     listGuardrailPolicies(token, environment),
     listEvaluatorTemplates(token),
+    listEvaluationRuns(token, 100, environment),
     listKnowledgeBases(token, environment),
-    listToolMarketplace(token),
+    listTools(token, environment),
+    getMonitoringMetrics(token, environment).catch(() => null),
     listEnvironments(token),
   ]);
 
@@ -422,8 +576,10 @@ export async function platformOverview(token: string, environment = "all"): Prom
     auditEvents,
     guardrailPolicies,
     evaluatorTemplates,
+    evaluationRuns,
     knowledgeBases,
     tools,
+    monitoringMetrics,
     environments,
   };
 }

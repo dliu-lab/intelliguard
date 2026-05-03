@@ -20,13 +20,13 @@
 
 html[data-theme="light"] {
   color-scheme: light;
-  --color-ink: 235 243 242;
-  --color-panel: 250 253 252;
-  --color-text-primary: 12 20 24;
-  --color-text-secondary: 48 61 70;
-  --color-accent: 0 148 117;
+  --color-ink: 226 238 236;
+  --color-panel: 248 252 251;
+  --color-text-primary: 7 18 24;
+  --color-text-secondary: 34 50 58;
+  --color-accent: 0 126 101;
   --color-line: 10 30 38;
-  --color-line-alpha: 0.18;
+  --color-line-alpha: 0.27;
   --hero-base: #eff8f6;
   --hero-glow-strong: rgba(0, 148, 117, 0.28);
   --hero-glow-soft: rgba(0, 148, 117, 0.1);
@@ -487,8 +487,8 @@ html[data-theme="light"] .agent-count-knowledge {
 
 html[data-theme="light"] .app-backdrop {
   background:
-    radial-gradient(circle at 50% 0%, rgba(0, 148, 117, 0.14), transparent 32%),
-    radial-gradient(circle at 15% 20%, rgba(39, 103, 120, 0.1), transparent 30%),
+    radial-gradient(circle at 50% 0%, rgba(0, 126, 101, 0.2), transparent 32%),
+    radial-gradient(circle at 15% 20%, rgba(32, 96, 114, 0.14), transparent 30%),
     rgb(var(--color-ink));
 }
 
@@ -523,10 +523,68 @@ html[data-theme="light"] .hero-backdrop-ambient {
 }
 
 html[data-theme="light"] .glass-card {
+  border-color: rgb(var(--color-line) / 0.24);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.48)),
-    rgb(var(--color-panel) / 0.76);
-  box-shadow: 0 24px 80px rgb(15 40 45 / 0.14);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(246, 252, 250, 0.84)),
+    rgb(var(--color-panel) / 0.95);
+  box-shadow:
+    0 24px 70px rgb(15 48 55 / 0.17),
+    inset 0 1px 0 rgb(255 255 255 / 0.82);
+}
+
+html[data-theme="light"] .field-input {
+  background-color: rgb(238 247 245 / 0.88);
+}
+
+html[data-theme="light"] .bg-white\/\[0\.025\],
+html[data-theme="light"] .bg-white\/\[0\.03\],
+html[data-theme="light"] .bg-white\/\[0\.035\],
+html[data-theme="light"] .bg-white\/\[0\.04\],
+html[data-theme="light"] .bg-white\/\[0\.045\],
+html[data-theme="light"] .bg-white\/\[0\.05\],
+html[data-theme="light"] .bg-white\/\[0\.06\] {
+  background-color: rgb(255 255 255 / 0.58);
+}
+
+html[data-theme="light"] .bg-ink\/30,
+html[data-theme="light"] .bg-ink\/42,
+html[data-theme="light"] .bg-ink\/45,
+html[data-theme="light"] .bg-ink\/50,
+html[data-theme="light"] .bg-ink\/55,
+html[data-theme="light"] .bg-ink\/60,
+html[data-theme="light"] .bg-ink\/65,
+html[data-theme="light"] .bg-ink\/70,
+html[data-theme="light"] .bg-ink\/76,
+html[data-theme="light"] .bg-ink\/80 {
+  background-color: rgb(231 242 240 / 0.86);
+}
+
+html[data-theme="light"] .text-cyan-100\/75 {
+  color: rgb(8 91 92 / 0.9);
+}
+
+html[data-theme="light"] .text-amber-100\/75 {
+  color: rgb(146 64 14 / 0.92);
+}
+
+html[data-theme="light"] .text-emerald-100 {
+  color: rgb(4 120 87);
+}
+
+html[data-theme="light"] .text-rose-100 {
+  color: rgb(159 18 57);
+}
+
+html[data-theme="light"] .text-amber-100 {
+  color: rgb(146 64 14);
+}
+
+html[data-theme="light"] .text-sky-100 {
+  color: rgb(3 105 161);
+}
+
+html[data-theme="light"] .text-red-200 {
+  color: rgb(153 27 27);
 }
 
 @media (prefers-reduced-motion: reduce) {
