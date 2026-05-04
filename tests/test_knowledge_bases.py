@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
+from pgvector.sqlalchemy import Vector
 from pydantic import ValidationError
 from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -17,6 +18,8 @@ from api.main import (
 from agent_governance.models import (
     AgentKBAssignment,
     KnowledgeBase,
+    KnowledgeChunk,
+    KnowledgeDocument,
     KnowledgeIndexVersion,
     KnowledgeSource,
 )
@@ -65,6 +68,8 @@ def _super_admin_user() -> dict:
 def test_knowledge_models_are_declared() -> None:
     assert KnowledgeBase.__tablename__ == "knowledge_bases"
     assert KnowledgeSource.__tablename__ == "knowledge_sources"
+    assert KnowledgeDocument.__tablename__ == "knowledge_documents"
+    assert KnowledgeChunk.__tablename__ == "knowledge_chunks"
     assert KnowledgeIndexVersion.__tablename__ == "knowledge_index_versions"
     assert AgentKBAssignment.__tablename__ == "agent_kb_assignments"
 
@@ -110,6 +115,39 @@ def test_knowledge_source_and_index_version_columns_are_declared() -> None:
     assert _default_arg(KnowledgeIndexVersion, "source_count") == 0
     assert _default_arg(KnowledgeIndexVersion, "vector_backend") == "local"
     assert _column(KnowledgeIndexVersion, "completed_at").nullable is True
+
+
+def test_knowledge_document_and_chunk_columns_are_declared() -> None:
+    assert _column(KnowledgeDocument, "document_id").primary_key is True
+    assert _column(KnowledgeDocument, "kb_id").nullable is False
+    assert [fk.target_fullname for fk in _column(KnowledgeDocument, "kb_id").foreign_keys] == [
+        "knowledge_bases.kb_id"
+    ]
+    assert [
+        fk.target_fullname for fk in _column(KnowledgeDocument, "source_id").foreign_keys
+    ] == [
+        "knowledge_sources.source_id"
+    ]
+    assert isinstance(_column(KnowledgeDocument, "file_name").type, String)
+    assert isinstance(_column(KnowledgeDocument, "storage_uri").type, Text)
+    assert isinstance(_column(KnowledgeDocument, "size_bytes").type, Integer)
+    assert _default_arg(KnowledgeDocument, "status") == "uploaded"
+    assert _default_arg(KnowledgeDocument, "chunk_count") == 0
+
+    assert _column(KnowledgeChunk, "chunk_id").primary_key is True
+    assert [fk.target_fullname for fk in _column(KnowledgeChunk, "document_id").foreign_keys] == [
+        "knowledge_documents.document_id"
+    ]
+    assert isinstance(_column(KnowledgeChunk, "content").type, Text)
+    assert isinstance(_column(KnowledgeChunk, "embedding").type, Vector)
+    assert isinstance(_column(KnowledgeChunk, "metadata").type, JSONB)
+    assert _column(KnowledgeChunk, "metadata").nullable is False
+    assert _default_factory_value(KnowledgeChunk, "metadata") == {}
+
+    metadata_column = KnowledgeChunk.metadata_json.property.columns[0]
+    assert metadata_column is _column(KnowledgeChunk, "metadata")
+    assert metadata_column.name == "metadata"
+    assert metadata_column.key == "metadata"
 
 
 def test_agent_kb_assignment_retrieval_policy_fields_are_declared() -> None:
@@ -214,6 +252,39 @@ def test_knowledge_source_request_rejects_blank_required_fields(
     assert exc_info.value.errors()[0]["loc"] == (field,)
 
 
+def test_init_db_creates_vector_extension_before_tables(monkeypatch) -> None:
+    calls: list[str] = []
+    engine = object()
+
+    monkeypatch.setattr(runtime_db, "build_engine", lambda _database_url: engine)
+    monkeypatch.setattr(
+        runtime_db,
+        "ensure_vector_extension",
+        lambda passed_engine: calls.append(
+            "vector" if passed_engine is engine else "wrong-engine"
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_db.Base.metadata,
+        "create_all",
+        lambda passed_engine: calls.append(
+            "create_all" if passed_engine is engine else "wrong-engine"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_db,
+        "ensure_runtime_schema",
+        lambda passed_engine: calls.append(
+            "runtime_schema" if passed_engine is engine else "wrong-engine"
+        ),
+    )
+
+    runtime_db.init_db("postgresql+psycopg://test/test")
+
+    assert calls == ["vector", "create_all", "runtime_schema"]
+
+
 def test_runtime_schema_patches_existing_knowledge_tables(monkeypatch) -> None:
     class FakeInspector:
         def get_table_names(self) -> list[str]:
@@ -267,10 +338,53 @@ def test_runtime_schema_patches_existing_knowledge_tables(monkeypatch) -> None:
 
     engine = FakeEngine()
     monkeypatch.setattr(runtime_db, "inspect", lambda _engine: FakeInspector())
+    monkeypatch.setattr(
+        KnowledgeSource.__table__,
+        "create",
+        lambda engine, checkfirst=True: engine.connection.statements.append(
+            "CREATE TABLE knowledge_sources"
+        ),
+    )
+    monkeypatch.setattr(
+        KnowledgeIndexVersion.__table__,
+        "create",
+        lambda engine, checkfirst=True: engine.connection.statements.append(
+            "CREATE TABLE knowledge_index_versions"
+        ),
+    )
+    monkeypatch.setattr(
+        KnowledgeDocument.__table__,
+        "create",
+        lambda engine, checkfirst=True: engine.connection.statements.append(
+            "CREATE TABLE knowledge_documents"
+        ),
+    )
+    monkeypatch.setattr(
+        KnowledgeChunk.__table__,
+        "create",
+        lambda engine, checkfirst=True: engine.connection.statements.append(
+            "CREATE TABLE knowledge_chunks"
+        ),
+    )
 
     runtime_db.ensure_runtime_schema(engine)
 
     statements = "\n".join(engine.connection.statements)
+    assert any(
+        "CREATE EXTENSION IF NOT EXISTS vector" in statement
+        for statement in engine.connection.statements
+    )
+    created_knowledge_tables = [
+        statement
+        for statement in engine.connection.statements
+        if statement.startswith("CREATE TABLE knowledge_")
+    ]
+    assert created_knowledge_tables == [
+        "CREATE TABLE knowledge_sources",
+        "CREATE TABLE knowledge_index_versions",
+        "CREATE TABLE knowledge_documents",
+        "CREATE TABLE knowledge_chunks",
+    ]
     expected_column_snippets = (
         "ADD COLUMN owner VARCHAR(120) NOT NULL DEFAULT 'Unassigned'",
         "ADD COLUMN domain VARCHAR(80) NOT NULL DEFAULT ''",
@@ -289,6 +403,68 @@ def test_runtime_schema_patches_existing_knowledge_tables(monkeypatch) -> None:
     )
     for snippet in expected_column_snippets:
         assert snippet in statements
+
+
+def test_runtime_schema_creates_all_missing_knowledge_tables_in_order(monkeypatch) -> None:
+    class FakeInspector:
+        def get_table_names(self) -> list[str]:
+            return []
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, statement) -> None:
+            self.statements.append(str(statement))
+
+    class FakeBegin:
+        def __init__(self, connection: FakeConnection) -> None:
+            self.connection = connection
+
+        def __enter__(self) -> FakeConnection:
+            return self.connection
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeEngine:
+        def __init__(self) -> None:
+            self.connection = FakeConnection()
+
+        def begin(self) -> FakeBegin:
+            return FakeBegin(self.connection)
+
+    engine = FakeEngine()
+    monkeypatch.setattr(runtime_db, "inspect", lambda _engine: FakeInspector())
+    for table, table_name in (
+        (KnowledgeBase.__table__, "knowledge_bases"),
+        (KnowledgeSource.__table__, "knowledge_sources"),
+        (KnowledgeIndexVersion.__table__, "knowledge_index_versions"),
+        (KnowledgeDocument.__table__, "knowledge_documents"),
+        (KnowledgeChunk.__table__, "knowledge_chunks"),
+    ):
+        monkeypatch.setattr(
+            table,
+            "create",
+            lambda engine, checkfirst=True, table_name=table_name: (
+                engine.connection.statements.append(f"CREATE TABLE {table_name}")
+            ),
+        )
+
+    runtime_db.ensure_runtime_schema(engine)
+
+    created_knowledge_tables = [
+        statement
+        for statement in engine.connection.statements
+        if statement.startswith("CREATE TABLE knowledge_")
+    ]
+    assert created_knowledge_tables == [
+        "CREATE TABLE knowledge_bases",
+        "CREATE TABLE knowledge_sources",
+        "CREATE TABLE knowledge_index_versions",
+        "CREATE TABLE knowledge_documents",
+        "CREATE TABLE knowledge_chunks",
+    ]
 
 
 def test_knowledge_base_source_and_index_lifecycle(store: GovernanceStore) -> None:

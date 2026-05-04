@@ -13,6 +13,11 @@ from agent_governance.models import (
     CustomerTransaction,
     EvaluatorTemplate,
     GuardrailPolicy,
+    KnowledgeBase,
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeIndexVersion,
+    KnowledgeSource,
     SupportCase,
     WorkflowDefinition,
 )
@@ -29,20 +34,37 @@ def build_session_factory(database_url: str = DEFAULT_DATABASE_URL) -> sessionma
     return sessionmaker(bind=build_engine(database_url), expire_on_commit=False)
 
 
+def ensure_vector_extension(engine) -> None:
+    with engine.begin() as connection:
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+
 def init_db(database_url: str = DEFAULT_DATABASE_URL) -> None:
     engine = build_engine(database_url)
+    ensure_vector_extension(engine)
     Base.metadata.create_all(engine)
     ensure_runtime_schema(engine)
 
 
 def ensure_runtime_schema(engine) -> None:
+    ensure_vector_extension(engine)
     inspector = inspect(engine)
-    if "users" in inspector.get_table_names():
+    table_names = set(inspector.get_table_names())
+    for table in (
+        KnowledgeBase.__table__,
+        KnowledgeSource.__table__,
+        KnowledgeIndexVersion.__table__,
+        KnowledgeDocument.__table__,
+        KnowledgeChunk.__table__,
+    ):
+        if table.name not in table_names:
+            table.create(engine, checkfirst=True)
+    if "users" in table_names:
         columns = {column["name"] for column in inspector.get_columns("users")}
         if "password_hash" not in columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE users ADD COLUMN password_hash TEXT"))
-    if "audit_events" in inspector.get_table_names():
+    if "audit_events" in table_names:
         cols = {c["name"] for c in inspector.get_columns("audit_events")}
         with engine.begin() as connection:
             if "policy_id" not in cols:
@@ -51,7 +73,7 @@ def ensure_runtime_schema(engine) -> None:
                 )
             if "stage" not in cols:
                 connection.execute(text("ALTER TABLE audit_events ADD COLUMN stage VARCHAR(40)"))
-    if "workflow_definitions" in inspector.get_table_names():
+    if "workflow_definitions" in table_names:
         cols = {c["name"] for c in inspector.get_columns("workflow_definitions")}
         with engine.begin() as connection:
             if "domain" not in cols:
@@ -90,7 +112,7 @@ def ensure_runtime_schema(engine) -> None:
                         "ALTER TABLE workflow_definitions ADD COLUMN graph_version_hash VARCHAR(64)"
                     )
                 )
-    if "user_environment_access" in inspector.get_table_names():
+    if "user_environment_access" in table_names:
         with engine.begin() as connection:
             connection.execute(
                 text(
@@ -102,7 +124,7 @@ def ensure_runtime_schema(engine) -> None:
                     """
                 )
             )
-    if "knowledge_bases" in inspector.get_table_names():
+    if "knowledge_bases" in table_names:
         cols = {c["name"] for c in inspector.get_columns("knowledge_bases")}
         with engine.begin() as connection:
             if "owner" not in cols:
@@ -149,7 +171,7 @@ def ensure_runtime_schema(engine) -> None:
                 )
             if "last_error" not in cols:
                 connection.execute(text("ALTER TABLE knowledge_bases ADD COLUMN last_error TEXT"))
-    if "agent_kb_assignments" in inspector.get_table_names():
+    if "agent_kb_assignments" in table_names:
         cols = {c["name"] for c in inspector.get_columns("agent_kb_assignments")}
         with engine.begin() as connection:
             if "retrieval_mode" not in cols:
