@@ -50,6 +50,7 @@ export function KnowledgeBasesWorkspace({
 }) {
   const firstKbId = readText(data.knowledgeBases[0] || {}, ["kb_id"]) || "";
   const [selectedKbId, setSelectedKbId] = useState(firstKbId);
+  const [pendingSelectedKbId, setPendingSelectedKbId] = useState("");
   const selectedKb = data.knowledgeBases.find((kb) => readText(kb, ["kb_id"]) === selectedKbId);
   const [message, setMessage] = useState("");
   const [kbForm, setKbForm] = useState({
@@ -73,12 +74,24 @@ export function KnowledgeBasesWorkspace({
   const [queryResults, setQueryResults] = useState<ApiRecord[]>([]);
 
   useEffect(() => {
+    if (pendingSelectedKbId) {
+      const pendingKbExists = data.knowledgeBases.some((kb) => readText(kb, ["kb_id"]) === pendingSelectedKbId);
+
+      if (!pendingKbExists) {
+        return;
+      }
+
+      setSelectedKbId(pendingSelectedKbId);
+      setPendingSelectedKbId("");
+      return;
+    }
+
     const selectedKbExists = data.knowledgeBases.some((kb) => readText(kb, ["kb_id"]) === selectedKbId);
 
     if (!selectedKbExists && selectedKbId !== firstKbId) {
       setSelectedKbId(firstKbId);
     }
-  }, [data.knowledgeBases, firstKbId, selectedKbId]);
+  }, [data.knowledgeBases, firstKbId, pendingSelectedKbId, selectedKbId]);
 
   useEffect(() => {
     setQuery("");
@@ -134,7 +147,7 @@ export function KnowledgeBasesWorkspace({
         source_config: {},
       });
       setMessage("Knowledge base saved.");
-      setSelectedKbId(kbForm.kb_id);
+      setPendingSelectedKbId(kbForm.kb_id);
       await onRefresh();
     });
   }
