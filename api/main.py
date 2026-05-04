@@ -198,6 +198,12 @@ class KnowledgeBaseRequest(BaseModel):
 class AgentKBAssignmentRequest(BaseModel):
     kb_id: str
     access_mode: str = Field(pattern="^(read|read_write)$", default="read")
+    retrieval_mode: str = Field(pattern="^(semantic|keyword|hybrid)$", default="hybrid")
+    top_k: int = Field(default=5, ge=1, le=50)
+    score_threshold: float | None = Field(default=None, ge=0, le=1)
+    citation_required: bool = True
+    freshness_days: int | None = Field(default=None, ge=1, le=3650)
+    metadata_filters: dict[str, Any] = Field(default_factory=dict)
 
 
 class KBQueryRequest(BaseModel):
@@ -1437,7 +1443,15 @@ def assign_kb_to_agent(
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     return store.upsert_agent_kb_assignment(
-        agent_id=agent_id, kb_id=body.kb_id, access_mode=body.access_mode
+        agent_id=agent_id,
+        kb_id=body.kb_id,
+        access_mode=body.access_mode,
+        retrieval_mode=body.retrieval_mode,
+        top_k=body.top_k,
+        score_threshold=body.score_threshold,
+        citation_required=body.citation_required,
+        freshness_days=body.freshness_days,
+        metadata_filters=body.metadata_filters,
     )
 
 

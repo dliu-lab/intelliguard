@@ -2358,7 +2358,17 @@ class GovernanceStore:
             return [self._kb_assignment_to_dict(row) for row in rows]
 
     def upsert_agent_kb_assignment(
-        self, *, agent_id: str, kb_id: str, access_mode: str
+        self,
+        *,
+        agent_id: str,
+        kb_id: str,
+        access_mode: str,
+        retrieval_mode: str = "hybrid",
+        top_k: int = 5,
+        score_threshold: float | None = None,
+        citation_required: bool = True,
+        freshness_days: int | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self.session() as db:
             row = db.scalar(
@@ -2373,10 +2383,22 @@ class GovernanceStore:
                     agent_id=agent_id,
                     kb_id=kb_id,
                     access_mode=access_mode,
+                    retrieval_mode=retrieval_mode,
+                    top_k=top_k,
+                    score_threshold=score_threshold,
+                    citation_required=citation_required,
+                    freshness_days=freshness_days,
+                    metadata_filters=metadata_filters or {},
                 )
                 db.add(row)
             else:
                 row.access_mode = access_mode
+                row.retrieval_mode = retrieval_mode
+                row.top_k = top_k
+                row.score_threshold = score_threshold
+                row.citation_required = citation_required
+                row.freshness_days = freshness_days
+                row.metadata_filters = metadata_filters or {}
             self._invalidate_agent_cert_if_certified(
                 db, agent_id, "knowledge base assignments changed"
             )
@@ -2465,5 +2487,11 @@ class GovernanceStore:
             "agent_id": row.agent_id,
             "kb_id": row.kb_id,
             "access_mode": row.access_mode,
+            "retrieval_mode": row.retrieval_mode,
+            "top_k": row.top_k,
+            "score_threshold": row.score_threshold,
+            "citation_required": row.citation_required,
+            "freshness_days": row.freshness_days,
+            "metadata_filters": row.metadata_filters or {},
             "created_at": row.created_at.isoformat(),
         }

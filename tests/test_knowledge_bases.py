@@ -388,3 +388,32 @@ def test_knowledge_source_and_index_reject_missing_kb(store: GovernanceStore) ->
                 "error": "Missing KB",
             },
         )
+
+
+def test_agent_kb_assignment_stores_retrieval_policy(store: GovernanceStore) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "policy-kb",
+            "display_name": "Policy KB",
+            "description": "",
+            "source_type": "vector_store",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+
+    assignment = store.upsert_agent_kb_assignment(
+        agent_id="customer-support-agent",
+        kb_id="policy-kb",
+        access_mode="read",
+        retrieval_mode="hybrid",
+        top_k=8,
+        score_threshold=0.72,
+        citation_required=True,
+        freshness_days=30,
+        metadata_filters={"doc_type": "policy"},
+    )
+
+    assert assignment["retrieval_mode"] == "hybrid"
+    assert assignment["top_k"] == 8
+    assert assignment["metadata_filters"] == {"doc_type": "policy"}
