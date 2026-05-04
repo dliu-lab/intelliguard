@@ -486,7 +486,9 @@ export function SelectedAgentModal({
       readText(assignment, ["access_mode"]),
       readText(assignment, ["retrieval_mode"]),
       readText(assignment, ["top_k"]) ? `top ${readText(assignment, ["top_k"])}` : undefined,
-      assignment.citation_required === true || readText(assignment, ["citation_required"]) === "true" ? "citations required" : undefined,
+      assignment.citation_required === true || readText(assignment, ["citation_required"]) === "true"
+        ? "citations required"
+        : "citations optional",
     ]) || "Attached knowledge base",
     meta: readText(assignment, ["environment"]),
   }));
