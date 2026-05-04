@@ -444,9 +444,7 @@ class EvaluationCriterionResult(Base):
     __tablename__ = "evaluation_criterion_results"
 
     criterion_result_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    run_id: Mapped[str] = mapped_column(
-        ForeignKey("evaluation_runs.run_id"), nullable=False
-    )
+    run_id: Mapped[str] = mapped_column(ForeignKey("evaluation_runs.run_id"), nullable=False)
     evaluator_id: Mapped[str] = mapped_column(String(64), nullable=False)
     criterion_name: Mapped[str] = mapped_column(String(120), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -476,9 +474,7 @@ class KnowledgeBase(Base):
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft")
     document_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_indexed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -496,9 +492,7 @@ class KnowledgeSource(Base):
     source_config: Mapped[dict] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
     checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    last_synced_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -518,9 +512,7 @@ class KnowledgeIndexVersion(Base):
     artifact_digest: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AgentKBAssignment(Base):
