@@ -15,6 +15,7 @@ export function WorkspaceViewContent({
   data,
   dataStatus,
   onComponentSelect,
+  onViewSelect,
   onWorkflowAuditSelect,
   onRefresh,
   selectedEnvironment,
@@ -25,13 +26,21 @@ export function WorkspaceViewContent({
   data: PlatformData;
   dataStatus: DataStatus;
   onComponentSelect: (component: BackendComponentKey) => void;
+  onViewSelect: (view: WorkspaceView) => void;
   onWorkflowAuditSelect: (workflowIdOrSessionId: string) => void;
   onRefresh: () => void;
   selectedEnvironment: string;
   selectedTraceWorkflowId: string;
 }) {
   if (activeView === "overview") {
-    return <OverviewWorkspace data={data} dataStatus={dataStatus} onComponentSelect={onComponentSelect} />;
+    return (
+      <OverviewWorkspace
+        data={data}
+        dataStatus={dataStatus}
+        onComponentSelect={onComponentSelect}
+        onViewSelect={onViewSelect}
+      />
+    );
   }
 
   if (activeView === "tool-registry") {

@@ -188,6 +188,7 @@ export function WorkspaceShell({
             data={data}
             dataStatus={dataStatus}
             onComponentSelect={onComponentSelect}
+            onViewSelect={onViewSelect}
             onWorkflowAuditSelect={onWorkflowAuditSelect}
             onRefresh={onRefresh}
             selectedEnvironment={selectedEnvironment}
