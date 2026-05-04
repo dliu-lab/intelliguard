@@ -193,6 +193,9 @@ class KnowledgeBaseRequest(BaseModel):
     source_type: str = Field(pattern="^(vector_store|url|file)$")
     source_config: dict[str, Any] = Field(default_factory=dict)
     environment: str = "demo"
+    owner: str = "Unassigned"
+    domain: str = ""
+    sensitivity: str = "internal"
 
 
 class KnowledgeSourceRequest(BaseModel):

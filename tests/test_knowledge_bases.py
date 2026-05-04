@@ -8,7 +8,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 import agent_governance.db as runtime_db
 import api.main as api_main
-from api.main import AgentKBAssignmentRequest, KnowledgeSourceRequest, KnowledgeSyncRequest
+from api.main import (
+    AgentKBAssignmentRequest,
+    KnowledgeBaseRequest,
+    KnowledgeSourceRequest,
+    KnowledgeSyncRequest,
+)
 from agent_governance.models import (
     AgentKBAssignment,
     KnowledgeBase,
@@ -125,6 +130,29 @@ def test_agent_kb_assignment_retrieval_policy_fields_are_declared() -> None:
     assert _column(AgentKBAssignment, "freshness_days").nullable is True
     assert isinstance(_column(AgentKBAssignment, "metadata_filters").type, JSONB)
     assert _default_factory_value(AgentKBAssignment, "metadata_filters") == {}
+
+
+def test_knowledge_base_request_accepts_metadata_fields() -> None:
+    request = KnowledgeBaseRequest(
+        kb_id="claims-policy-kb",
+        display_name="Claims Policy KB",
+        source_type="file",
+        owner="Claims Ops",
+        domain="claims",
+        sensitivity="confidential",
+    )
+
+    assert request.model_dump() == {
+        "kb_id": "claims-policy-kb",
+        "display_name": "Claims Policy KB",
+        "description": "",
+        "source_type": "file",
+        "source_config": {},
+        "environment": "demo",
+        "owner": "Claims Ops",
+        "domain": "claims",
+        "sensitivity": "confidential",
+    }
 
 
 def test_runtime_schema_patches_existing_knowledge_tables(monkeypatch) -> None:

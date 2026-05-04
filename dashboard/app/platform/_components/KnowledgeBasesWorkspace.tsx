@@ -51,6 +51,7 @@ export function KnowledgeBasesWorkspace({
   const firstKbId = readText(data.knowledgeBases[0] || {}, ["kb_id"]) || "";
   const [selectedKbId, setSelectedKbId] = useState(firstKbId);
   const [pendingSelectedKbId, setPendingSelectedKbId] = useState("");
+  const [pendingSelectionRefreshComplete, setPendingSelectionRefreshComplete] = useState(false);
   const selectedKb = data.knowledgeBases.find((kb) => readText(kb, ["kb_id"]) === selectedKbId);
   const [message, setMessage] = useState("");
   const [kbForm, setKbForm] = useState({
@@ -77,13 +78,19 @@ export function KnowledgeBasesWorkspace({
     if (pendingSelectedKbId) {
       const pendingKbExists = data.knowledgeBases.some((kb) => readText(kb, ["kb_id"]) === pendingSelectedKbId);
 
-      if (!pendingKbExists) {
+      if (pendingKbExists) {
+        setSelectedKbId(pendingSelectedKbId);
+        setPendingSelectedKbId("");
+        setPendingSelectionRefreshComplete(false);
         return;
       }
 
-      setSelectedKbId(pendingSelectedKbId);
+      if (!pendingSelectionRefreshComplete) {
+        return;
+      }
+
       setPendingSelectedKbId("");
-      return;
+      setPendingSelectionRefreshComplete(false);
     }
 
     const selectedKbExists = data.knowledgeBases.some((kb) => readText(kb, ["kb_id"]) === selectedKbId);
@@ -91,7 +98,7 @@ export function KnowledgeBasesWorkspace({
     if (!selectedKbExists && selectedKbId !== firstKbId) {
       setSelectedKbId(firstKbId);
     }
-  }, [data.knowledgeBases, firstKbId, pendingSelectedKbId, selectedKbId]);
+  }, [data.knowledgeBases, firstKbId, pendingSelectedKbId, pendingSelectionRefreshComplete, selectedKbId]);
 
   useEffect(() => {
     setQuery("");
@@ -148,7 +155,12 @@ export function KnowledgeBasesWorkspace({
       });
       setMessage("Knowledge base saved.");
       setPendingSelectedKbId(kbForm.kb_id);
-      await onRefresh();
+      setPendingSelectionRefreshComplete(false);
+      try {
+        await onRefresh();
+      } finally {
+        setPendingSelectionRefreshComplete(true);
+      }
     });
   }
 
@@ -211,7 +223,11 @@ export function KnowledgeBasesWorkspace({
         <MetricSurface label="Degraded" value={degradedCount} tone="amber" loading={dataStatus === "loading"} />
       </section>
 
-      {message ? <div className="rounded-2xl border border-line bg-ink/55 px-4 py-3 text-sm text-textSecondary">{message}</div> : null}
+      {message ? (
+        <div role="status" aria-live="polite" className="rounded-2xl border border-line bg-ink/55 px-4 py-3 text-sm text-textSecondary">
+          {message}
+        </div>
+      ) : null}
 
       <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]">
         <PlatformSurface tone="fuchsia">
