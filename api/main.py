@@ -195,6 +195,20 @@ class KnowledgeBaseRequest(BaseModel):
     environment: str = "demo"
 
 
+class KnowledgeSourceRequest(BaseModel):
+    source_id: str | None = None
+    source_type: str = Field(pattern="^(vector_store|url|file)$")
+    display_name: str
+    uri: str = ""
+    content_type: str = ""
+    source_config: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeSyncRequest(BaseModel):
+    embedding_model: str = "local/default"
+    vector_backend: str = "local"
+
+
 class AgentKBAssignmentRequest(BaseModel):
     kb_id: str
     access_mode: str = Field(pattern="^(read|read_write)$", default="read")
@@ -1422,6 +1436,68 @@ def create_knowledge_base(
 ) -> dict[str, Any]:
     require_environment_access(user, body.environment, "agent:create")
     return store.upsert_knowledge_base(body.model_dump())
+
+
+@app.get("/v1/knowledge-bases/{kb_id}")
+def get_knowledge_base_detail(
+    kb_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "read")
+    detail = store.get_knowledge_base_detail(kb_id)
+    return detail or {}
+
+
+@app.get("/v1/knowledge-bases/{kb_id}/sources")
+def list_knowledge_sources(
+    kb_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "read")
+    return store.list_knowledge_sources(kb_id)
+
+
+@app.post("/v1/knowledge-bases/{kb_id}/sources")
+def create_knowledge_source(
+    kb_id: str,
+    body: KnowledgeSourceRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "agent:create")
+    return store.upsert_knowledge_source(kb_id, body.model_dump(exclude_none=True))
+
+
+@app.post("/v1/knowledge-bases/{kb_id}/sync")
+def create_knowledge_sync_status(
+    kb_id: str,
+    body: KnowledgeSyncRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "agent:create")
+    sources = store.list_knowledge_sources(kb_id)
+    return store.create_knowledge_index_version(
+        kb_id,
+        {
+            "status": "ready" if sources else "pending",
+            "source_count": len(sources),
+            "document_count": len(sources),
+            "chunk_count": len(sources),
+            "embedding_model": body.embedding_model,
+            "vector_backend": body.vector_backend,
+        },
+    )
 
 
 @app.get("/v1/agents/{agent_id}/knowledge-bases")

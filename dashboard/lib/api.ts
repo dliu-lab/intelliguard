@@ -21,6 +21,15 @@ export type ApiRecord = Record<string, unknown>;
 
 export type CertificationStatus = "DRAFT" | "EVALUATING" | "CERTIFIED" | "FAILED" | "NEEDS_REEVALUATION";
 
+export type KnowledgeSourcePayload = {
+  source_id?: string;
+  source_type: "vector_store" | "url" | "file";
+  display_name: string;
+  uri?: string;
+  content_type?: string;
+  source_config?: ApiRecord;
+};
+
 export type EvaluationRun = {
   run_id: string;
   target_type: string;
@@ -235,6 +244,50 @@ export function listEvaluatorTemplates(token: string) {
 export function listKnowledgeBases(token: string, environment = "all") {
   return request<ApiRecord[]>(withParams("/v1/knowledge-bases", { environment }), {
     headers: authHeaders(token),
+  });
+}
+
+export function getKnowledgeBaseDetail(token: string, kbId: string) {
+  return request<ApiRecord>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function listKnowledgeSources(token: string, kbId: string) {
+  return request<ApiRecord[]>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/sources`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function createKnowledgeSource(
+  token: string,
+  kbId: string,
+  payload: KnowledgeSourcePayload,
+) {
+  return request<ApiRecord>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/sources`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function syncKnowledgeBase(token: string, kbId: string) {
+  return request<ApiRecord>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/sync`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ embedding_model: "local/default", vector_backend: "local" }),
+  });
+}
+
+export function queryKnowledgeBase(
+  token: string,
+  kbId: string,
+  payload: { query: string; top_k: number },
+) {
+  return request<ApiRecord[]>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/query`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
   });
 }
 
