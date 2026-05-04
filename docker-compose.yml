@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: governance
       POSTGRES_USER: governance
@@ -24,8 +24,32 @@ services:
       POLICY_PATH: policies/policy.yaml
       AUTO_INIT_DB: "true"
       SEED_DEMO_DATA: "false"
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_EMBED_MODEL: nomic-embed-text
+      KB_UPLOAD_DIR: /app/data/kb_uploads
+      KB_EMBED_DIMENSION: "768"
+    volumes:
+      - kb_uploads:/app/data/kb_uploads
     ports:
       - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  kb-worker:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command: ["python", "-m", "agent_governance.knowledge_worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_EMBED_MODEL: nomic-embed-text
+      KB_UPLOAD_DIR: /app/data/kb_uploads
+      KB_EMBED_DIMENSION: "768"
+    volumes:
+      - kb_uploads:/app/data/kb_uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,3 +67,4 @@ services:
 
 volumes:
   postgres_data:
+  kb_uploads:
