@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from fastapi import HTTPException
 from pgvector.sqlalchemy import Vector
 from pydantic import ValidationError
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, select
 from sqlalchemy.dialects.postgresql import JSONB
 
 import agent_governance.db as runtime_db
@@ -63,6 +65,47 @@ def _super_admin_user() -> dict:
         "allowed_environments": [],
         "permissions_by_environment": {},
     }
+
+
+def _create_file_document(
+    store: GovernanceStore,
+    kb_id: str,
+    *,
+    label: str = "Claims SOP",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    normalized_label = label.lower().replace(" ", "-")
+    store.upsert_knowledge_base(
+        {
+            "kb_id": kb_id,
+            "display_name": kb_id,
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    source = store.upsert_knowledge_source(
+        kb_id,
+        {
+            "source_type": "file",
+            "display_name": label,
+            "uri": f"file://{normalized_label}.txt",
+            "content_type": "text/plain",
+            "source_config": {},
+        },
+    )
+    document = store.create_knowledge_document(
+        kb_id,
+        source["source_id"],
+        {
+            "file_name": f"{normalized_label}.txt",
+            "content_type": "text/plain",
+            "storage_uri": f"file:///tmp/{normalized_label}.txt",
+            "size_bytes": 42,
+            "checksum": f"{normalized_label}-checksum",
+        },
+    )
+    return source, document
 
 
 def test_knowledge_models_are_declared() -> None:
@@ -539,6 +582,572 @@ def test_knowledge_base_source_and_index_lifecycle(store: GovernanceStore) -> No
     )
 
     assert updated["domain"] == ""
+
+
+def test_knowledge_document_and_chunk_lifecycle_updates_counts(
+    store: GovernanceStore,
+) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-doc-kb",
+            "display_name": "Claims Doc KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    source = store.upsert_knowledge_source(
+        "claims-doc-kb",
+        {
+            "source_type": "file",
+            "display_name": "Claims SOP",
+            "uri": "file://claims-sop.txt",
+            "content_type": "text/plain",
+            "source_config": {},
+        },
+    )
+
+    document = store.create_knowledge_document(
+        "claims-doc-kb",
+        source["source_id"],
+        {
+            "file_name": "claims-sop.txt",
+            "content_type": "text/plain",
+            "storage_uri": "file:///tmp/claims-sop.txt",
+            "size_bytes": 42,
+            "checksum": "abc123",
+        },
+    )
+
+    assert document["status"] == "uploaded"
+    assert store.list_knowledge_documents("claims-doc-kb")[0]["file_name"] == "claims-sop.txt"
+    assert store.get_knowledge_document(document["document_id"])["checksum"] == "abc123"
+
+    index = store.create_knowledge_index_version(
+        "claims-doc-kb",
+        {
+            "status": "indexing",
+            "source_count": 1,
+            "document_count": 1,
+            "chunk_count": 0,
+            "embedding_model": "nomic-embed-text",
+            "vector_backend": "pgvector",
+        },
+    )
+    chunk_count = store.replace_knowledge_chunks(
+        document["document_id"],
+        index["index_version_id"],
+        [
+            {
+                "chunk_index": 0,
+                "content": "Claims must be reviewed within two business days.",
+                "content_hash": "chunk-a",
+                "embedding": [0.1] * 768,
+                "metadata": {
+                    "kb_id": "claims-doc-kb",
+                    "file_name": "claims-sop.txt",
+                    "page_label": "1",
+                    "section": "intake",
+                },
+            },
+            {
+                "chunk_index": 1,
+                "content": "Escalate claims over the authority threshold.",
+                "content_hash": "chunk-b",
+                "embedding": [0.2] * 768,
+                "metadata": {
+                    "kb_id": "claims-doc-kb",
+                    "file_name": "claims-sop.txt",
+                    "page_label": "2",
+                    "section": "escalation",
+                },
+            },
+        ],
+    )
+    updated = store.mark_knowledge_document_indexed(document["document_id"], 2)
+    aggregate = store.refresh_knowledge_base_index_state(
+        "claims-doc-kb", index["index_version_id"]
+    )
+
+    assert chunk_count == 2
+    assert updated["status"] == "indexed"
+    assert updated["chunk_count"] == 2
+    assert updated["indexed_at"]
+    assert aggregate["document_count"] == 1
+    assert aggregate["chunk_count"] == 2
+    assert aggregate["status"] == "ready"
+    assert aggregate["last_indexed_at"]
+
+    with store.session() as db:
+        chunks = db.scalars(
+            select(KnowledgeChunk)
+            .where(KnowledgeChunk.document_id == document["document_id"])
+            .order_by(KnowledgeChunk.chunk_index)
+        ).all()
+        nearest_chunk = db.scalars(
+            select(KnowledgeChunk)
+            .where(KnowledgeChunk.kb_id == "claims-doc-kb")
+            .order_by(KnowledgeChunk.embedding.cosine_distance([0.1] * 768))
+            .limit(1)
+        ).one()
+
+    assert [chunk.content_hash for chunk in chunks] == ["chunk-a", "chunk-b"]
+    assert chunks[0].metadata_json == {
+        "kb_id": "claims-doc-kb",
+        "file_name": "claims-sop.txt",
+        "page_label": "1",
+        "section": "intake",
+    }
+    assert chunks[0].index_version_id == index["index_version_id"]
+    assert nearest_chunk.content_hash == "chunk-a"
+
+
+def test_knowledge_document_status_updates_source(store: GovernanceStore) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-failed-doc-kb",
+            "display_name": "Claims Failed Doc KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    source = store.upsert_knowledge_source(
+        "claims-failed-doc-kb",
+        {
+            "source_type": "file",
+            "display_name": "Claims SOP",
+            "uri": "file://claims-sop.txt",
+            "content_type": "text/plain",
+            "source_config": {},
+        },
+    )
+    document = store.create_knowledge_document(
+        "claims-failed-doc-kb",
+        source["source_id"],
+        {
+            "file_name": "claims-sop.txt",
+            "content_type": "text/plain",
+            "storage_uri": "file:///tmp/claims-sop.txt",
+            "size_bytes": 42,
+            "checksum": "abc123",
+        },
+    )
+
+    failed = store.mark_knowledge_document_status(
+        document["document_id"], "failed", "Parser failed"
+    )
+    sources = store.list_knowledge_sources("claims-failed-doc-kb")
+
+    assert failed["status"] == "failed"
+    assert failed["last_error"] == "Parser failed"
+    assert sources[0]["status"] == "failed"
+    assert sources[0]["last_error"] == "One or more documents failed ingestion"
+
+
+def test_knowledge_document_indexed_keeps_source_degraded_with_failed_sibling(
+    store: GovernanceStore,
+) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-source-sibling-kb",
+            "display_name": "Claims Source Sibling KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    source = store.upsert_knowledge_source(
+        "claims-source-sibling-kb",
+        {
+            "source_type": "file",
+            "display_name": "Claims SOP",
+            "uri": "file://claims-sop.txt",
+            "content_type": "text/plain",
+            "source_config": {},
+        },
+    )
+    failed_document = store.create_knowledge_document(
+        "claims-source-sibling-kb",
+        source["source_id"],
+        {
+            "file_name": "claims-failed.txt",
+            "content_type": "text/plain",
+            "storage_uri": "file:///tmp/claims-failed.txt",
+            "size_bytes": 42,
+            "checksum": "failed-checksum",
+        },
+    )
+    indexed_document = store.create_knowledge_document(
+        "claims-source-sibling-kb",
+        source["source_id"],
+        {
+            "file_name": "claims-indexed.txt",
+            "content_type": "text/plain",
+            "storage_uri": "file:///tmp/claims-indexed.txt",
+            "size_bytes": 84,
+            "checksum": "indexed-checksum",
+        },
+    )
+
+    store.mark_knowledge_document_status(
+        failed_document["document_id"], "failed", "Parser failed"
+    )
+    store.mark_knowledge_document_indexed(indexed_document["document_id"], 1)
+    sources = store.list_knowledge_sources("claims-source-sibling-kb")
+
+    assert sources[0]["status"] == "degraded"
+    assert sources[0]["last_error"] == "One or more documents failed ingestion"
+
+
+def test_knowledge_document_status_keeps_source_degraded_with_failed_sibling(
+    store: GovernanceStore,
+) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-source-transient-sibling-kb",
+            "display_name": "Claims Source Transient Sibling KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    source = store.upsert_knowledge_source(
+        "claims-source-transient-sibling-kb",
+        {
+            "source_type": "file",
+            "display_name": "Claims SOP",
+            "uri": "file://claims-sop.txt",
+            "content_type": "text/plain",
+            "source_config": {},
+        },
+    )
+    failed_document = store.create_knowledge_document(
+        "claims-source-transient-sibling-kb",
+        source["source_id"],
+        {
+            "file_name": "claims-failed.txt",
+            "content_type": "text/plain",
+            "storage_uri": "file:///tmp/claims-failed.txt",
+            "size_bytes": 42,
+            "checksum": "failed-transient-checksum",
+        },
+    )
+    parsing_document = store.create_knowledge_document(
+        "claims-source-transient-sibling-kb",
+        source["source_id"],
+        {
+            "file_name": "claims-parsing.txt",
+            "content_type": "text/plain",
+            "storage_uri": "file:///tmp/claims-parsing.txt",
+            "size_bytes": 84,
+            "checksum": "parsing-checksum",
+        },
+    )
+
+    store.mark_knowledge_document_status(
+        failed_document["document_id"], "failed", "Parser failed"
+    )
+    store.mark_knowledge_document_status(parsing_document["document_id"], "parsing")
+    sources = store.list_knowledge_sources("claims-source-transient-sibling-kb")
+
+    assert sources[0]["status"] == "degraded"
+    assert sources[0]["last_error"] == "One or more documents failed ingestion"
+
+
+def test_knowledge_document_status_rejects_unknown_status(store: GovernanceStore) -> None:
+    source, document = _create_file_document(store, "claims-status-vocabulary-kb")
+
+    with pytest.raises(ValueError, match="Unsupported knowledge document status 'archived'"):
+        store.mark_knowledge_document_status(document["document_id"], "archived")
+
+    with pytest.raises(ValueError, match="Unsupported knowledge document status 'archived'"):
+        store.create_knowledge_document(
+            "claims-status-vocabulary-kb",
+            source["source_id"],
+            {
+                "file_name": "archived.txt",
+                "content_type": "text/plain",
+                "storage_uri": "file:///tmp/archived.txt",
+                "size_bytes": 42,
+                "checksum": "archived-checksum",
+                "status": "archived",
+            },
+        )
+
+
+def test_replace_knowledge_chunks_validates_index_version_kb(store: GovernanceStore) -> None:
+    _, document = _create_file_document(store, "claims-index-validation-kb")
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-other-index-kb",
+            "display_name": "Claims Other Index KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    other_index = store.create_knowledge_index_version(
+        "claims-other-index-kb",
+        {
+            "status": "indexing",
+            "embedding_model": "nomic-embed-text",
+            "vector_backend": "pgvector",
+        },
+    )
+
+    with pytest.raises(ValueError, match="Knowledge index version 'missing-index' not found"):
+        store.replace_knowledge_chunks(document["document_id"], "missing-index", [])
+
+    with pytest.raises(ValueError, match="belongs to knowledge base 'claims-other-index-kb'"):
+        store.replace_knowledge_chunks(
+            document["document_id"], other_index["index_version_id"], []
+        )
+
+
+def test_refresh_knowledge_base_index_state_validates_index_version(
+    store: GovernanceStore,
+) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-refresh-validation-kb",
+            "display_name": "Claims Refresh Validation KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-refresh-other-kb",
+            "display_name": "Claims Refresh Other KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    other_index = store.create_knowledge_index_version(
+        "claims-refresh-other-kb",
+        {
+            "status": "indexing",
+            "embedding_model": "nomic-embed-text",
+            "vector_backend": "pgvector",
+        },
+    )
+
+    with pytest.raises(ValueError, match="Knowledge index version 'missing-index' not found"):
+        store.refresh_knowledge_base_index_state("claims-refresh-validation-kb", "missing-index")
+
+    with pytest.raises(ValueError, match="belongs to knowledge base 'claims-refresh-other-kb'"):
+        store.refresh_knowledge_base_index_state(
+            "claims-refresh-validation-kb", other_index["index_version_id"]
+        )
+
+
+def test_replace_knowledge_chunks_is_idempotent_for_document_index(
+    store: GovernanceStore,
+) -> None:
+    _, document = _create_file_document(store, "claims-idempotent-chunks-kb")
+    index = store.create_knowledge_index_version(
+        "claims-idempotent-chunks-kb",
+        {
+            "status": "indexing",
+            "embedding_model": "nomic-embed-text",
+            "vector_backend": "pgvector",
+        },
+    )
+
+    store.replace_knowledge_chunks(
+        document["document_id"],
+        index["index_version_id"],
+        [
+            {
+                "chunk_index": 0,
+                "content": "Old chunk",
+                "content_hash": "old-a",
+                "embedding": [0.1] * 768,
+                "metadata": {"version": "old"},
+            },
+            {
+                "chunk_index": 1,
+                "content": "Old second chunk",
+                "content_hash": "old-b",
+                "embedding": [0.2] * 768,
+                "metadata": {"version": "old"},
+            },
+        ],
+    )
+    store.replace_knowledge_chunks(
+        document["document_id"],
+        index["index_version_id"],
+        [
+            {
+                "chunk_index": 0,
+                "content": "Replacement chunk",
+                "content_hash": "new-a",
+                "embedding": [0.3] * 768,
+                "metadata": {"version": "new"},
+            }
+        ],
+    )
+
+    with store.session() as db:
+        chunks = db.scalars(
+            select(KnowledgeChunk)
+            .where(KnowledgeChunk.document_id == document["document_id"])
+            .order_by(KnowledgeChunk.chunk_index)
+        ).all()
+
+    assert [chunk.content_hash for chunk in chunks] == ["new-a"]
+    assert chunks[0].metadata_json == {"version": "new"}
+
+
+def test_refresh_ignores_chunks_for_unindexed_documents(store: GovernanceStore) -> None:
+    _, document = _create_file_document(store, "claims-interrupted-ingestion-kb")
+    index = store.create_knowledge_index_version(
+        "claims-interrupted-ingestion-kb",
+        {
+            "status": "indexing",
+            "embedding_model": "nomic-embed-text",
+            "vector_backend": "pgvector",
+        },
+    )
+    store.replace_knowledge_chunks(
+        document["document_id"],
+        index["index_version_id"],
+        [
+            {
+                "chunk_index": 0,
+                "content": "Persisted before document status flipped.",
+                "content_hash": "interrupted-chunk",
+                "embedding": [0.1] * 768,
+                "metadata": {"version": "interrupted"},
+            }
+        ],
+    )
+
+    aggregate = store.refresh_knowledge_base_index_state(
+        "claims-interrupted-ingestion-kb", index["index_version_id"]
+    )
+
+    with store.session() as db:
+        refreshed_document = db.get(KnowledgeDocument, document["document_id"])
+        refreshed_index = db.get(KnowledgeIndexVersion, index["index_version_id"])
+
+    assert refreshed_document.status == "uploaded"
+    assert aggregate["status"] == "draft"
+    assert aggregate["document_count"] == 0
+    assert aggregate["chunk_count"] == 0
+    assert refreshed_index.status == "pending"
+    assert refreshed_index.document_count == 0
+    assert refreshed_index.chunk_count == 0
+
+
+def test_refresh_counts_only_provided_index_version(store: GovernanceStore) -> None:
+    _, document = _create_file_document(store, "claims-scoped-refresh-kb")
+    old_index = store.create_knowledge_index_version(
+        "claims-scoped-refresh-kb",
+        {
+            "status": "indexing",
+            "embedding_model": "nomic-embed-text",
+            "vector_backend": "pgvector",
+        },
+    )
+    store.replace_knowledge_chunks(
+        document["document_id"],
+        old_index["index_version_id"],
+        [
+            {
+                "chunk_index": 0,
+                "content": "Old indexed chunk",
+                "content_hash": "old-index-chunk",
+                "embedding": [0.1] * 768,
+                "metadata": {"version": "old"},
+            }
+        ],
+    )
+    store.mark_knowledge_document_indexed(document["document_id"], 1)
+    store.refresh_knowledge_base_index_state("claims-scoped-refresh-kb", old_index["index_version_id"])
+
+    new_index = store.create_knowledge_index_version(
+        "claims-scoped-refresh-kb",
+        {
+            "status": "indexing",
+            "embedding_model": "nomic-embed-text",
+            "vector_backend": "pgvector",
+        },
+    )
+
+    aggregate = store.refresh_knowledge_base_index_state(
+        "claims-scoped-refresh-kb", new_index["index_version_id"]
+    )
+
+    with store.session() as db:
+        refreshed_index = db.get(KnowledgeIndexVersion, new_index["index_version_id"])
+
+    assert aggregate["document_count"] == 0
+    assert aggregate["chunk_count"] == 0
+    assert aggregate["status"] == "draft"
+    assert refreshed_index.status == "pending"
+    assert refreshed_index.document_count == 0
+    assert refreshed_index.chunk_count == 0
+
+
+def test_refresh_degrades_when_indexed_and_failed_documents_mix(
+    store: GovernanceStore,
+) -> None:
+    _, indexed_document = _create_file_document(
+        store, "claims-degraded-health-kb", label="Claims Indexed SOP"
+    )
+    _, failed_document = _create_file_document(
+        store, "claims-degraded-health-kb", label="Claims Failed SOP"
+    )
+    index = store.create_knowledge_index_version(
+        "claims-degraded-health-kb",
+        {
+            "status": "indexing",
+            "embedding_model": "nomic-embed-text",
+            "vector_backend": "pgvector",
+        },
+    )
+    store.replace_knowledge_chunks(
+        indexed_document["document_id"],
+        index["index_version_id"],
+        [
+            {
+                "chunk_index": 0,
+                "content": "Indexed chunk",
+                "content_hash": "indexed-chunk",
+                "embedding": [0.1] * 768,
+                "metadata": {"version": "current"},
+            }
+        ],
+    )
+    store.mark_knowledge_document_indexed(indexed_document["document_id"], 1)
+    store.mark_knowledge_document_status(
+        failed_document["document_id"], "failed", "Parser failed"
+    )
+
+    aggregate = store.refresh_knowledge_base_index_state(
+        "claims-degraded-health-kb", index["index_version_id"]
+    )
+
+    with store.session() as db:
+        refreshed_index = db.get(KnowledgeIndexVersion, index["index_version_id"])
+
+    assert aggregate["status"] == "degraded"
+    assert aggregate["document_count"] == 1
+    assert aggregate["chunk_count"] == 1
+    assert aggregate["last_error"] == "One or more documents failed ingestion"
+    assert refreshed_index.status == "degraded"
+    assert refreshed_index.error == "One or more documents failed ingestion"
 
 
 def test_knowledge_base_embedding_model_is_stored_in_source_config(

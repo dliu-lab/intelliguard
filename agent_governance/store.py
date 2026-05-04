@@ -24,6 +24,8 @@ from agent_governance.models import (
     EvaluatorTemplate,
     GuardrailPolicy,
     KnowledgeBase,
+    KnowledgeChunk,
+    KnowledgeDocument,
     KnowledgeIndexVersion,
     KnowledgeSource,
     PolicyDecision,
@@ -57,6 +59,8 @@ DEFAULT_AGENT_LLM_CONFIG = {
 
 
 _UNSET: Any = object()
+KNOWLEDGE_DOCUMENT_STATUSES = {"uploaded", "queued", "parsing", "embedding", "indexed", "failed"}
+KNOWLEDGE_DOCUMENT_INGESTION_ERROR = "One or more documents failed ingestion"
 
 
 def metadata_with_default_llm(metadata: dict[str, Any] | None) -> dict[str, Any]:
@@ -2347,6 +2351,119 @@ class GovernanceStore:
             db.flush()
             return self._kb_source_to_dict(row)
 
+    def create_knowledge_document(
+        self, kb_id: str, source_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            if not db.get(KnowledgeBase, kb_id):
+                raise ValueError(f"Knowledge base {kb_id!r} not found")
+            source = db.get(KnowledgeSource, source_id)
+            if not source or source.kb_id != kb_id:
+                raise ValueError(f"Knowledge source {source_id!r} not found for {kb_id!r}")
+            status = self._validate_knowledge_document_status(
+                payload.get("status") or "uploaded"
+            )
+            row = KnowledgeDocument(
+                document_id=new_id("kbd"),
+                kb_id=kb_id,
+                source_id=source_id,
+                file_name=payload["file_name"],
+                content_type=payload.get("content_type") or "",
+                storage_uri=payload["storage_uri"],
+                size_bytes=int(payload.get("size_bytes") or 0),
+                checksum=payload["checksum"],
+                status=status,
+            )
+            db.add(row)
+            source.status = "pending"
+            source.checksum = row.checksum
+            source.updated_at = utc_now()
+            db.flush()
+            return self._kb_document_to_dict(row)
+
+    def list_knowledge_documents(self, kb_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(KnowledgeDocument)
+                .where(KnowledgeDocument.kb_id == kb_id)
+                .order_by(KnowledgeDocument.created_at.desc())
+            ).all()
+            return [self._kb_document_to_dict(row) for row in rows]
+
+    def get_knowledge_document(self, document_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(KnowledgeDocument, document_id)
+            return self._kb_document_to_dict(row) if row else None
+
+    def mark_knowledge_document_status(
+        self, document_id: str, status: str, error: str | None = None
+    ) -> dict[str, Any]:
+        status = self._validate_knowledge_document_status(status)
+        with self.session() as db:
+            row = db.get(KnowledgeDocument, document_id)
+            if not row:
+                raise ValueError(f"Knowledge document {document_id!r} not found")
+            row.status = status
+            row.last_error = error
+            row.updated_at = utc_now()
+            source = db.get(KnowledgeSource, row.source_id)
+            if source:
+                self._refresh_source_document_health(db, source, fallback_status=status)
+                source.updated_at = utc_now()
+            db.flush()
+            return self._kb_document_to_dict(row)
+
+    def mark_knowledge_document_indexed(
+        self, document_id: str, chunk_count: int
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.get(KnowledgeDocument, document_id)
+            if not row:
+                raise ValueError(f"Knowledge document {document_id!r} not found")
+            indexed_at = utc_now()
+            row.status = "indexed"
+            row.chunk_count = chunk_count
+            row.last_error = None
+            row.indexed_at = indexed_at
+            row.updated_at = indexed_at
+            source = db.get(KnowledgeSource, row.source_id)
+            if source:
+                self._refresh_source_document_health(db, source, fallback_status="ready")
+                source.last_synced_at = indexed_at
+                source.updated_at = indexed_at
+            db.flush()
+            return self._kb_document_to_dict(row)
+
+    def replace_knowledge_chunks(
+        self, document_id: str, index_version_id: str | None, chunks: list[dict[str, Any]]
+    ) -> int:
+        with self.session() as db:
+            document = db.get(KnowledgeDocument, document_id)
+            if not document:
+                raise ValueError(f"Knowledge document {document_id!r} not found")
+            self._knowledge_index_for_kb(db, document.kb_id, index_version_id)
+            db.query(KnowledgeChunk).filter(
+                KnowledgeChunk.document_id == document_id,
+                KnowledgeChunk.index_version_id == index_version_id,
+            ).delete()
+            for chunk in chunks:
+                db.add(
+                    KnowledgeChunk(
+                        chunk_id=new_id("kbc"),
+                        kb_id=document.kb_id,
+                        source_id=document.source_id,
+                        document_id=document.document_id,
+                        index_version_id=index_version_id,
+                        chunk_index=int(chunk["chunk_index"]),
+                        content=chunk["content"],
+                        content_hash=chunk["content_hash"],
+                        embedding=chunk["embedding"],
+                        metadata_json=chunk.get("metadata") or {},
+                    )
+                )
+            db.flush()
+            return len(chunks)
+
     def create_knowledge_index_version(self, kb_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
             kb = db.get(KnowledgeBase, kb_id)
@@ -2382,6 +2499,125 @@ class GovernanceStore:
                 kb.updated_at = utc_now()
             db.flush()
             return self._kb_index_to_dict(row)
+
+    def refresh_knowledge_base_index_state(
+        self, kb_id: str, index_version_id: str | None = None
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            kb = db.get(KnowledgeBase, kb_id)
+            if not kb:
+                raise ValueError(f"Knowledge base {kb_id!r} not found")
+            index = (
+                self._knowledge_index_for_kb(db, kb_id, index_version_id)
+                if index_version_id
+                else None
+            )
+            if index:
+                document_count = int(
+                    db.scalar(
+                        select(func.count(func.distinct(KnowledgeChunk.document_id)))
+                        .select_from(KnowledgeChunk)
+                        .join(
+                            KnowledgeDocument,
+                            KnowledgeDocument.document_id == KnowledgeChunk.document_id,
+                        )
+                        .where(
+                            KnowledgeChunk.kb_id == kb_id,
+                            KnowledgeChunk.index_version_id == index_version_id,
+                            KnowledgeDocument.status == "indexed",
+                        )
+                    )
+                    or 0
+                )
+                chunk_count = int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(KnowledgeChunk)
+                        .join(
+                            KnowledgeDocument,
+                            KnowledgeDocument.document_id == KnowledgeChunk.document_id,
+                        )
+                        .where(
+                            KnowledgeChunk.kb_id == kb_id,
+                            KnowledgeChunk.index_version_id == index_version_id,
+                            KnowledgeDocument.status == "indexed",
+                        )
+                    )
+                    or 0
+                )
+            else:
+                document_count = int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(KnowledgeDocument)
+                        .where(
+                            KnowledgeDocument.kb_id == kb_id,
+                            KnowledgeDocument.status == "indexed",
+                        )
+                    )
+                    or 0
+                )
+                chunk_count = int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(KnowledgeChunk)
+                        .join(
+                            KnowledgeDocument,
+                            KnowledgeDocument.document_id == KnowledgeChunk.document_id,
+                        )
+                        .where(
+                            KnowledgeChunk.kb_id == kb_id,
+                            KnowledgeDocument.status == "indexed",
+                        )
+                    )
+                    or 0
+                )
+            failed_count = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(KnowledgeDocument)
+                    .where(
+                        KnowledgeDocument.kb_id == kb_id,
+                        KnowledgeDocument.status == "failed",
+                    )
+                )
+                or 0
+            )
+            indexed_at = utc_now()
+            kb.document_count = document_count
+            kb.chunk_count = chunk_count
+            kb.status = (
+                "degraded"
+                if failed_count and chunk_count
+                else "failed"
+                if failed_count
+                else "ready"
+                if chunk_count
+                else "draft"
+            )
+            kb.last_error = (
+                KNOWLEDGE_DOCUMENT_INGESTION_ERROR
+                if kb.status in {"degraded", "failed"}
+                else None
+            )
+            kb.last_indexed_at = indexed_at if chunk_count else kb.last_indexed_at
+            kb.updated_at = indexed_at
+            if index:
+                index.status = (
+                    "degraded"
+                    if failed_count and chunk_count
+                    else "failed"
+                    if failed_count
+                    else "ready"
+                    if chunk_count
+                    else "pending"
+                )
+                index.document_count = document_count
+                index.chunk_count = chunk_count
+                index.completed_at = indexed_at if index.status != "pending" else None
+                index.error = kb.last_error
+            db.flush()
+            return self._kb_to_dict(kb)
 
     def list_agent_kb_assignments(self, agent_id: str) -> list[dict[str, Any]]:
         with self.session() as db:
@@ -2458,6 +2694,59 @@ class GovernanceStore:
             return True
 
     @staticmethod
+    def _validate_knowledge_document_status(status: str) -> str:
+        if status not in KNOWLEDGE_DOCUMENT_STATUSES:
+            raise ValueError(f"Unsupported knowledge document status {status!r}")
+        return status
+
+    @staticmethod
+    def _knowledge_index_for_kb(
+        db: Session, kb_id: str, index_version_id: str | None
+    ) -> KnowledgeIndexVersion:
+        if not index_version_id:
+            raise ValueError("Knowledge index version is required")
+        index = db.get(KnowledgeIndexVersion, index_version_id)
+        if not index:
+            raise ValueError(f"Knowledge index version {index_version_id!r} not found")
+        if index.kb_id != kb_id:
+            raise ValueError(
+                f"Knowledge index version {index_version_id!r} belongs to knowledge "
+                f"base {index.kb_id!r}, not {kb_id!r}"
+            )
+        return index
+
+    @staticmethod
+    def _refresh_source_document_health(
+        db: Session, source: KnowledgeSource, *, fallback_status: str
+    ) -> None:
+        statuses = list(
+            db.scalars(
+                select(KnowledgeDocument.status).where(
+                    KnowledgeDocument.source_id == source.source_id
+                )
+            )
+        )
+        if not statuses:
+            source.status = fallback_status
+            source.last_error = None
+            return
+        failed_count = statuses.count("failed")
+        if failed_count == len(statuses):
+            source.status = "failed"
+            source.last_error = KNOWLEDGE_DOCUMENT_INGESTION_ERROR
+            return
+        if failed_count:
+            source.status = "degraded"
+            source.last_error = KNOWLEDGE_DOCUMENT_INGESTION_ERROR
+            return
+        if "indexed" in statuses:
+            source.status = "ready"
+            source.last_error = None
+            return
+        source.status = fallback_status
+        source.last_error = None
+
+    @staticmethod
     def _kb_to_dict(row: KnowledgeBase | None) -> dict[str, Any]:
         if not row:
             return {}
@@ -2479,6 +2768,27 @@ class GovernanceStore:
             "last_error": row.last_error,
             "created_at": row.created_at.isoformat(),
             "updated_at": row.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _kb_document_to_dict(row: KnowledgeDocument | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "document_id": row.document_id,
+            "kb_id": row.kb_id,
+            "source_id": row.source_id,
+            "file_name": row.file_name,
+            "content_type": row.content_type,
+            "storage_uri": row.storage_uri,
+            "size_bytes": row.size_bytes,
+            "checksum": row.checksum,
+            "status": row.status,
+            "chunk_count": row.chunk_count,
+            "last_error": row.last_error,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+            "indexed_at": row.indexed_at.isoformat() if row.indexed_at else None,
         }
 
     @staticmethod
