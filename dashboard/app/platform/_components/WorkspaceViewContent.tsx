@@ -1,6 +1,7 @@
 import type { PlatformData } from "@/lib/api";
 import { ControlPlaneWorkspace } from "./ControlPlaneWorkspace";
 import { EvaluationCenterWorkspace } from "./EvaluationCenterWorkspace";
+import { KnowledgeBasesWorkspace } from "./KnowledgeBasesWorkspace";
 import { MonitoringWorkspace } from "./MonitoringWorkspace";
 import { OverviewWorkspace } from "./OverviewWorkspace";
 import { AuditEventsWorkspace, ReviewQueueWorkspace, WorkflowTraceWorkspace } from "./RecordListWorkspace";
@@ -61,16 +62,7 @@ export function WorkspaceViewContent({
   }
 
   if (activeView === "knowledge-bases") {
-    return (
-      <ControlPlaneWorkspace
-        activeComponent="knowledge"
-        data={data}
-        dataStatus={dataStatus}
-        lockedTab="knowledge"
-        onRefresh={onRefresh}
-        onSelect={onComponentSelect}
-      />
-    );
+    return <KnowledgeBasesWorkspace data={data} dataStatus={dataStatus} onRefresh={onRefresh} />;
   }
 
   if (activeView === "guardrail-policies") {
