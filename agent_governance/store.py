@@ -304,7 +304,9 @@ class GovernanceStore:
             identity = db.get(AgentIdentity, agent_id)
             if not identity:
                 return None
-            cert = db.scalar(select(AgentCertification).where(AgentCertification.agent_id == agent_id))
+            cert = db.scalar(
+                select(AgentCertification).where(AgentCertification.agent_id == agent_id)
+            )
             return self._agent_identity_to_dict(identity, cert)
 
     def list_agents(self, environment: str | list[str] | None = None) -> list[dict[str, Any]]:
@@ -377,9 +379,7 @@ class GovernanceStore:
                 )
             db.flush()
             cert = db.scalar(
-                select(AgentCertification).where(
-                    AgentCertification.agent_id == identity.agent_id
-                )
+                select(AgentCertification).where(AgentCertification.agent_id == identity.agent_id)
             )
             return self._agent_identity_to_dict(identity, cert)
 
@@ -629,9 +629,7 @@ class GovernanceStore:
                 row.mode = mode
                 row.threshold_overrides = threshold_overrides or {}
                 row.updated_at = utc_now()
-            self._invalidate_agent_cert_if_certified(
-                db, agent_id, "guardrail assignments changed"
-            )
+            self._invalidate_agent_cert_if_certified(db, agent_id, "guardrail assignments changed")
             db.flush()
             return self._guardrail_assignment_to_dict(row)
 
@@ -795,9 +793,7 @@ class GovernanceStore:
                 row.trigger = trigger
                 row.config = config or {}
                 row.updated_at = utc_now()
-            self._invalidate_agent_cert_if_certified(
-                db, agent_id, "evaluator assignments changed"
-            )
+            self._invalidate_agent_cert_if_certified(db, agent_id, "evaluator assignments changed")
             db.flush()
             return self._evaluator_assignment_to_dict(row)
 
@@ -1020,7 +1016,9 @@ class GovernanceStore:
                 record.metadata_json = payload.get("metadata") or {}
                 record.updated_at = utc_now()
 
-            cert = db.scalar(select(ToolCertification).where(ToolCertification.tool_id == record.tool_id))
+            cert = db.scalar(
+                select(ToolCertification).where(ToolCertification.tool_id == record.tool_id)
+            )
             if not cert:
                 cert = ToolCertification(
                     certification_id=new_id("cert"),
@@ -1047,9 +1045,7 @@ class GovernanceStore:
             db.flush()
             return self._tool_record_to_dict(record, cert)
 
-    def list_tool_records(
-        self, environment: str | list[str] | None = None
-    ) -> list[dict[str, Any]]:
+    def list_tool_records(self, environment: str | list[str] | None = None) -> list[dict[str, Any]]:
         with self.session() as db:
             rows = db.scalars(select(ToolRecord).order_by(ToolRecord.display_name)).all()
             result = []
@@ -1085,9 +1081,7 @@ class GovernanceStore:
             cert = db.scalar(select(ToolCertification).where(ToolCertification.tool_id == tool_id))
             return self._tool_certification_to_dict(cert) if cert else None
 
-    def update_tool_certification(
-        self, tool_id: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    def update_tool_certification(self, tool_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
             cert = db.scalar(select(ToolCertification).where(ToolCertification.tool_id == tool_id))
             if not cert:
@@ -1146,9 +1140,7 @@ class GovernanceStore:
             db.flush()
             return self._evaluation_run_to_dict(run)
 
-    def add_evaluation_criterion_results(
-        self, run_id: str, results: list[dict[str, Any]]
-    ) -> None:
+    def add_evaluation_criterion_results(self, run_id: str, results: list[dict[str, Any]]) -> None:
         with self.session() as db:
             for result in results:
                 db.add(
@@ -1185,9 +1177,7 @@ class GovernanceStore:
             ).all()
             return [self._evaluation_criterion_to_dict(row) for row in rows]
 
-    def create_agent_certification(
-        self, agent_id: str, config_hash: str
-    ) -> dict[str, Any]:
+    def create_agent_certification(self, agent_id: str, config_hash: str) -> dict[str, Any]:
         with self.session() as db:
             existing = db.scalar(
                 select(AgentCertification).where(AgentCertification.agent_id == agent_id)
@@ -1211,9 +1201,7 @@ class GovernanceStore:
             )
             return self._agent_certification_to_dict(cert) if cert else None
 
-    def update_agent_certification(
-        self, agent_id: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    def update_agent_certification(self, agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
             cert = db.scalar(
                 select(AgentCertification).where(AgentCertification.agent_id == agent_id)
@@ -1259,9 +1247,7 @@ class GovernanceStore:
             db.flush()
             return self._workflow_certification_to_dict(cert)
 
-    def get_workflow_certification(
-        self, workflow_definition_id: str
-    ) -> dict[str, Any] | None:
+    def get_workflow_certification(self, workflow_definition_id: str) -> dict[str, Any] | None:
         with self.session() as db:
             cert = db.scalar(
                 select(WorkflowCertification).where(
@@ -1280,9 +1266,7 @@ class GovernanceStore:
                 )
             )
             if not cert:
-                raise ValueError(
-                    f"No certification record for workflow '{workflow_definition_id}'"
-                )
+                raise ValueError(f"No certification record for workflow '{workflow_definition_id}'")
             for field in (
                 "status",
                 "config_hash",
@@ -1461,9 +1445,7 @@ class GovernanceStore:
             "updated_at": cert.updated_at.isoformat(),
         }
 
-    def _invalidate_agent_cert_if_certified(
-        self, db: Session, agent_id: str, reason: str
-    ) -> None:
+    def _invalidate_agent_cert_if_certified(self, db: Session, agent_id: str, reason: str) -> None:
         cert = db.scalar(select(AgentCertification).where(AgentCertification.agent_id == agent_id))
         if cert and cert.status not in {"DRAFT", "NEEDS_REEVALUATION"}:
             cert.status = "NEEDS_REEVALUATION"
@@ -1514,7 +1496,9 @@ class GovernanceStore:
             identity.updated_at = utc_now()
             self._invalidate_agent_cert_if_certified(db, agent_id, "tool grants changed")
             db.flush()
-            cert = db.scalar(select(AgentCertification).where(AgentCertification.agent_id == agent_id))
+            cert = db.scalar(
+                select(AgentCertification).where(AgentCertification.agent_id == agent_id)
+            )
             return self._agent_identity_to_dict(identity, cert)
 
     def revoke_agent_tool(self, agent_id: str, tool_name: str) -> dict[str, Any]:
@@ -1531,7 +1515,9 @@ class GovernanceStore:
             identity.updated_at = utc_now()
             self._invalidate_agent_cert_if_certified(db, agent_id, "tool grants changed")
             db.flush()
-            cert = db.scalar(select(AgentCertification).where(AgentCertification.agent_id == agent_id))
+            cert = db.scalar(
+                select(AgentCertification).where(AgentCertification.agent_id == agent_id)
+            )
             return self._agent_identity_to_dict(identity, cert)
 
     def ensure_agent_session(self, session_id: str, agent_id: str, user_query: str) -> None:
@@ -2083,9 +2069,7 @@ class GovernanceStore:
             "purpose": identity.purpose,
             "permissions": identity.permissions or {},
             "metadata": identity.metadata_json or {},
-            "certification": GovernanceStore._agent_certification_to_dict(cert)
-            if cert
-            else None,
+            "certification": GovernanceStore._agent_certification_to_dict(cert) if cert else None,
             "created_at": identity.created_at.isoformat(),
             "updated_at": identity.updated_at.isoformat(),
         }
@@ -2235,10 +2219,10 @@ class GovernanceStore:
                     source_type=payload["source_type"],
                     source_config=payload.get("source_config") or {},
                     environment=payload["environment"],
-                    owner=payload.get("owner") or "Unassigned",
-                    domain=payload.get("domain") or "",
-                    sensitivity=payload.get("sensitivity") or "internal",
-                    status=payload.get("status") or "draft",
+                    owner=payload["owner"] if "owner" in payload else "Unassigned",
+                    domain=payload["domain"] if "domain" in payload else "",
+                    sensitivity=payload["sensitivity"] if "sensitivity" in payload else "internal",
+                    status=payload["status"] if "status" in payload else "draft",
                 )
                 db.add(row)
             else:
@@ -2247,10 +2231,14 @@ class GovernanceStore:
                 row.source_type = payload["source_type"]
                 row.source_config = payload.get("source_config") or {}
                 row.environment = payload["environment"]
-                row.owner = payload.get("owner") or row.owner
-                row.domain = payload.get("domain") or row.domain
-                row.sensitivity = payload.get("sensitivity") or row.sensitivity
-                row.status = payload.get("status") or row.status
+                if "owner" in payload:
+                    row.owner = payload["owner"]
+                if "domain" in payload:
+                    row.domain = payload["domain"]
+                if "sensitivity" in payload:
+                    row.sensitivity = payload["sensitivity"]
+                if "status" in payload:
+                    row.status = payload["status"]
                 row.updated_at = utc_now()
             db.flush()
             return self._kb_to_dict(row)
@@ -2304,19 +2292,23 @@ class GovernanceStore:
                 )
                 db.add(row)
             else:
+                if row.kb_id != kb_id:
+                    raise ValueError(
+                        f"Knowledge source '{source_id}' belongs to knowledge base "
+                        f"'{row.kb_id}', not '{kb_id}'"
+                    )
                 row.source_type = payload["source_type"]
                 row.display_name = payload["display_name"]
                 row.uri = payload.get("uri") or ""
                 row.content_type = payload.get("content_type") or ""
                 row.source_config = payload.get("source_config") or {}
-                row.status = payload.get("status") or row.status
+                if "status" in payload:
+                    row.status = payload["status"]
                 row.updated_at = utc_now()
             db.flush()
             return self._kb_source_to_dict(row)
 
-    def create_knowledge_index_version(
-        self, kb_id: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    def create_knowledge_index_version(self, kb_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
             row = KnowledgeIndexVersion(
                 index_version_id=new_id("kbi"),

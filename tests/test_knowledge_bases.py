@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -220,4 +221,68 @@ def test_knowledge_base_source_and_index_lifecycle(store: GovernanceStore) -> No
     assert index["status"] == "ready"
     detailed = store.get_knowledge_base_detail("claims-policy-kb")
     assert detailed["source_count"] == 1
+    assert detailed["status"] == "ready"
+    assert detailed["document_count"] == 1
+    assert detailed["chunk_count"] == 12
+    assert detailed["last_indexed_at"]
     assert detailed["latest_index"]["chunk_count"] == 12
+
+    updated = store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-policy-kb",
+            "display_name": "Claims Policy KB",
+            "description": "Claims operating procedures.",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+            "domain": "",
+        }
+    )
+
+    assert updated["domain"] == ""
+
+
+def test_knowledge_source_upsert_rejects_source_id_from_other_kb(
+    store: GovernanceStore,
+) -> None:
+    for kb_id in ("claims-policy-kb-a", "claims-policy-kb-b"):
+        store.upsert_knowledge_base(
+            {
+                "kb_id": kb_id,
+                "display_name": kb_id,
+                "description": "",
+                "source_type": "file",
+                "source_config": {},
+                "environment": "demo",
+            }
+        )
+
+    source = store.upsert_knowledge_source(
+        "claims-policy-kb-a",
+        {
+            "source_id": "claims-sop-source",
+            "source_type": "file",
+            "display_name": "Claims SOP",
+            "uri": "file://claims-sop.pdf",
+            "content_type": "application/pdf",
+            "source_config": {},
+        },
+    )
+
+    with pytest.raises(ValueError, match="belongs to knowledge base"):
+        store.upsert_knowledge_source(
+            "claims-policy-kb-b",
+            {
+                "source_id": source["source_id"],
+                "source_type": "file",
+                "display_name": "Other Claims SOP",
+                "uri": "file://other-claims-sop.pdf",
+                "content_type": "application/pdf",
+                "source_config": {},
+            },
+        )
+
+    sources_a = store.list_knowledge_sources("claims-policy-kb-a")
+    sources_b = store.list_knowledge_sources("claims-policy-kb-b")
+    assert sources_a[0]["display_name"] == "Claims SOP"
+    assert sources_b == []
