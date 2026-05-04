@@ -6,6 +6,7 @@ from uuid import uuid4
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -469,8 +470,57 @@ class KnowledgeBase(Base):
     )  # "vector_store"|"url"|"file"
     source_config: Mapped[dict] = mapped_column(JSONB, default=dict)
     environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    owner: Mapped[str] = mapped_column(String(120), nullable=False, default="Unassigned")
+    domain: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    sensitivity: Mapped[str] = mapped_column(String(40), nullable=False, default="internal")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft")
+    document_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_indexed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class KnowledgeSource(Base):
+    __tablename__ = "knowledge_sources"
+
+    source_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.kb_id"), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    uri: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    content_type: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    source_config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
+    checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class KnowledgeIndexVersion(Base):
+    __tablename__ = "knowledge_index_versions"
+
+    index_version_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.kb_id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
+    source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    document_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    embedding_model: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    vector_backend: Mapped[str] = mapped_column(String(80), nullable=False, default="local")
+    artifact_digest: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class AgentKBAssignment(Base):
@@ -483,4 +533,10 @@ class AgentKBAssignment(Base):
     access_mode: Mapped[str] = mapped_column(
         String(20), nullable=False, default="read"
     )  # "read"|"read_write"
+    retrieval_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="hybrid")
+    top_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    score_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    citation_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    freshness_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    metadata_filters: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
