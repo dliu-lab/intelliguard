@@ -84,10 +84,12 @@ export function KnowledgeBasesWorkspace({
     source_config: {},
   });
   const [query, setQuery] = useState("");
+  const [queryTopK, setQueryTopK] = useState(5);
   const [queryResults, setQueryResults] = useState<ApiRecord[]>([]);
   const [selectedKbDetail, setSelectedKbDetail] = useState<ApiRecord | null>(null);
   const [selectedSources, setSelectedSources] = useState<ApiRecord[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailRefreshNonce, setDetailRefreshNonce] = useState(0);
   const selectedKbIdRef = useRef(selectedKbId);
   const queryRequestIdRef = useRef(0);
   const detailRequestIdRef = useRef(0);
@@ -167,7 +169,7 @@ export function KnowledgeBasesWorkspace({
           setDetailLoading(false);
         }
       });
-  }, [selectedKbId]);
+  }, [selectedKbId, detailRefreshNonce]);
 
   const sourceTypes = useMemo(() => {
     const counts = new Map<string, number>();
@@ -282,6 +284,7 @@ export function KnowledgeBasesWorkspace({
         source_config: {},
       });
       await onRefresh();
+      setDetailRefreshNonce((value) => value + 1);
     });
   }
 
@@ -296,6 +299,7 @@ export function KnowledgeBasesWorkspace({
       });
       setMessage("Knowledge index status refreshed.");
       await onRefresh();
+      setDetailRefreshNonce((value) => value + 1);
     });
   }
 
@@ -312,7 +316,7 @@ export function KnowledgeBasesWorkspace({
     await withToken(async (token) => {
       const results = await queryKnowledgeBase(token, queryKbId, {
         query,
-        top_k: 5,
+        top_k: queryTopK,
       });
 
       if (requestId !== queryRequestIdRef.current || selectedKbIdRef.current !== queryKbId) {
@@ -638,10 +642,21 @@ export function KnowledgeBasesWorkspace({
               <Search className="text-accent" size={20} aria-hidden="true" />
               <h2 className="text-xl font-semibold">Test retrieval</h2>
             </div>
-            <form className="mt-5 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]" onSubmit={testQuery}>
+            <form className="mt-5 grid gap-3 md:grid-cols-[minmax(0,1fr)_112px_auto]" onSubmit={testQuery}>
               <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
                 Retrieval question
                 <input className="field-input" placeholder="Ask this knowledge base a question" value={query} onChange={(event) => setQuery(event.target.value)} />
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                Top K
+                <input
+                  className="field-input"
+                  max={20}
+                  min={1}
+                  type="number"
+                  value={queryTopK}
+                  onChange={(event) => setQueryTopK(Math.max(1, Math.min(20, Number(event.target.value) || 1)))}
+                />
               </label>
               <button
                 className="self-end rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"

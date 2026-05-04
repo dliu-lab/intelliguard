@@ -2235,10 +2235,17 @@ class GovernanceStore:
 
     def upsert_knowledge_base(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
-            source_config = dict(payload.get("source_config") or {})
+            row = db.get(KnowledgeBase, payload["kb_id"])
+            explicit_source_config = payload.get("source_config")
+            source_config = (
+                dict(explicit_source_config)
+                if explicit_source_config
+                else dict(row.source_config or {})
+                if row
+                else {}
+            )
             if "embedding_model" in payload:
                 source_config["embedding_model"] = payload["embedding_model"]
-            row = db.get(KnowledgeBase, payload["kb_id"])
             if not row:
                 row = KnowledgeBase(
                     kb_id=payload["kb_id"],

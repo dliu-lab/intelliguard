@@ -387,6 +387,43 @@ def test_knowledge_base_embedding_model_is_stored_in_source_config(
     }
 
 
+def test_knowledge_base_update_preserves_existing_source_config(
+    store: GovernanceStore,
+) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-config-kb",
+            "display_name": "Claims Config KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {"parser": "pdf", "connector": "s3"},
+            "environment": "demo",
+            "embedding_model": "local/initial",
+        }
+    )
+
+    updated = store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-config-kb",
+            "display_name": "Claims Config KB",
+            "description": "Updated metadata.",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+            "owner": "Claims Ops",
+            "embedding_model": "local/updated",
+        }
+    )
+
+    assert updated["source_config"] == {
+        "parser": "pdf",
+        "connector": "s3",
+        "embedding_model": "local/updated",
+    }
+    assert updated["embedding_model"] == "local/updated"
+    assert updated["owner"] == "Claims Ops"
+
+
 def test_knowledge_source_upsert_rejects_source_id_from_other_kb(
     store: GovernanceStore,
 ) -> None:
