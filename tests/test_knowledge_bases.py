@@ -286,3 +286,105 @@ def test_knowledge_source_upsert_rejects_source_id_from_other_kb(
     sources_b = store.list_knowledge_sources("claims-policy-kb-b")
     assert sources_a[0]["display_name"] == "Claims SOP"
     assert sources_b == []
+
+
+def test_knowledge_source_upsert_updates_same_kb_source(store: GovernanceStore) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-policy-kb-update",
+            "display_name": "Claims Policy KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+
+    created = store.upsert_knowledge_source(
+        "claims-policy-kb-update",
+        {
+            "source_id": "claims-update-source",
+            "source_type": "file",
+            "display_name": "Claims SOP",
+            "uri": "file://claims-sop.pdf",
+            "content_type": "application/pdf",
+            "source_config": {},
+            "status": "synced",
+        },
+    )
+    updated = store.upsert_knowledge_source(
+        "claims-policy-kb-update",
+        {
+            "source_id": created["source_id"],
+            "source_type": "file",
+            "display_name": "Claims SOP v2",
+            "uri": "file://claims-sop-v2.pdf",
+            "content_type": "application/pdf",
+            "source_config": {"parser": "pdf"},
+            "status": "failed",
+        },
+    )
+
+    assert created["status"] == "synced"
+    assert updated["display_name"] == "Claims SOP v2"
+    assert updated["status"] == "failed"
+    sources = store.list_knowledge_sources("claims-policy-kb-update")
+    assert len(sources) == 1
+    assert sources[0]["source_id"] == created["source_id"]
+    assert sources[0]["status"] == "failed"
+
+
+def test_failed_knowledge_index_updates_kb_aggregate_health(store: GovernanceStore) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-policy-kb-failed-index",
+            "display_name": "Claims Policy KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+
+    index = store.create_knowledge_index_version(
+        "claims-policy-kb-failed-index",
+        {
+            "status": "failed",
+            "source_count": 1,
+            "document_count": 0,
+            "chunk_count": 0,
+            "embedding_model": "local/test-embedding",
+            "vector_backend": "local",
+            "error": "Parser failed",
+        },
+    )
+
+    assert index["status"] == "failed"
+    assert index["completed_at"]
+    detailed = store.get_knowledge_base_detail("claims-policy-kb-failed-index")
+    assert detailed["status"] == "failed"
+    assert detailed["last_error"] == "Parser failed"
+    assert detailed["latest_index"]["error"] == "Parser failed"
+
+
+def test_knowledge_source_and_index_reject_missing_kb(store: GovernanceStore) -> None:
+    with pytest.raises(ValueError, match="Knowledge base 'missing-kb' not found"):
+        store.upsert_knowledge_source(
+            "missing-kb",
+            {
+                "source_type": "file",
+                "display_name": "Missing",
+                "uri": "file://missing.pdf",
+                "content_type": "application/pdf",
+                "source_config": {},
+            },
+        )
+
+    with pytest.raises(ValueError, match="Knowledge base 'missing-kb' not found"):
+        store.create_knowledge_index_version(
+            "missing-kb",
+            {
+                "status": "failed",
+                "error": "Missing KB",
+            },
+        )

@@ -2278,6 +2278,9 @@ class GovernanceStore:
 
     def upsert_knowledge_source(self, kb_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
+            if not db.get(KnowledgeBase, kb_id):
+                raise ValueError(f"Knowledge base {kb_id!r} not found")
+
             source_id = payload.get("source_id") or new_id("kbs")
             row = db.get(KnowledgeSource, source_id)
             if not row:
@@ -2289,6 +2292,7 @@ class GovernanceStore:
                     uri=payload.get("uri") or "",
                     content_type=payload.get("content_type") or "",
                     source_config=payload.get("source_config") or {},
+                    status=payload["status"] if "status" in payload else "pending",
                 )
                 db.add(row)
             else:
@@ -2310,10 +2314,16 @@ class GovernanceStore:
 
     def create_knowledge_index_version(self, kb_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
+            kb = db.get(KnowledgeBase, kb_id)
+            if not kb:
+                raise ValueError(f"Knowledge base {kb_id!r} not found")
+
+            status = payload.get("status") or "pending"
+            completed_at = utc_now() if status in {"ready", "failed"} else None
             row = KnowledgeIndexVersion(
                 index_version_id=new_id("kbi"),
                 kb_id=kb_id,
-                status=payload.get("status") or "pending",
+                status=status,
                 source_count=int(payload.get("source_count") or 0),
                 document_count=int(payload.get("document_count") or 0),
                 chunk_count=int(payload.get("chunk_count") or 0),
@@ -2321,16 +2331,19 @@ class GovernanceStore:
                 vector_backend=payload.get("vector_backend") or "local",
                 artifact_digest=payload.get("artifact_digest"),
                 error=payload.get("error"),
-                completed_at=utc_now() if payload.get("status") == "ready" else None,
+                completed_at=completed_at,
             )
             db.add(row)
-            kb = db.get(KnowledgeBase, kb_id)
-            if kb and row.status == "ready":
+            if row.status == "ready":
                 kb.status = "ready"
                 kb.document_count = row.document_count
                 kb.chunk_count = row.chunk_count
                 kb.last_indexed_at = row.completed_at
                 kb.last_error = None
+                kb.updated_at = utc_now()
+            elif row.status == "failed":
+                kb.status = "failed"
+                kb.last_error = row.error
                 kb.updated_at = utc_now()
             db.flush()
             return self._kb_index_to_dict(row)
