@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
 import agent_governance.db as runtime_db
+from api.main import AgentKBAssignmentRequest
 from agent_governance.models import (
     AgentKBAssignment,
     KnowledgeBase,
@@ -24,6 +26,24 @@ def _default_arg(model: type, name: str):
 
 def _default_factory_value(model: type, name: str):
     return _default_arg(model, name)(None)
+
+
+def _assert_assignment_policy(
+    assignment: dict,
+    *,
+    retrieval_mode: str,
+    top_k: int,
+    score_threshold: float | None,
+    citation_required: bool,
+    freshness_days: int | None,
+    metadata_filters: dict,
+) -> None:
+    assert assignment["retrieval_mode"] == retrieval_mode
+    assert assignment["top_k"] == top_k
+    assert assignment["score_threshold"] == score_threshold
+    assert assignment["citation_required"] is citation_required
+    assert assignment["freshness_days"] == freshness_days
+    assert assignment["metadata_filters"] == metadata_filters
 
 
 def test_knowledge_models_are_declared() -> None:
@@ -414,6 +434,136 @@ def test_agent_kb_assignment_stores_retrieval_policy(store: GovernanceStore) -> 
         metadata_filters={"doc_type": "policy"},
     )
 
-    assert assignment["retrieval_mode"] == "hybrid"
-    assert assignment["top_k"] == 8
-    assert assignment["metadata_filters"] == {"doc_type": "policy"}
+    _assert_assignment_policy(
+        assignment,
+        retrieval_mode="hybrid",
+        top_k=8,
+        score_threshold=0.72,
+        citation_required=True,
+        freshness_days=30,
+        metadata_filters={"doc_type": "policy"},
+    )
+
+    listed = store.list_agent_kb_assignments("customer-support-agent")
+    assert len(listed) == 1
+    _assert_assignment_policy(
+        listed[0],
+        retrieval_mode="hybrid",
+        top_k=8,
+        score_threshold=0.72,
+        citation_required=True,
+        freshness_days=30,
+        metadata_filters={"doc_type": "policy"},
+    )
+
+
+def test_agent_kb_assignment_legacy_update_preserves_retrieval_policy(
+    store: GovernanceStore,
+) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "legacy-policy-kb",
+            "display_name": "Legacy Policy KB",
+            "description": "",
+            "source_type": "vector_store",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    created = store.upsert_agent_kb_assignment(
+        agent_id="customer-support-agent",
+        kb_id="legacy-policy-kb",
+        access_mode="read",
+        retrieval_mode="semantic",
+        top_k=12,
+        score_threshold=0.81,
+        citation_required=False,
+        freshness_days=45,
+        metadata_filters={"team": "support"},
+    )
+
+    updated = store.upsert_agent_kb_assignment(
+        agent_id="customer-support-agent",
+        kb_id="legacy-policy-kb",
+        access_mode="read_write",
+    )
+
+    assert updated["assignment_id"] == created["assignment_id"]
+    assert updated["access_mode"] == "read_write"
+    _assert_assignment_policy(
+        updated,
+        retrieval_mode="semantic",
+        top_k=12,
+        score_threshold=0.81,
+        citation_required=False,
+        freshness_days=45,
+        metadata_filters={"team": "support"},
+    )
+
+
+def test_agent_kb_assignment_explicit_update_changes_retrieval_policy(
+    store: GovernanceStore,
+) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "explicit-policy-kb",
+            "display_name": "Explicit Policy KB",
+            "description": "",
+            "source_type": "vector_store",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    store.upsert_agent_kb_assignment(
+        agent_id="customer-support-agent",
+        kb_id="explicit-policy-kb",
+        access_mode="read",
+        retrieval_mode="semantic",
+        top_k=12,
+        score_threshold=0.81,
+        citation_required=True,
+        freshness_days=45,
+        metadata_filters={"team": "support"},
+    )
+
+    updated = store.upsert_agent_kb_assignment(
+        agent_id="customer-support-agent",
+        kb_id="explicit-policy-kb",
+        access_mode="read_write",
+        retrieval_mode="keyword",
+        top_k=3,
+        score_threshold=None,
+        citation_required=False,
+        freshness_days=None,
+        metadata_filters={},
+    )
+
+    assert updated["access_mode"] == "read_write"
+    _assert_assignment_policy(
+        updated,
+        retrieval_mode="keyword",
+        top_k=3,
+        score_threshold=None,
+        citation_required=False,
+        freshness_days=None,
+        metadata_filters={},
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "field_name"),
+    [
+        ({"kb_id": "policy-kb", "retrieval_mode": "vector"}, "retrieval_mode"),
+        ({"kb_id": "policy-kb", "top_k": 0}, "top_k"),
+        ({"kb_id": "policy-kb", "score_threshold": 1.1}, "score_threshold"),
+        ({"kb_id": "policy-kb", "freshness_days": 0}, "freshness_days"),
+    ],
+)
+def test_agent_kb_assignment_request_validates_policy_fields(
+    payload: dict,
+    field_name: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        AgentKBAssignmentRequest(**payload)
+
+    assert field_name in str(exc_info.value)

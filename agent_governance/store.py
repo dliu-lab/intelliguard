@@ -56,6 +56,9 @@ DEFAULT_AGENT_LLM_CONFIG = {
 }
 
 
+_UNSET: Any = object()
+
+
 def metadata_with_default_llm(metadata: dict[str, Any] | None) -> dict[str, Any]:
     next_metadata = dict(metadata or {})
     next_metadata["llm"] = {
@@ -2363,12 +2366,12 @@ class GovernanceStore:
         agent_id: str,
         kb_id: str,
         access_mode: str,
-        retrieval_mode: str = "hybrid",
-        top_k: int = 5,
-        score_threshold: float | None = None,
-        citation_required: bool = True,
-        freshness_days: int | None = None,
-        metadata_filters: dict[str, Any] | None = None,
+        retrieval_mode: str = _UNSET,
+        top_k: int = _UNSET,
+        score_threshold: float | None = _UNSET,
+        citation_required: bool = _UNSET,
+        freshness_days: int | None = _UNSET,
+        metadata_filters: dict[str, Any] | None = _UNSET,
     ) -> dict[str, Any]:
         with self.session() as db:
             row = db.scalar(
@@ -2383,22 +2386,28 @@ class GovernanceStore:
                     agent_id=agent_id,
                     kb_id=kb_id,
                     access_mode=access_mode,
-                    retrieval_mode=retrieval_mode,
-                    top_k=top_k,
-                    score_threshold=score_threshold,
-                    citation_required=citation_required,
-                    freshness_days=freshness_days,
-                    metadata_filters=metadata_filters or {},
+                    retrieval_mode=("hybrid" if retrieval_mode is _UNSET else retrieval_mode),
+                    top_k=5 if top_k is _UNSET else top_k,
+                    score_threshold=(None if score_threshold is _UNSET else score_threshold),
+                    citation_required=(True if citation_required is _UNSET else citation_required),
+                    freshness_days=(None if freshness_days is _UNSET else freshness_days),
+                    metadata_filters=({} if metadata_filters is _UNSET else metadata_filters or {}),
                 )
                 db.add(row)
             else:
                 row.access_mode = access_mode
-                row.retrieval_mode = retrieval_mode
-                row.top_k = top_k
-                row.score_threshold = score_threshold
-                row.citation_required = citation_required
-                row.freshness_days = freshness_days
-                row.metadata_filters = metadata_filters or {}
+                if retrieval_mode is not _UNSET:
+                    row.retrieval_mode = retrieval_mode
+                if top_k is not _UNSET:
+                    row.top_k = top_k
+                if score_threshold is not _UNSET:
+                    row.score_threshold = score_threshold
+                if citation_required is not _UNSET:
+                    row.citation_required = citation_required
+                if freshness_days is not _UNSET:
+                    row.freshness_days = freshness_days
+                if metadata_filters is not _UNSET:
+                    row.metadata_filters = metadata_filters or {}
             self._invalidate_agent_cert_if_certified(
                 db, agent_id, "knowledge base assignments changed"
             )

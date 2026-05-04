@@ -568,7 +568,9 @@ def evaluate_agent(agent_id: str, user: dict[str, Any] = Depends(current_user)) 
     started_at = monotonic()
     criterion_results = run_agent_evaluators(agent, assignments)
     duration_ms = int((monotonic() - started_at) * 1000)
-    result_records = [result.to_record(evaluator_id="agent_baseline") for result in criterion_results]
+    result_records = [
+        result.to_record(evaluator_id="agent_baseline") for result in criterion_results
+    ]
     store.add_evaluation_criterion_results(run["run_id"], result_records)
 
     decision = decide_certification(result_records)
@@ -871,9 +873,9 @@ def evaluate_workflow_definition(
     require_environment_access(user, workflow.get("environment"), "workflow:create")
 
     config_hash = compute_workflow_config_hash(workflow)
-    cert = store.get_workflow_certification(workflow_definition_id) or store.create_workflow_certification(
-        workflow_definition_id, config_hash
-    )
+    cert = store.get_workflow_certification(
+        workflow_definition_id
+    ) or store.create_workflow_certification(workflow_definition_id, config_hash)
     if cert["status"] != "EVALUATING":
         try:
             validate_transition(cert["status"], "EVALUATING")
@@ -899,8 +901,7 @@ def evaluate_workflow_definition(
     )
     duration_ms = int((monotonic() - started_at) * 1000)
     result_records = [
-        result.to_record(evaluator_id="workflow_graph_baseline")
-        for result in criterion_results
+        result.to_record(evaluator_id="workflow_graph_baseline") for result in criterion_results
     ]
     store.add_evaluation_criterion_results(run["run_id"], result_records)
 
@@ -1442,16 +1443,22 @@ def assign_kb_to_agent(
     kb = store.get_knowledge_base(body.kb_id)
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
+    policy_updates = body.model_dump(
+        include={
+            "retrieval_mode",
+            "top_k",
+            "score_threshold",
+            "citation_required",
+            "freshness_days",
+            "metadata_filters",
+        },
+        exclude_unset=True,
+    )
     return store.upsert_agent_kb_assignment(
         agent_id=agent_id,
         kb_id=body.kb_id,
         access_mode=body.access_mode,
-        retrieval_mode=body.retrieval_mode,
-        top_k=body.top_k,
-        score_threshold=body.score_threshold,
-        citation_required=body.citation_required,
-        freshness_days=body.freshness_days,
-        metadata_filters=body.metadata_filters,
+        **policy_updates,
     )
 
 
