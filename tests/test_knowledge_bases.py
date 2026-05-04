@@ -155,6 +155,63 @@ def test_knowledge_base_request_accepts_metadata_fields() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    [
+        (
+            {
+                "kb_id": "",
+                "display_name": "Claims Policy KB",
+                "source_type": "file",
+            },
+            "kb_id",
+        ),
+        (
+            {
+                "kb_id": "claims-policy-kb",
+                "display_name": "",
+                "source_type": "file",
+            },
+            "display_name",
+        ),
+        (
+            {
+                "kb_id": "claims-policy-kb",
+                "display_name": "Claims Policy KB",
+                "source_type": "file",
+                "environment": "",
+            },
+            "environment",
+        ),
+    ],
+)
+def test_knowledge_base_request_rejects_blank_required_fields(
+    payload: dict[str, str],
+    field: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        KnowledgeBaseRequest(**payload)
+
+    assert exc_info.value.errors()[0]["loc"] == (field,)
+
+
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    [
+        ({"source_type": "file", "display_name": ""}, "display_name"),
+        ({"source_type": "", "display_name": "Claims SOP"}, "source_type"),
+    ],
+)
+def test_knowledge_source_request_rejects_blank_required_fields(
+    payload: dict[str, str],
+    field: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        KnowledgeSourceRequest(**payload)
+
+    assert exc_info.value.errors()[0]["loc"] == (field,)
+
+
 def test_runtime_schema_patches_existing_knowledge_tables(monkeypatch) -> None:
     class FakeInspector:
         def get_table_names(self) -> list[str]:

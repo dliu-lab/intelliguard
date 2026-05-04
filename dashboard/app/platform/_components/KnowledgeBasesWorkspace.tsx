@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Database, FileText, Link2, RefreshCw, Search, Server, UploadCloud } from "lucide-react";
 import {
   createKnowledgeBase,
@@ -73,6 +73,8 @@ export function KnowledgeBasesWorkspace({
   });
   const [query, setQuery] = useState("");
   const [queryResults, setQueryResults] = useState<ApiRecord[]>([]);
+  const selectedKbIdRef = useRef(selectedKbId);
+  const queryRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (pendingSelectedKbId) {
@@ -101,6 +103,7 @@ export function KnowledgeBasesWorkspace({
   }, [data.knowledgeBases, firstKbId, pendingSelectedKbId, pendingSelectionRefreshComplete, selectedKbId]);
 
   useEffect(() => {
+    selectedKbIdRef.current = selectedKbId;
     setQuery("");
     setQueryResults([]);
   }, [selectedKbId]);
@@ -148,13 +151,25 @@ export function KnowledgeBasesWorkspace({
 
   async function submitKnowledgeBase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const trimmedKbId = kbForm.kb_id.trim();
+    const trimmedDisplayName = kbForm.display_name.trim();
+    const trimmedEnvironment = kbForm.environment.trim();
+
+    if (!trimmedKbId || !trimmedDisplayName || !trimmedEnvironment) {
+      setMessage("KB ID, display name, and environment are required.");
+      return;
+    }
+
     await withToken(async (token) => {
       await createKnowledgeBase(token, {
         ...kbForm,
+        kb_id: trimmedKbId,
+        display_name: trimmedDisplayName,
+        environment: trimmedEnvironment,
         source_config: {},
       });
       setMessage("Knowledge base saved.");
-      setPendingSelectedKbId(kbForm.kb_id);
+      setPendingSelectedKbId(trimmedKbId);
       setPendingSelectionRefreshComplete(false);
       try {
         await onRefresh();
@@ -166,13 +181,23 @@ export function KnowledgeBasesWorkspace({
 
   async function submitSource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const trimmedDisplayName = sourceForm.display_name.trim();
+
+    if (!trimmedDisplayName) {
+      setMessage("Source display name is required.");
+      return;
+    }
+
     if (!selectedKbIdValue) {
       setMessage("Create or select a knowledge base before adding a source.");
       return;
     }
 
     await withToken(async (token) => {
-      await createKnowledgeSource(token, selectedKbIdValue, sourceForm);
+      await createKnowledgeSource(token, selectedKbIdValue, {
+        ...sourceForm,
+        display_name: trimmedDisplayName,
+      });
       setMessage("Knowledge source registered.");
       setSourceForm({
         source_type: sourceForm.source_type,
@@ -203,11 +228,20 @@ export function KnowledgeBasesWorkspace({
       return;
     }
 
+    const queryKbId = selectedKbIdValue;
+    const requestId = queryRequestIdRef.current + 1;
+    queryRequestIdRef.current = requestId;
+
     await withToken(async (token) => {
-      const results = await queryKnowledgeBase(token, selectedKbIdValue, {
+      const results = await queryKnowledgeBase(token, queryKbId, {
         query,
         top_k: 5,
       });
+
+      if (requestId !== queryRequestIdRef.current || selectedKbIdRef.current !== queryKbId) {
+        return;
+      }
+
       setQueryResults(results);
       setMessage(results.length ? "Retrieval test complete." : "No retrieval matches returned.");
     });
@@ -280,13 +314,20 @@ export function KnowledgeBasesWorkspace({
             <form className="mt-5 grid gap-3 md:grid-cols-2" onSubmit={submitKnowledgeBase}>
               <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
                 KB ID
-                <input className="field-input" placeholder="claims-policy-kb" value={kbForm.kb_id} onChange={(event) => setKbForm({ ...kbForm, kb_id: event.target.value })} />
+                <input
+                  className="field-input"
+                  placeholder="claims-policy-kb"
+                  required
+                  value={kbForm.kb_id}
+                  onChange={(event) => setKbForm({ ...kbForm, kb_id: event.target.value })}
+                />
               </label>
               <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
                 Display name
                 <input
                   className="field-input"
                   placeholder="Claims Policy KB"
+                  required
                   value={kbForm.display_name}
                   onChange={(event) => setKbForm({ ...kbForm, display_name: event.target.value })}
                 />
@@ -314,10 +355,24 @@ export function KnowledgeBasesWorkspace({
                 </select>
               </label>
               <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                Sensitivity
+                <select
+                  className="field-input"
+                  value={kbForm.sensitivity}
+                  onChange={(event) => setKbForm({ ...kbForm, sensitivity: event.target.value })}
+                >
+                  <option value="public">Public</option>
+                  <option value="internal">Internal</option>
+                  <option value="confidential">Confidential</option>
+                  <option value="restricted">Restricted</option>
+                </select>
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
                 Environment
                 <input
                   className="field-input"
                   placeholder="demo"
+                  required
                   value={kbForm.environment}
                   onChange={(event) => setKbForm({ ...kbForm, environment: event.target.value })}
                 />
@@ -377,6 +432,7 @@ export function KnowledgeBasesWorkspace({
                   <input
                     className="field-input"
                     placeholder="Claims SOP"
+                    required
                     value={sourceForm.display_name}
                     onChange={(event) => setSourceForm({ ...sourceForm, display_name: event.target.value })}
                   />

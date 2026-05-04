@@ -187,12 +187,12 @@ class AgentEvaluatorAssignmentRequest(BaseModel):
 
 
 class KnowledgeBaseRequest(BaseModel):
-    kb_id: str
-    display_name: str
+    kb_id: str = Field(min_length=1)
+    display_name: str = Field(min_length=1)
     description: str = ""
-    source_type: str = Field(pattern="^(vector_store|url|file)$")
+    source_type: str = Field(pattern="^(vector_store|url|file)$", min_length=1)
     source_config: dict[str, Any] = Field(default_factory=dict)
-    environment: str = "demo"
+    environment: str = Field(default="demo", min_length=1)
     owner: str = "Unassigned"
     domain: str = ""
     sensitivity: str = "internal"
@@ -200,8 +200,8 @@ class KnowledgeBaseRequest(BaseModel):
 
 class KnowledgeSourceRequest(BaseModel):
     source_id: str | None = None
-    source_type: str = Field(pattern="^(vector_store|url|file)$")
-    display_name: str
+    source_type: str = Field(pattern="^(vector_store|url|file)$", min_length=1)
+    display_name: str = Field(min_length=1)
     uri: str = ""
     content_type: str = ""
     source_config: dict[str, Any] = Field(default_factory=dict)
