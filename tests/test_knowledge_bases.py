@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from io import BytesIO
 from typing import Any
 
+import anyio
 import pytest
 from fastapi import HTTPException
 from pgvector.sqlalchemy import Vector
 from pydantic import ValidationError
 from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, select
 from sqlalchemy.dialects.postgresql import JSONB
+from starlette.datastructures import Headers, UploadFile
 
 import agent_governance.db as runtime_db
 import api.main as api_main
@@ -1418,6 +1421,105 @@ def test_sync_knowledge_base_creates_pending_status_for_pending_source(
     assert index["source_count"] == 1
     assert index["document_count"] == 0
     assert index["chunk_count"] == 0
+
+
+def test_upload_knowledge_file_creates_source_and_document(
+    monkeypatch: pytest.MonkeyPatch, store: GovernanceStore, tmp_path
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    monkeypatch.setattr(api_main, "DEFAULT_KB_UPLOAD_DIR", str(tmp_path))
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-upload-kb",
+            "display_name": "Claims Upload KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    upload = UploadFile(
+        filename="claims.txt",
+        file=BytesIO(b"Claims upload text."),
+        headers=Headers({"content-type": "text/plain"}),
+    )
+
+    document = anyio.run(
+        api_main.upload_knowledge_file,
+        "claims-upload-kb",
+        upload,
+        _super_admin_user(),
+    )
+
+    assert document["file_name"] == "claims.txt"
+    assert document["status"] == "uploaded"
+    sources = store.list_knowledge_sources("claims-upload-kb")
+    assert sources[0]["source_type"] == "file"
+    assert sources[0]["uri"] == document["storage_uri"]
+
+
+def test_list_knowledge_documents_returns_uploaded_files(
+    monkeypatch: pytest.MonkeyPatch, store: GovernanceStore
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    _source, document = _create_file_document(store, "claims-documents-kb")
+
+    documents = api_main.list_knowledge_documents(
+        "claims-documents-kb",
+        _super_admin_user(),
+    )
+
+    assert documents == [document]
+
+
+def test_query_knowledge_base_uses_retrieval_service(
+    monkeypatch: pytest.MonkeyPatch, store: GovernanceStore
+) -> None:
+    class FakeRetrieval:
+        def __init__(self, _store):
+            pass
+
+        def query(
+            self,
+            kb_id: str,
+            query: str,
+            environment: str,
+            top_k: int = 5,
+        ) -> list[api_main.RetrievedDoc]:
+            return [
+                api_main.RetrievedDoc(
+                    content=f"{kb_id}:{query}:{environment}:{top_k}",
+                    score=0.9,
+                    metadata={"kb_id": kb_id, "chunk_id": "chunk_1"},
+                )
+            ]
+
+    monkeypatch.setattr(api_main, "store", store)
+    monkeypatch.setattr(api_main, "KnowledgeRetrievalService", FakeRetrieval)
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-query-kb",
+            "display_name": "Claims Query KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+
+    results = api_main.query_knowledge_base(
+        "claims-query-kb",
+        api_main.KBQueryRequest(query="review", top_k=3),
+        _super_admin_user(),
+    )
+
+    assert results == [
+        {
+            "content": "claims-query-kb:review:demo:3",
+            "score": 0.9,
+            "metadata": {"kb_id": "claims-query-kb", "chunk_id": "chunk_1"},
+        }
+    ]
 
 
 def test_agent_kb_assignment_stores_retrieval_policy(store: GovernanceStore) -> None:

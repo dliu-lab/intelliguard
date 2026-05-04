@@ -101,10 +101,11 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8
 const SESSION_STORAGE_KEY = "governance-session";
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const isFormData = options.body instanceof FormData;
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...(options.headers || {}),
     },
   });
@@ -259,6 +260,12 @@ export function listKnowledgeSources(token: string, kbId: string) {
   });
 }
 
+export function listKnowledgeDocuments(token: string, kbId: string) {
+  return request<ApiRecord[]>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/documents`, {
+    headers: authHeaders(token),
+  });
+}
+
 export function createKnowledgeSource(
   token: string,
   kbId: string,
@@ -268,6 +275,16 @@ export function createKnowledgeSource(
     method: "POST",
     headers: authHeaders(token),
     body: JSON.stringify(payload),
+  });
+}
+
+export function uploadKnowledgeFile(token: string, kbId: string, file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  return request<ApiRecord>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/files`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body,
   });
 }
 

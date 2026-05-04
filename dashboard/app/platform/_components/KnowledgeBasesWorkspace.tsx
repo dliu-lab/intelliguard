@@ -8,9 +8,11 @@ import {
   createKnowledgeSource,
   getKnowledgeBaseDetail,
   getSession,
+  listKnowledgeDocuments,
   listKnowledgeSources,
   queryKnowledgeBase,
   syncKnowledgeBase,
+  uploadKnowledgeFile,
   type ApiRecord,
   type KnowledgeSourcePayload,
   type PlatformData,
@@ -88,6 +90,8 @@ export function KnowledgeBasesWorkspace({
   const [queryResults, setQueryResults] = useState<ApiRecord[]>([]);
   const [selectedKbDetail, setSelectedKbDetail] = useState<ApiRecord | null>(null);
   const [selectedSources, setSelectedSources] = useState<ApiRecord[]>([]);
+  const [selectedDocuments, setSelectedDocuments] = useState<ApiRecord[]>([]);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailRefreshNonce, setDetailRefreshNonce] = useState(0);
   const selectedKbIdRef = useRef(selectedKbId);
@@ -129,6 +133,8 @@ export function KnowledgeBasesWorkspace({
   useEffect(() => {
     setSelectedKbDetail(null);
     setSelectedSources([]);
+    setSelectedDocuments([]);
+    setSelectedFile(null);
 
     if (!selectedKbId) {
       setDetailLoading(false);
@@ -148,14 +154,16 @@ export function KnowledgeBasesWorkspace({
     Promise.all([
       getKnowledgeBaseDetail(session.token, selectedKbId),
       listKnowledgeSources(session.token, selectedKbId),
+      listKnowledgeDocuments(session.token, selectedKbId),
     ])
-      .then(([detail, sources]) => {
+      .then(([detail, sources, documents]) => {
         if (requestId !== detailRequestIdRef.current || selectedKbIdRef.current !== selectedKbId) {
           return;
         }
 
         setSelectedKbDetail(detail);
         setSelectedSources(sources);
+        setSelectedDocuments(documents);
       })
       .catch((error) => {
         if (requestId !== detailRequestIdRef.current || selectedKbIdRef.current !== selectedKbId) {
@@ -258,6 +266,10 @@ export function KnowledgeBasesWorkspace({
 
   async function submitSource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (sourceForm.source_type === "file") {
+      return;
+    }
+
     const trimmedDisplayName = sourceForm.display_name.trim();
 
     if (!trimmedDisplayName) {
@@ -283,6 +295,21 @@ export function KnowledgeBasesWorkspace({
         content_type: "",
         source_config: {},
       });
+      await onRefresh();
+      setDetailRefreshNonce((value) => value + 1);
+    });
+  }
+
+  async function uploadSelectedFile() {
+    if (!selectedKbIdValue || !selectedFile) {
+      setMessage("Select a knowledge base and file before uploading.");
+      return;
+    }
+
+    await withToken(async (token) => {
+      await uploadKnowledgeFile(token, selectedKbIdValue, selectedFile);
+      setMessage("File uploaded. Refresh the index to ingest it.");
+      setSelectedFile(null);
       await onRefresh();
       setDetailRefreshNonce((value) => value + 1);
     });
@@ -525,38 +552,63 @@ export function KnowledgeBasesWorkspace({
                     ))}
                   </select>
                 </label>
-                <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
-                  Source display name
-                  <input
-                    className="field-input"
-                    placeholder="Claims SOP"
-                    required
-                    value={sourceForm.display_name}
-                    onChange={(event) => setSourceForm({ ...sourceForm, display_name: event.target.value })}
-                  />
-                </label>
-                <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
-                  Source URI
-                  <input
-                    className="field-input"
-                    placeholder="file://claims-sop.pdf"
-                    value={sourceForm.uri || ""}
-                    onChange={(event) => setSourceForm({ ...sourceForm, uri: event.target.value })}
-                  />
-                </label>
-                <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
-                  Content type
-                  <input
-                    className="field-input"
-                    placeholder="application/pdf"
-                    value={sourceForm.content_type || ""}
-                    onChange={(event) => setSourceForm({ ...sourceForm, content_type: event.target.value })}
-                  />
-                </label>
-                <button className="inline-flex w-fit items-center gap-2 rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90" type="submit">
-                  <UploadCloud size={16} aria-hidden="true" />
-                  Add source
-                </button>
+                {sourceForm.source_type === "file" ? (
+                  <>
+                    <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                      File
+                      <input
+                        accept=".txt,.md,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        className="field-input"
+                        type="file"
+                        onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
+                      />
+                    </label>
+                    <button
+                      className="inline-flex w-fit items-center gap-2 rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
+                      type="button"
+                      onClick={uploadSelectedFile}
+                      disabled={!selectedKb || !selectedFile}
+                    >
+                      <UploadCloud size={16} aria-hidden="true" />
+                      Upload file
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                      Source display name
+                      <input
+                        className="field-input"
+                        placeholder="Claims SOP"
+                        required
+                        value={sourceForm.display_name}
+                        onChange={(event) => setSourceForm({ ...sourceForm, display_name: event.target.value })}
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                      Source URI
+                      <input
+                        className="field-input"
+                        placeholder={sourceForm.source_type === "url" ? "https://example.com/claims-sop" : "pgvector://schema.table"}
+                        value={sourceForm.uri || ""}
+                        onChange={(event) => setSourceForm({ ...sourceForm, uri: event.target.value })}
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                      Content type
+                      <input
+                        className="field-input"
+                        placeholder={sourceForm.source_type === "url" ? "text/html" : "application/vnd.pgvector"}
+                        value={sourceForm.content_type || ""}
+                        onChange={(event) => setSourceForm({ ...sourceForm, content_type: event.target.value })}
+                      />
+                    </label>
+                    <button className="inline-flex w-fit items-center gap-2 rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90" type="submit">
+                      <UploadCloud size={16} aria-hidden="true" />
+                      Add source
+                    </button>
+                  </>
+                )}
               </form>
               <div className="grid content-start gap-3">
                 {selectedKbRecord ? (
@@ -599,6 +651,32 @@ export function KnowledgeBasesWorkspace({
                           <ComponentRow
                             title={detailLoading ? "Loading sources" : "No sources registered"}
                             detail="Add files, URLs, or vector store references before syncing this knowledge base."
+                          />
+                        )}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+                      <p className="font-semibold text-textPrimary">Documents</p>
+                      <div className="mt-3 grid gap-2">
+                        {selectedDocuments.length ? (
+                          selectedDocuments.map((document) => (
+                            <ComponentRow
+                              key={readText(document, ["document_id"]) || readText(document, ["file_name"])}
+                              title={readText(document, ["file_name"]) || "Knowledge document"}
+                              detail={
+                                joinParts([
+                                  readText(document, ["content_type"]),
+                                  formatCount(numberValue(document, ["chunk_count"]), "chunk"),
+                                  readText(document, ["last_error"]),
+                                ]) || "Waiting for ingestion."
+                              }
+                              meta={readText(document, ["status"])}
+                            />
+                          ))
+                        ) : (
+                          <ComponentRow
+                            title={detailLoading ? "Loading documents" : "No documents uploaded"}
+                            detail="Upload a file source before refreshing the index."
                           />
                         )}
                       </div>
@@ -673,7 +751,11 @@ export function KnowledgeBasesWorkspace({
                     key={`${readText(result, ["score"]) || "result"}-${index}`}
                     title={`Result ${index + 1}`}
                     detail={readText(result, ["content"]) || "No content returned."}
-                    meta={readText(result, ["score"])}
+                    meta={joinParts([
+                      readText(readRecord(result, "metadata") || {}, ["file_name", "source_display_name"]),
+                      readText(readRecord(result, "metadata") || {}, ["chunk_id"]),
+                      readText(result, ["score"]),
+                    ])}
                   />
                 ))
               ) : (

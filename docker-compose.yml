@@ -37,7 +37,6 @@ services:
         condition: service_healthy
 
   kb-worker:
-    profiles: ["worker"]
     build:
       context: .
       dockerfile: Dockerfile.api

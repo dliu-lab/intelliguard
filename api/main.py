@@ -4,17 +4,23 @@ import os
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from agent_governance.customer_agent import run_customer_support_agent
 from agent_governance.db import init_db
+from agent_governance.knowledge import KnowledgeRetrievalService, RetrievedDoc as RetrievedDoc
+from agent_governance.knowledge_indexing import (
+    KnowledgeIngestionService,
+    LlamaIndexKnowledgeIndexer,
+)
+from agent_governance.knowledge_storage import KnowledgeFileStorage
 from agent_governance.models import utc_now
 from agent_governance.multi_agent import run_customer_support_workflow
 from agent_governance.policy import load_policy, policy_to_dict
 from agent_governance.runner import GovernedToolRunner
-from agent_governance.settings import load_settings
+from agent_governance.settings import DEFAULT_KB_UPLOAD_DIR, load_settings
 from agent_governance.store import GovernanceStore
 from agent_governance.tools import build_customer_tool_registry
 from agent_governance.workflow_graph import WorkflowGraphError
@@ -1483,6 +1489,62 @@ def create_knowledge_source(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/v1/knowledge-bases/{kb_id}/files")
+async def upload_knowledge_file(
+    kb_id: str,
+    file: UploadFile = File(...),
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "agent:create")
+    data = await file.read()
+    try:
+        stored = KnowledgeFileStorage(DEFAULT_KB_UPLOAD_DIR).save_upload(
+            kb_id=kb_id,
+            file_name=file.filename or "upload.txt",
+            content_type=file.content_type or "",
+            data=data,
+        )
+        source = store.upsert_knowledge_source(
+            kb_id,
+            {
+                "source_type": "file",
+                "display_name": stored.file_name,
+                "uri": stored.storage_uri,
+                "content_type": stored.content_type,
+                "source_config": {"checksum": stored.checksum},
+                "status": "pending",
+            },
+        )
+        return store.create_knowledge_document(
+            kb_id,
+            source["source_id"],
+            {
+                "file_name": stored.file_name,
+                "content_type": stored.content_type,
+                "storage_uri": stored.storage_uri,
+                "size_bytes": stored.size_bytes,
+                "checksum": stored.checksum,
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/v1/knowledge-bases/{kb_id}/documents")
+def list_knowledge_documents(
+    kb_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "read")
+    return store.list_knowledge_documents(kb_id)
+
+
 @app.post("/v1/knowledge-bases/{kb_id}/sync")
 def create_knowledge_sync_status(
     kb_id: str,
@@ -1493,18 +1555,13 @@ def create_knowledge_sync_status(
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     require_environment_access(user, kb["environment"], "agent:create")
-    sources = store.list_knowledge_sources(kb_id)
-    return store.create_knowledge_index_version(
-        kb_id,
-        {
-            "status": "pending",
-            "source_count": len(sources),
-            "document_count": 0,
-            "chunk_count": 0,
-            "embedding_model": body.embedding_model,
-            "vector_backend": body.vector_backend,
-        },
-    )
+    try:
+        return KnowledgeIngestionService(
+            store,
+            LlamaIndexKnowledgeIndexer(),
+        ).process_pending_documents(kb_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/v1/agents/{agent_id}/knowledge-bases")
@@ -1568,12 +1625,10 @@ def query_knowledge_base(
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     require_environment_access(user, kb["environment"], "read")
-    try:
-        from agent_governance.knowledge import KBRetrieval
-        from agent_governance.advisor import AdvisorRAG  # type: ignore[import]
-
-        retrieval = KBRetrieval(AdvisorRAG(store))
-        docs = retrieval.query(kb_id, body.query, kb["environment"], top_k=body.top_k)
-        return [{"content": d.content, "score": d.score, "metadata": d.metadata} for d in docs]
-    except ImportError:
-        return []
+    docs = KnowledgeRetrievalService(store).query(
+        kb_id,
+        body.query,
+        kb["environment"],
+        top_k=body.top_k,
+    )
+    return [{"content": d.content, "score": d.score, "metadata": d.metadata} for d in docs]

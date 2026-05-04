@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import select
+
+from agent_governance.knowledge_indexing import EmbeddingProvider, OllamaEmbeddingProvider
+from agent_governance.models import KnowledgeChunk
+from agent_governance.store import GovernanceStore
+
 
 @dataclass
 class RetrievedDoc:
@@ -11,21 +17,69 @@ class RetrievedDoc:
     metadata: dict[str, Any]
 
 
-class KBRetrieval:
-    """Retrieval from a named Knowledge Base, scoped by kb_id in document metadata.
-
-    Documents must be indexed with metadata.kb_id set. Wraps AdvisorRAG.retrieve()
-    (pgvector + LiteLLM) and filters results to the requested KB.
-    """
-
-    def __init__(self, rag: Any) -> None:
-        self.rag = rag
+class KnowledgeRetrievalService:
+    def __init__(
+        self,
+        store: GovernanceStore,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
+        self.store = store
+        self.embedding_provider = embedding_provider or OllamaEmbeddingProvider()
 
     def query(
-        self, kb_id: str, query: str, environment: str, top_k: int = 5
+        self,
+        kb_id: str,
+        query: str,
+        environment: str,
+        top_k: int = 5,
+        metadata_filters: dict[str, Any] | None = None,
+        score_threshold: float | None = None,
     ) -> list[RetrievedDoc]:
-        candidates = self.rag.retrieve(query, environment, top_k=top_k * 3)
-        results = [
-            doc for doc in candidates if doc.metadata.get("kb_id") == kb_id
-        ]
-        return results[:top_k]
+        query_embedding = self.embedding_provider.embed_query(query)
+        filters = metadata_filters or {}
+        with self.store.session() as db:
+            distance = KnowledgeChunk.embedding.cosine_distance(query_embedding)
+            stmt = (
+                select(KnowledgeChunk, distance.label("distance"))
+                .where(KnowledgeChunk.kb_id == kb_id)
+                .order_by(distance)
+                .limit(max(top_k, 1) * 3)
+            )
+            rows = db.execute(stmt).all()
+
+        docs: list[RetrievedDoc] = []
+        for chunk, distance in rows:
+            metadata = dict(chunk.metadata_json or {})
+            if metadata.get("environment") != environment:
+                continue
+            if not self._metadata_matches(metadata, filters):
+                continue
+
+            score = max(0.0, 1.0 - float(distance or 0.0))
+            if score_threshold is not None and score < score_threshold:
+                continue
+
+            docs.append(
+                RetrievedDoc(
+                    content=chunk.content,
+                    score=score,
+                    metadata={
+                        **metadata,
+                        "kb_id": chunk.kb_id,
+                        "source_id": chunk.source_id,
+                        "document_id": chunk.document_id,
+                        "chunk_id": chunk.chunk_id,
+                    },
+                )
+            )
+            if len(docs) >= top_k:
+                break
+        return docs
+
+    @staticmethod
+    def _metadata_matches(metadata: dict[str, Any], filters: dict[str, Any]) -> bool:
+        return all(metadata.get(key) == value for key, value in filters.items())
+
+
+class KBRetrieval(KnowledgeRetrievalService):
+    """Backward-compatible alias for existing imports."""
