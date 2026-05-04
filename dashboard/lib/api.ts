@@ -294,18 +294,6 @@ export function evaluateTool(token: string, toolId: string) {
   });
 }
 
-export function getToolCertification(token: string, toolId: string) {
-  return request<ApiRecord>(`/v1/tools/${encodeURIComponent(toolId)}/certification`, {
-    headers: authHeaders(token),
-  });
-}
-
-export function listToolEvaluationRuns(token: string, toolId: string) {
-  return request<ApiRecord[]>(`/v1/tools/${encodeURIComponent(toolId)}/evaluation-runs`, {
-    headers: authHeaders(token),
-  });
-}
-
 export function listEvaluationCriteriaResults(token: string, runId: string) {
   return request<CriterionResult[]>(`/v1/evaluation-runs/${encodeURIComponent(runId)}/criteria`, {
     headers: authHeaders(token),
@@ -375,34 +363,6 @@ export function createWorkflowDefinition(token: string, payload: ApiRecord) {
     headers: authHeaders(token),
     body: JSON.stringify(payload),
   });
-}
-
-export function evaluateWorkflowDefinition(token: string, workflowDefinitionId: string) {
-  return request<ApiRecord>(
-    `/v1/workflow-definitions/${encodeURIComponent(workflowDefinitionId)}/evaluate`,
-    {
-      method: "POST",
-      headers: authHeaders(token),
-    },
-  );
-}
-
-export function getWorkflowCertification(token: string, workflowDefinitionId: string) {
-  return request<ApiRecord>(
-    `/v1/workflow-definitions/${encodeURIComponent(workflowDefinitionId)}/certification`,
-    {
-      headers: authHeaders(token),
-    },
-  );
-}
-
-export function listWorkflowEvaluationRuns(token: string, workflowDefinitionId: string) {
-  return request<EvaluationRun[]>(
-    `/v1/workflow-definitions/${encodeURIComponent(workflowDefinitionId)}/evaluation-runs`,
-    {
-      headers: authHeaders(token),
-    },
-  );
 }
 
 export function runMultiAgentWorkflow(

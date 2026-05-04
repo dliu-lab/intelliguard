@@ -229,7 +229,7 @@ export function isBackendComponentKey(value: string | null): value is BackendCom
     value === "environments"
   );
 }
-export function isWorkspaceView(value: string | null): value is WorkspaceView {
+function isWorkspaceView(value: string | null): value is WorkspaceView {
   return (
     value === "overview" ||
     value === "tool-registry" ||

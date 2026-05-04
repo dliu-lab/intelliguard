@@ -1,5 +1,3 @@
-import type { PlatformData } from "@/lib/api";
-
 export type BackendComponentKey =
   | "agents"
   | "tools"
@@ -40,12 +38,4 @@ export type WorkspaceViewDefinition = {
   label: string;
   title: string;
   description: string;
-};
-
-export type ModuleDefinition = {
-  title: string;
-  description: string;
-  componentKey: BackendComponentKey;
-  metric: (data: PlatformData) => string;
-  detail: (data: PlatformData) => string;
 };

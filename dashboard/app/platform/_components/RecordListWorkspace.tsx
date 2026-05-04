@@ -2,7 +2,7 @@
 
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ChevronDown, FileJson, PlayCircle, RotateCw, Search, SlidersHorizontal, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, FileJson, PlayCircle, RotateCw, Search, XCircle } from "lucide-react";
 import { getSession, resolveReview, runMultiAgentWorkflow, type ApiRecord, type PlatformData } from "@/lib/api";
 import { ComponentRow, PlatformSurface } from "./shared";
 import { formatCount, formatTimestamp, isErrorMessage, joinParts, readNestedText, readText } from "./utils";
@@ -409,17 +409,6 @@ function numberValue(record: ApiRecord, keys: string[]) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function boolValue(record: ApiRecord, keys: string[]) {
-  const value = keys.map((key) => record[key]).find((item) => typeof item === "boolean" || typeof item === "string");
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "string") {
-    return value.toLowerCase() === "true";
-  }
-  return false;
-}
-
 function objectValue(record: ApiRecord, key: string): ApiRecord {
   const value = record[key];
   return value && typeof value === "object" && !Array.isArray(value) ? (value as ApiRecord) : {};
@@ -434,30 +423,6 @@ function riskTypes(record: ApiRecord) {
   return stringArrayValue(record, "risk_types").length
     ? stringArrayValue(record, "risk_types")
     : [readText(record, ["risk_type"])].filter(Boolean) as string[];
-}
-
-function objectEntries(record: ApiRecord): Array<[string, ApiRecord]> {
-  return Object.entries(record).flatMap(([key, value]) => (
-    value && typeof value === "object" && !Array.isArray(value) ? [[key, value as ApiRecord]] : []
-  ));
-}
-
-function argumentRuleSummary(toolName: string, rule: ApiRecord) {
-  const required = stringArrayValue(rule, "required");
-  const maxLimit = readText(rule, ["max_limit"]);
-  return joinParts([
-    toolName,
-    required.length ? `requires ${required.join(", ")}` : undefined,
-    boolValue(rule, ["customer_id_must_match_query"]) ? "customer scope-bound" : undefined,
-    boolValue(rule, ["require_filter"]) ? "filter required" : undefined,
-    maxLimit ? `limit <= ${maxLimit}` : undefined,
-  ]) || toolName;
-}
-
-function sideEffectSummary(toolName: string, control: ApiRecord) {
-  const level = readText(control, ["level"]) || "read_only";
-  const review = boolValue(control, ["requires_review"]) ? "review required" : "no review";
-  return `${toolName}: ${level}, ${review}`;
 }
 
 function decisionTone(decision: string | undefined, riskScore: number) {
@@ -1091,138 +1056,6 @@ function WorkflowStepTrace({
   );
 }
 
-function PolicyControlCard({ policy }: { policy: ApiRecord }) {
-  const config = objectValue(policy, "config");
-  const thresholds = objectValue(config, "decision_thresholds");
-  const reviewThreshold = numberValue(thresholds, ["review"]) || 50;
-  const blockThreshold = numberValue(thresholds, ["block"]) || 80;
-  const allowedTools = stringArrayValue(config, "allowed_tools");
-  const blockedTools = stringArrayValue(config, "blocked_tools");
-  const blockedPatterns = stringArrayValue(config, "blocked_patterns");
-  const reviewRequiredFor = stringArrayValue(config, "review_required_for");
-  const maxRecords = numberValue(config, ["max_records_returned"]) || 100;
-  const policyName = readText(policy, ["display_name", "policy_id", "name"]) || "Guardrail policy";
-  const argumentRules = objectEntries(objectValue(config, "tool_argument_rules"));
-  const sideEffectControls = objectEntries(objectValue(config, "tool_side_effect_controls"));
-  const reviewGatedSideEffects = sideEffectControls.filter(([, control]) => boolValue(control, ["requires_review"]));
-
-  return (
-    <article className="glass-card rounded-3xl p-5">
-      <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <EvidenceBadge tone="allow">{readText(policy, ["environment"]) || "environment"}</EvidenceBadge>
-            <EvidenceBadge>{readText(policy, ["policy_id"]) || "policy"}</EvidenceBadge>
-          </div>
-          <h3 className="mt-3 text-2xl font-semibold tracking-[-0.02em]">{policyName}</h3>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-textSecondary">
-            {readText(policy, ["description"]) || "Runtime guardrail policy for tool access, data exposure, review routing, and response safety."}
-          </p>
-
-          <div className="mt-5 grid gap-3 md:grid-cols-3 xl:grid-cols-5">
-            <PolicyMetric label="Allowed tools" value={String(allowedTools.length)} detail={allowedTools.slice(0, 3).join(", ") || "No allowlist"} />
-            <PolicyMetric label="Blocked tools" value={String(blockedTools.length)} detail={blockedTools.slice(0, 3).join(", ") || "No explicit blocklist"} />
-            <PolicyMetric label="Max records" value={String(maxRecords)} detail="Post-tool result limit" />
-            <PolicyMetric label="Arg rules" value={String(argumentRules.length)} detail="Pre-tool validation" />
-            <PolicyMetric label="Side effects" value={String(reviewGatedSideEffects.length)} detail="Review-gated tools" />
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
-          <div className="flex items-center gap-2 text-sm font-semibold text-textPrimary">
-            <SlidersHorizontal size={16} className="text-accent" aria-hidden="true" />
-            Decision thresholds
-          </div>
-          <div className="mt-4">
-            <div className="flex justify-between text-xs text-textSecondary">
-              <span>Allow</span>
-              <span>Review {reviewThreshold}</span>
-              <span>Block {blockThreshold}</span>
-            </div>
-            <div className="mt-2 h-3 overflow-hidden rounded-full border border-line bg-white/[0.06]">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-accent via-amber-300 to-rose-300"
-                style={{ width: `${Math.min(100, Math.max(0, blockThreshold))}%` }}
-              />
-            </div>
-            <p className="mt-3 text-xs leading-5 text-textSecondary">
-              Scores below {reviewThreshold} allow, {reviewThreshold}-{blockThreshold - 1} route to review, and {blockThreshold}+ block.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-5 grid gap-3 lg:grid-cols-3">
-        <PolicyControlSection
-          title="Argument validation"
-          detail="Pre-tool checks for required args, scope binding, filters, and limits."
-          items={argumentRules.map(([toolName, rule]) => argumentRuleSummary(toolName, rule))}
-          emptyText="No argument rules configured"
-        />
-        <PolicyControlSection
-          title="Side-effect controls"
-          detail="Write or external actions that require review before execution."
-          items={sideEffectControls.map(([toolName, control]) => sideEffectSummary(toolName, control))}
-          emptyText="No side-effect controls configured"
-        />
-        <PolicyControlSection
-          title="Human review routing"
-          detail="Risk types that pause execution for a reviewer."
-          items={reviewRequiredFor}
-          emptyText="No review-required risks configured"
-        />
-        <PolicyControlSection
-          title="Response safety"
-          detail="Final-response controls after tool execution."
-          items={[
-            boolValue(config, ["block_pii_in_response"]) ? "Block PII in final response" : "PII block disabled",
-            boolValue(config, ["redact_pii_in_response"]) ? "Redact PII before return" : "PII redaction disabled",
-          ]}
-          emptyText="No response controls"
-        />
-        <PolicyControlSection
-          title="Blocked patterns"
-          detail="Prompt or output phrases that trigger governance."
-          items={blockedPatterns.slice(0, 4)}
-          emptyText="No blocked patterns"
-        />
-      </div>
-    </article>
-  );
-}
-
-function PolicyMetric({ detail, label, value }: { detail: string; label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
-      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">{label}</p>
-      <p className="mt-2 text-2xl font-semibold tracking-[-0.03em]">{value}</p>
-      <p className="mt-1 truncate text-xs text-textSecondary">{detail}</p>
-    </div>
-  );
-}
-
-function PolicyControlSection({
-  detail,
-  emptyText,
-  items,
-  title,
-}: {
-  detail: string;
-  emptyText: string;
-  items: string[];
-  title: string;
-}) {
-  return (
-    <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
-      <p className="font-semibold text-textPrimary">{title}</p>
-      <p className="mt-1 text-xs leading-5 text-textSecondary">{detail}</p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {items.length ? items.map((item) => <EvidenceBadge key={item}>{item}</EvidenceBadge>) : <span className="text-xs text-textSecondary">{emptyText}</span>}
-      </div>
-    </div>
-  );
-}
-
 function FilterSelect({
   label,
   onChange,
@@ -1576,27 +1409,6 @@ function AuditEventRow({
         </div>
       )}
     </div>
-  );
-}
-
-export function RuntimePoliciesWorkspace({ data }: { data: PlatformData }) {
-  if (!data.guardrailPolicies.length) {
-    return (
-      <section className="glass-card rounded-3xl p-6">
-        <ComponentRow
-          title="No runtime policies"
-          detail="Create a guardrail policy to show enforced tools, thresholds, data controls, review routing, and final-response checks."
-        />
-      </section>
-    );
-  }
-
-  return (
-    <section className="grid gap-5">
-      {data.guardrailPolicies.map((policy) => (
-        <PolicyControlCard key={readText(policy, ["policy_id"]) || readText(policy, ["display_name"])} policy={policy} />
-      ))}
-    </section>
   );
 }
 

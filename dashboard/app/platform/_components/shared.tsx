@@ -1,6 +1,6 @@
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 
-export type RecordRow = { title: string; detail: string; meta?: string };
+type RecordRow = { title: string; detail: string; meta?: string };
 export type PlatformToneName = "emerald" | "sky" | "amber" | "fuchsia" | "indigo" | "rose" | "cyan";
 
 export const platformTones: Record<
@@ -202,15 +202,6 @@ export function ResourceGrid({ emptyText, label = "Registered", rows }: { emptyT
   );
 }
 
-export function InfoTile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
-      <p className="text-xs text-textSecondary">{label}</p>
-      <p className="mt-1 font-semibold text-textPrimary">{value}</p>
-    </div>
-  );
-}
-
 export function ComponentRow({ title, detail, meta }: RecordRow) {
   return (
     <div className="grid gap-3 rounded-2xl border border-line bg-white/[0.035] p-4 sm:grid-cols-[1fr_auto] sm:items-center">
@@ -224,32 +215,5 @@ export function ComponentRow({ title, detail, meta }: RecordRow) {
         </span>
       ) : null}
     </div>
-  );
-}
-
-export function MetricCard({ label, value, loading }: { label: string; value: number; loading: boolean }) {
-  return (
-    <div className="rounded-3xl border border-line bg-white/[0.04] p-5 backdrop-blur">
-      <p className="text-sm text-textSecondary">{label}</p>
-      <p className="mt-3 text-3xl font-semibold tracking-[-0.03em] text-textPrimary">
-        {loading ? "..." : value}
-      </p>
-    </div>
-  );
-}
-
-export function RecordList({ emptyText, rows }: { emptyText: string; rows: RecordRow[] }) {
-  return (
-    <section className="glass-card rounded-3xl p-6">
-      <div className="grid gap-3">
-        {rows.length ? (
-          rows.slice(0, 12).map((row, index) => (
-            <ComponentRow key={row.title + "-" + index} title={row.title} detail={row.detail} meta={row.meta} />
-          ))
-        ) : (
-          <ComponentRow title="No records" detail={emptyText} />
-        )}
-      </div>
-    </section>
   );
 }
