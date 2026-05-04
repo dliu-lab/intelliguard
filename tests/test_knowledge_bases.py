@@ -10,6 +10,7 @@ from agent_governance.models import (
     KnowledgeIndexVersion,
     KnowledgeSource,
 )
+from agent_governance.store import GovernanceStore
 
 
 def _column(model: type, name: str):
@@ -169,3 +170,54 @@ def test_runtime_schema_patches_existing_knowledge_tables(monkeypatch) -> None:
     )
     for snippet in expected_column_snippets:
         assert snippet in statements
+
+
+def test_knowledge_base_source_and_index_lifecycle(store: GovernanceStore) -> None:
+    kb = store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-policy-kb",
+            "display_name": "Claims Policy KB",
+            "description": "Claims operating procedures.",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+            "owner": "Claims Ops",
+            "domain": "claims",
+            "sensitivity": "internal",
+        }
+    )
+
+    assert kb["owner"] == "Claims Ops"
+    assert kb["status"] == "draft"
+
+    source = store.upsert_knowledge_source(
+        "claims-policy-kb",
+        {
+            "source_type": "file",
+            "display_name": "Claims SOP",
+            "uri": "file://claims-sop.pdf",
+            "content_type": "application/pdf",
+            "source_config": {"parser": "pdf"},
+        },
+    )
+
+    assert source["kb_id"] == "claims-policy-kb"
+    assert source["status"] == "pending"
+    assert len(store.list_knowledge_sources("claims-policy-kb")) == 1
+
+    index = store.create_knowledge_index_version(
+        "claims-policy-kb",
+        {
+            "status": "ready",
+            "source_count": 1,
+            "document_count": 1,
+            "chunk_count": 12,
+            "embedding_model": "local/test-embedding",
+            "vector_backend": "local",
+        },
+    )
+
+    assert index["status"] == "ready"
+    detailed = store.get_knowledge_base_detail("claims-policy-kb")
+    assert detailed["source_count"] == 1
+    assert detailed["latest_index"]["chunk_count"] == 12

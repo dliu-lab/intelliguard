@@ -24,6 +24,8 @@ from agent_governance.models import (
     EvaluatorTemplate,
     GuardrailPolicy,
     KnowledgeBase,
+    KnowledgeIndexVersion,
+    KnowledgeSource,
     PolicyDecision,
     ReviewQueueItem,
     ToolCertification,
@@ -2233,6 +2235,10 @@ class GovernanceStore:
                     source_type=payload["source_type"],
                     source_config=payload.get("source_config") or {},
                     environment=payload["environment"],
+                    owner=payload.get("owner") or "Unassigned",
+                    domain=payload.get("domain") or "",
+                    sensitivity=payload.get("sensitivity") or "internal",
+                    status=payload.get("status") or "draft",
                 )
                 db.add(row)
             else:
@@ -2241,9 +2247,101 @@ class GovernanceStore:
                 row.source_type = payload["source_type"]
                 row.source_config = payload.get("source_config") or {}
                 row.environment = payload["environment"]
+                row.owner = payload.get("owner") or row.owner
+                row.domain = payload.get("domain") or row.domain
+                row.sensitivity = payload.get("sensitivity") or row.sensitivity
+                row.status = payload.get("status") or row.status
                 row.updated_at = utc_now()
             db.flush()
             return self._kb_to_dict(row)
+
+    def get_knowledge_base_detail(self, kb_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(KnowledgeBase, kb_id)
+            if not row:
+                return None
+            payload = self._kb_to_dict(row)
+            sources = db.scalars(
+                select(KnowledgeSource)
+                .where(KnowledgeSource.kb_id == kb_id)
+                .order_by(KnowledgeSource.created_at.desc())
+            ).all()
+            latest_index = db.scalar(
+                select(KnowledgeIndexVersion)
+                .where(KnowledgeIndexVersion.kb_id == kb_id)
+                .order_by(KnowledgeIndexVersion.created_at.desc())
+            )
+            assignments = db.scalars(
+                select(AgentKBAssignment).where(AgentKBAssignment.kb_id == kb_id)
+            ).all()
+            payload["source_count"] = len(sources)
+            payload["assigned_agent_count"] = len(assignments)
+            payload["latest_index"] = self._kb_index_to_dict(latest_index) if latest_index else None
+            return payload
+
+    def list_knowledge_sources(self, kb_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(KnowledgeSource)
+                .where(KnowledgeSource.kb_id == kb_id)
+                .order_by(KnowledgeSource.display_name)
+            ).all()
+            return [self._kb_source_to_dict(row) for row in rows]
+
+    def upsert_knowledge_source(self, kb_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            source_id = payload.get("source_id") or new_id("kbs")
+            row = db.get(KnowledgeSource, source_id)
+            if not row:
+                row = KnowledgeSource(
+                    source_id=source_id,
+                    kb_id=kb_id,
+                    source_type=payload["source_type"],
+                    display_name=payload["display_name"],
+                    uri=payload.get("uri") or "",
+                    content_type=payload.get("content_type") or "",
+                    source_config=payload.get("source_config") or {},
+                )
+                db.add(row)
+            else:
+                row.source_type = payload["source_type"]
+                row.display_name = payload["display_name"]
+                row.uri = payload.get("uri") or ""
+                row.content_type = payload.get("content_type") or ""
+                row.source_config = payload.get("source_config") or {}
+                row.status = payload.get("status") or row.status
+                row.updated_at = utc_now()
+            db.flush()
+            return self._kb_source_to_dict(row)
+
+    def create_knowledge_index_version(
+        self, kb_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            row = KnowledgeIndexVersion(
+                index_version_id=new_id("kbi"),
+                kb_id=kb_id,
+                status=payload.get("status") or "pending",
+                source_count=int(payload.get("source_count") or 0),
+                document_count=int(payload.get("document_count") or 0),
+                chunk_count=int(payload.get("chunk_count") or 0),
+                embedding_model=payload.get("embedding_model") or "",
+                vector_backend=payload.get("vector_backend") or "local",
+                artifact_digest=payload.get("artifact_digest"),
+                error=payload.get("error"),
+                completed_at=utc_now() if payload.get("status") == "ready" else None,
+            )
+            db.add(row)
+            kb = db.get(KnowledgeBase, kb_id)
+            if kb and row.status == "ready":
+                kb.status = "ready"
+                kb.document_count = row.document_count
+                kb.chunk_count = row.chunk_count
+                kb.last_indexed_at = row.completed_at
+                kb.last_error = None
+                kb.updated_at = utc_now()
+            db.flush()
+            return self._kb_index_to_dict(row)
 
     def list_agent_kb_assignments(self, agent_id: str) -> list[dict[str, Any]]:
         with self.session() as db:
@@ -2302,8 +2400,55 @@ class GovernanceStore:
             "source_type": row.source_type,
             "source_config": row.source_config or {},
             "environment": row.environment,
+            "owner": row.owner,
+            "domain": row.domain,
+            "sensitivity": row.sensitivity,
+            "status": row.status,
+            "document_count": row.document_count,
+            "chunk_count": row.chunk_count,
+            "last_indexed_at": row.last_indexed_at.isoformat() if row.last_indexed_at else None,
+            "last_error": row.last_error,
             "created_at": row.created_at.isoformat(),
             "updated_at": row.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _kb_source_to_dict(row: KnowledgeSource | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "source_id": row.source_id,
+            "kb_id": row.kb_id,
+            "source_type": row.source_type,
+            "display_name": row.display_name,
+            "uri": row.uri,
+            "content_type": row.content_type,
+            "source_config": row.source_config or {},
+            "status": row.status,
+            "checksum": row.checksum,
+            "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
+            "last_error": row.last_error,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _kb_index_to_dict(row: KnowledgeIndexVersion | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "index_version_id": row.index_version_id,
+            "kb_id": row.kb_id,
+            "status": row.status,
+            "source_count": row.source_count,
+            "document_count": row.document_count,
+            "chunk_count": row.chunk_count,
+            "embedding_model": row.embedding_model,
+            "vector_backend": row.vector_backend,
+            "artifact_digest": row.artifact_digest,
+            "error": row.error,
+            "created_at": row.created_at.isoformat(),
+            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
         }
 
     @staticmethod
