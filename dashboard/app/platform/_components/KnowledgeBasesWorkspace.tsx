@@ -46,11 +46,11 @@ export function KnowledgeBasesWorkspace({
 }: {
   data: PlatformData;
   dataStatus: DataStatus;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void> | void;
 }) {
   const firstKbId = readText(data.knowledgeBases[0] || {}, ["kb_id"]) || "";
   const [selectedKbId, setSelectedKbId] = useState(firstKbId);
-  const selectedKb = data.knowledgeBases.find((kb) => readText(kb, ["kb_id"]) === selectedKbId) || data.knowledgeBases[0];
+  const selectedKb = data.knowledgeBases.find((kb) => readText(kb, ["kb_id"]) === selectedKbId);
   const [message, setMessage] = useState("");
   const [kbForm, setKbForm] = useState({
     kb_id: "",
@@ -73,10 +73,17 @@ export function KnowledgeBasesWorkspace({
   const [queryResults, setQueryResults] = useState<ApiRecord[]>([]);
 
   useEffect(() => {
-    if (!selectedKbId && firstKbId) {
+    const selectedKbExists = data.knowledgeBases.some((kb) => readText(kb, ["kb_id"]) === selectedKbId);
+
+    if (!selectedKbExists && selectedKbId !== firstKbId) {
       setSelectedKbId(firstKbId);
     }
-  }, [firstKbId, selectedKbId]);
+  }, [data.knowledgeBases, firstKbId, selectedKbId]);
+
+  useEffect(() => {
+    setQuery("");
+    setQueryResults([]);
+  }, [selectedKbId]);
 
   const sourceTypes = useMemo(() => {
     const counts = new Map<string, number>();
@@ -128,7 +135,7 @@ export function KnowledgeBasesWorkspace({
       });
       setMessage("Knowledge base saved.");
       setSelectedKbId(kbForm.kb_id);
-      onRefresh();
+      await onRefresh();
     });
   }
 
@@ -149,7 +156,7 @@ export function KnowledgeBasesWorkspace({
         content_type: "",
         source_config: {},
       });
-      onRefresh();
+      await onRefresh();
     });
   }
 
@@ -161,7 +168,7 @@ export function KnowledgeBasesWorkspace({
     await withToken(async (token) => {
       await syncKnowledgeBase(token, selectedKbIdValue);
       setMessage("Knowledge index status refreshed.");
-      onRefresh();
+      await onRefresh();
     });
   }
 
@@ -210,6 +217,8 @@ export function KnowledgeBasesWorkspace({
                   <button
                     key={kbId}
                     type="button"
+                    aria-label={`Select ${readText(kb, ["display_name", "kb_id"]) || "knowledge base"}`}
+                    aria-pressed={selectedKbId === kbId}
                     onClick={() => setSelectedKbId(kbId)}
                     className={`rounded-2xl border p-4 text-left transition focus:outline-none focus:ring-2 focus:ring-accent/35 ${
                       selectedKbId === kbId ? "border-accent/60 bg-accent/10" : "border-line bg-white/[0.035] hover:border-accent/35"
@@ -240,38 +249,59 @@ export function KnowledgeBasesWorkspace({
           <PlatformSurface tone="sky">
             <h2 className="text-xl font-semibold">Create knowledge base</h2>
             <form className="mt-5 grid gap-3 md:grid-cols-2" onSubmit={submitKnowledgeBase}>
-              <input className="field-input" placeholder="kb_id" value={kbForm.kb_id} onChange={(event) => setKbForm({ ...kbForm, kb_id: event.target.value })} />
-              <input
-                className="field-input"
-                placeholder="Display name"
-                value={kbForm.display_name}
-                onChange={(event) => setKbForm({ ...kbForm, display_name: event.target.value })}
-              />
-              <input className="field-input" placeholder="Owner" value={kbForm.owner} onChange={(event) => setKbForm({ ...kbForm, owner: event.target.value })} />
-              <input className="field-input" placeholder="Domain" value={kbForm.domain} onChange={(event) => setKbForm({ ...kbForm, domain: event.target.value })} />
-              <select
-                className="field-input"
-                value={kbForm.source_type}
-                onChange={(event) => setKbForm({ ...kbForm, source_type: event.target.value as SourceType })}
-              >
-                {sourceTypeOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <input
-                className="field-input"
-                placeholder="Environment"
-                value={kbForm.environment}
-                onChange={(event) => setKbForm({ ...kbForm, environment: event.target.value })}
-              />
-              <textarea
-                className="field-input min-h-24 resize-y md:col-span-2"
-                placeholder="Description"
-                value={kbForm.description}
-                onChange={(event) => setKbForm({ ...kbForm, description: event.target.value })}
-              />
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                KB ID
+                <input className="field-input" placeholder="claims-policy-kb" value={kbForm.kb_id} onChange={(event) => setKbForm({ ...kbForm, kb_id: event.target.value })} />
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                Display name
+                <input
+                  className="field-input"
+                  placeholder="Claims Policy KB"
+                  value={kbForm.display_name}
+                  onChange={(event) => setKbForm({ ...kbForm, display_name: event.target.value })}
+                />
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                Owner
+                <input className="field-input" placeholder="Claims Ops" value={kbForm.owner} onChange={(event) => setKbForm({ ...kbForm, owner: event.target.value })} />
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                Domain
+                <input className="field-input" placeholder="claims" value={kbForm.domain} onChange={(event) => setKbForm({ ...kbForm, domain: event.target.value })} />
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                Source type
+                <select
+                  className="field-input"
+                  value={kbForm.source_type}
+                  onChange={(event) => setKbForm({ ...kbForm, source_type: event.target.value as SourceType })}
+                >
+                  {sourceTypeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                Environment
+                <input
+                  className="field-input"
+                  placeholder="demo"
+                  value={kbForm.environment}
+                  onChange={(event) => setKbForm({ ...kbForm, environment: event.target.value })}
+                />
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary md:col-span-2">
+                Description
+                <textarea
+                  className="field-input min-h-24 resize-y"
+                  placeholder="Claims operating procedures."
+                  value={kbForm.description}
+                  onChange={(event) => setKbForm({ ...kbForm, description: event.target.value })}
+                />
+              </label>
               <button className="inline-flex w-fit items-center gap-2 rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90" type="submit">
                 <UploadCloud size={16} aria-hidden="true" />
                 Save KB
@@ -299,35 +329,47 @@ export function KnowledgeBasesWorkspace({
             </div>
             <div className="mt-5 grid gap-4 lg:grid-cols-2">
               <form className="grid gap-3" onSubmit={submitSource}>
-                <select
-                  className="field-input"
-                  value={sourceForm.source_type}
-                  onChange={(event) => setSourceForm({ ...sourceForm, source_type: event.target.value as SourceType })}
-                >
-                  {sourceTypeOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  className="field-input"
-                  placeholder="Source display name"
-                  value={sourceForm.display_name}
-                  onChange={(event) => setSourceForm({ ...sourceForm, display_name: event.target.value })}
-                />
-                <input
-                  className="field-input"
-                  placeholder="URI, path, or vector index name"
-                  value={sourceForm.uri || ""}
-                  onChange={(event) => setSourceForm({ ...sourceForm, uri: event.target.value })}
-                />
-                <input
-                  className="field-input"
-                  placeholder="Content type"
-                  value={sourceForm.content_type || ""}
-                  onChange={(event) => setSourceForm({ ...sourceForm, content_type: event.target.value })}
-                />
+                <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                  Source type
+                  <select
+                    className="field-input"
+                    value={sourceForm.source_type}
+                    onChange={(event) => setSourceForm({ ...sourceForm, source_type: event.target.value as SourceType })}
+                  >
+                    {sourceTypeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                  Source display name
+                  <input
+                    className="field-input"
+                    placeholder="Claims SOP"
+                    value={sourceForm.display_name}
+                    onChange={(event) => setSourceForm({ ...sourceForm, display_name: event.target.value })}
+                  />
+                </label>
+                <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                  Source URI
+                  <input
+                    className="field-input"
+                    placeholder="file://claims-sop.pdf"
+                    value={sourceForm.uri || ""}
+                    onChange={(event) => setSourceForm({ ...sourceForm, uri: event.target.value })}
+                  />
+                </label>
+                <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                  Content type
+                  <input
+                    className="field-input"
+                    placeholder="application/pdf"
+                    value={sourceForm.content_type || ""}
+                    onChange={(event) => setSourceForm({ ...sourceForm, content_type: event.target.value })}
+                  />
+                </label>
                 <button className="inline-flex w-fit items-center gap-2 rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90" type="submit">
                   <UploadCloud size={16} aria-hidden="true" />
                   Add source
@@ -365,9 +407,12 @@ export function KnowledgeBasesWorkspace({
               <h2 className="text-xl font-semibold">Test retrieval</h2>
             </div>
             <form className="mt-5 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]" onSubmit={testQuery}>
-              <input className="field-input" placeholder="Ask this knowledge base a question" value={query} onChange={(event) => setQuery(event.target.value)} />
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                Retrieval question
+                <input className="field-input" placeholder="Ask this knowledge base a question" value={query} onChange={(event) => setQuery(event.target.value)} />
+              </label>
               <button
-                className="rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
+                className="self-end rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
                 type="submit"
                 disabled={!selectedKb || !query.trim()}
               >
