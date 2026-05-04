@@ -6,7 +6,9 @@ import { Database, FileText, Link2, RefreshCw, Search, Server, UploadCloud } fro
 import {
   createKnowledgeBase,
   createKnowledgeSource,
+  getKnowledgeBaseDetail,
   getSession,
+  listKnowledgeSources,
   queryKnowledgeBase,
   syncKnowledgeBase,
   type ApiRecord,
@@ -39,6 +41,15 @@ function sourceTypeLabel(value: string) {
   return sourceTypeOptions.find((option) => option.value === value)?.label || value || "Unknown";
 }
 
+function readRecord(record: ApiRecord | undefined, key: string): ApiRecord | undefined {
+  const value = record?.[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as ApiRecord) : undefined;
+}
+
+function embeddingModelFor(record: ApiRecord | undefined) {
+  return readText(record || {}, ["embedding_model"]) || readText(readRecord(record, "source_config") || {}, ["embedding_model"]) || "local/default";
+}
+
 export function KnowledgeBasesWorkspace({
   data,
   dataStatus,
@@ -62,6 +73,7 @@ export function KnowledgeBasesWorkspace({
     domain: "",
     sensitivity: "internal",
     source_type: "file" as SourceType,
+    embedding_model: "local/default",
     environment: "demo",
   });
   const [sourceForm, setSourceForm] = useState<KnowledgeSourcePayload>({
@@ -73,8 +85,12 @@ export function KnowledgeBasesWorkspace({
   });
   const [query, setQuery] = useState("");
   const [queryResults, setQueryResults] = useState<ApiRecord[]>([]);
+  const [selectedKbDetail, setSelectedKbDetail] = useState<ApiRecord | null>(null);
+  const [selectedSources, setSelectedSources] = useState<ApiRecord[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
   const selectedKbIdRef = useRef(selectedKbId);
   const queryRequestIdRef = useRef(0);
+  const detailRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (pendingSelectedKbId) {
@@ -108,6 +124,51 @@ export function KnowledgeBasesWorkspace({
     setQueryResults([]);
   }, [selectedKbId]);
 
+  useEffect(() => {
+    setSelectedKbDetail(null);
+    setSelectedSources([]);
+
+    if (!selectedKbId) {
+      setDetailLoading(false);
+      return;
+    }
+
+    const session = getSession();
+    if (!session?.token) {
+      setDetailLoading(false);
+      return;
+    }
+
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
+    setDetailLoading(true);
+
+    Promise.all([
+      getKnowledgeBaseDetail(session.token, selectedKbId),
+      listKnowledgeSources(session.token, selectedKbId),
+    ])
+      .then(([detail, sources]) => {
+        if (requestId !== detailRequestIdRef.current || selectedKbIdRef.current !== selectedKbId) {
+          return;
+        }
+
+        setSelectedKbDetail(detail);
+        setSelectedSources(sources);
+      })
+      .catch((error) => {
+        if (requestId !== detailRequestIdRef.current || selectedKbIdRef.current !== selectedKbId) {
+          return;
+        }
+
+        setMessage(error instanceof Error ? error.message : "Unable to load knowledge base detail.");
+      })
+      .finally(() => {
+        if (requestId === detailRequestIdRef.current) {
+          setDetailLoading(false);
+        }
+      });
+  }, [selectedKbId]);
+
   const sourceTypes = useMemo(() => {
     const counts = new Map<string, number>();
 
@@ -132,7 +193,20 @@ export function KnowledgeBasesWorkspace({
     return status === "failed" || status === "degraded";
   }).length;
   const selectedKbIdValue = selectedKb ? readText(selectedKb, ["kb_id"]) || "" : "";
+  const selectedKbRecord = selectedKbDetail || selectedKb;
   const SelectedSourceIcon = sourceIcon(readText(selectedKb || {}, ["source_type"]) || "");
+  const selectedAgentAssignments = useMemo(() => {
+    if (!selectedKbIdValue) {
+      return [];
+    }
+
+    return Object.entries(data.agentAssignments)
+      .flatMap(([agentId, assignments]) =>
+        assignments.knowledge
+          .filter((assignment) => readText(assignment, ["kb_id"]) === selectedKbIdValue)
+          .map((assignment) => ({ agentId, assignment })),
+      );
+  }, [data.agentAssignments, selectedKbIdValue]);
 
   async function withToken(action: (token: string) => Promise<void>) {
     setMessage("");
@@ -167,6 +241,7 @@ export function KnowledgeBasesWorkspace({
         display_name: trimmedDisplayName,
         environment: trimmedEnvironment,
         source_config: {},
+        embedding_model: kbForm.embedding_model,
       });
       setMessage("Knowledge base saved.");
       setPendingSelectedKbId(trimmedKbId);
@@ -216,7 +291,9 @@ export function KnowledgeBasesWorkspace({
     }
 
     await withToken(async (token) => {
-      await syncKnowledgeBase(token, selectedKbIdValue);
+      await syncKnowledgeBase(token, selectedKbIdValue, {
+        embedding_model: embeddingModelFor(selectedKbRecord),
+      });
       setMessage("Knowledge index status refreshed.");
       await onRefresh();
     });
@@ -296,6 +373,14 @@ export function KnowledgeBasesWorkspace({
                         <span className="mt-1 block text-sm leading-6 text-textSecondary">{readText(kb, ["description"]) || "No description."}</span>
                       </span>
                     </div>
+                    <span className="mt-3 grid gap-2 text-xs text-textSecondary sm:grid-cols-2">
+                      <span>Owner: {readText(kb, ["owner"]) || "Unassigned"}</span>
+                      <span>Domain: {readText(kb, ["domain"]) || "general"}</span>
+                      <span>Embedding: {embeddingModelFor(kb)}</span>
+                      <span>Sensitivity: {readText(kb, ["sensitivity"]) || "internal"}</span>
+                      <span>{formatCount(numberValue(kb, ["source_count"]), "source")}</span>
+                      <span>{formatCount(numberValue(kb, ["assigned_agent_count"]), "assigned agent")}</span>
+                    </span>
                     <span className="mt-3 block text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
                       {joinParts([readText(kb, ["environment"]), sourceTypeLabel(readText(kb, ["source_type"]) || ""), readText(kb, ["status"]) || "draft"])}
                     </span>
@@ -366,6 +451,15 @@ export function KnowledgeBasesWorkspace({
                   <option value="confidential">Confidential</option>
                   <option value="restricted">Restricted</option>
                 </select>
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                Embedding model
+                <input
+                  className="field-input"
+                  placeholder="local/default"
+                  value={kbForm.embedding_model}
+                  onChange={(event) => setKbForm({ ...kbForm, embedding_model: event.target.value })}
+                />
               </label>
               <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
                 Environment
@@ -461,22 +555,75 @@ export function KnowledgeBasesWorkspace({
                 </button>
               </form>
               <div className="grid content-start gap-3">
-                {selectedKb ? (
+                {selectedKbRecord ? (
                   <>
                     <ComponentRow
-                      title={readText(selectedKb, ["status"]) || "draft"}
+                      title={readText(selectedKbRecord, ["status"]) || "draft"}
                       detail={
                         joinParts([
-                          formatCount(numberValue(selectedKb, ["document_count"]), "document"),
-                          formatCount(numberValue(selectedKb, ["chunk_count"]), "chunk"),
+                          formatCount(numberValue(selectedKbRecord, ["document_count"]), "document"),
+                          formatCount(numberValue(selectedKbRecord, ["chunk_count"]), "chunk"),
+                          `${formatCount(numberValue(selectedKbRecord, ["source_count"]), "source")} registered`,
                         ]) || "No index evidence yet."
                       }
-                      meta={readText(selectedKb, ["environment"])}
+                      meta={readText(selectedKbRecord, ["environment"])}
                     />
                     <ComponentRow
-                      title={readText(selectedKb, ["owner"]) || "Unassigned"}
-                      detail={joinParts([readText(selectedKb, ["domain"]), readText(selectedKb, ["sensitivity"])]) || "No domain metadata."}
-                      meta={sourceTypeLabel(readText(selectedKb, ["source_type"]) || "")}
+                      title={readText(selectedKbRecord, ["owner"]) || "Unassigned"}
+                      detail={
+                        joinParts([
+                          readText(selectedKbRecord, ["domain"]),
+                          readText(selectedKbRecord, ["sensitivity"]),
+                          embeddingModelFor(selectedKbRecord),
+                        ]) || "No domain metadata."
+                      }
+                      meta={sourceTypeLabel(readText(selectedKbRecord, ["source_type"]) || "")}
+                    />
+                    <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+                      <p className="font-semibold text-textPrimary">Sources</p>
+                      <div className="mt-3 grid gap-2">
+                        {selectedSources.length ? (
+                          selectedSources.map((source) => (
+                            <ComponentRow
+                              key={readText(source, ["source_id"]) || readText(source, ["display_name"])}
+                              title={readText(source, ["display_name"]) || "Knowledge source"}
+                              detail={joinParts([readText(source, ["uri"]), readText(source, ["content_type"])]) || "No URI recorded."}
+                              meta={joinParts([sourceTypeLabel(readText(source, ["source_type"]) || ""), readText(source, ["status"])])}
+                            />
+                          ))
+                        ) : (
+                          <ComponentRow
+                            title={detailLoading ? "Loading sources" : "No sources registered"}
+                            detail="Add files, URLs, or vector store references before syncing this knowledge base."
+                          />
+                        )}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+                      <p className="font-semibold text-textPrimary">Agent usage</p>
+                      <div className="mt-3 grid gap-2">
+                        {selectedAgentAssignments.length ? (
+                          selectedAgentAssignments.map(({ agentId, assignment }) => (
+                            <ComponentRow
+                              key={readText(assignment, ["assignment_id"]) || agentId}
+                              title={agentId}
+                              detail={joinParts([readText(assignment, ["access_mode"]), readText(assignment, ["retrieval_mode"])]) || "Knowledge base assigned."}
+                              meta={readText(assignment, ["environment"])}
+                            />
+                          ))
+                        ) : (
+                          <ComponentRow title="No agent assignments" detail="Attach this KB from an agent profile when it is ready for governed retrieval." />
+                        )}
+                      </div>
+                    </div>
+                    <ComponentRow
+                      title="Ingestion and runtime guidance"
+                      detail={
+                        selectedSources.length
+                          ? "Refresh the index after source changes, then run retrieval tests before assigning this KB to production agents."
+                          : "Register at least one source, refresh the index, and verify retrieval before using this KB in agent workflows."
+                      }
+                      meta={readText(readRecord(selectedKbRecord, "latest_index") || {}, ["status"]) || "not indexed"}
                     />
                   </>
                 ) : (

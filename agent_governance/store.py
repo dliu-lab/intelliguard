@@ -2204,7 +2204,29 @@ class GovernanceStore:
                 stmt = stmt.where(KnowledgeBase.environment.in_(environment))
             elif environment and environment != "all":
                 stmt = stmt.where(KnowledgeBase.environment == environment)
-            return [self._kb_to_dict(row) for row in db.scalars(stmt).all()]
+            rows = db.scalars(stmt).all()
+            payloads = [self._kb_to_dict(row) for row in rows]
+            for payload in payloads:
+                kb_id = payload["kb_id"]
+                payload["source_count"] = db.scalar(
+                    select(func.count())
+                    .select_from(KnowledgeSource)
+                    .where(KnowledgeSource.kb_id == kb_id)
+                )
+                payload["assigned_agent_count"] = db.scalar(
+                    select(func.count())
+                    .select_from(AgentKBAssignment)
+                    .where(AgentKBAssignment.kb_id == kb_id)
+                )
+                latest_index = db.scalar(
+                    select(KnowledgeIndexVersion)
+                    .where(KnowledgeIndexVersion.kb_id == kb_id)
+                    .order_by(KnowledgeIndexVersion.created_at.desc())
+                )
+                payload["latest_index"] = (
+                    self._kb_index_to_dict(latest_index) if latest_index else None
+                )
+            return payloads
 
     def get_knowledge_base(self, kb_id: str) -> dict[str, Any] | None:
         with self.session() as db:
@@ -2213,6 +2235,9 @@ class GovernanceStore:
 
     def upsert_knowledge_base(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
+            source_config = dict(payload.get("source_config") or {})
+            if "embedding_model" in payload:
+                source_config["embedding_model"] = payload["embedding_model"]
             row = db.get(KnowledgeBase, payload["kb_id"])
             if not row:
                 row = KnowledgeBase(
@@ -2220,7 +2245,7 @@ class GovernanceStore:
                     display_name=payload["display_name"],
                     description=payload.get("description") or "",
                     source_type=payload["source_type"],
-                    source_config=payload.get("source_config") or {},
+                    source_config=source_config,
                     environment=payload["environment"],
                     owner=payload["owner"] if "owner" in payload else "Unassigned",
                     domain=payload["domain"] if "domain" in payload else "",
@@ -2232,7 +2257,7 @@ class GovernanceStore:
                 row.display_name = payload["display_name"]
                 row.description = payload.get("description") or ""
                 row.source_type = payload["source_type"]
-                row.source_config = payload.get("source_config") or {}
+                row.source_config = source_config
                 row.environment = payload["environment"]
                 if "owner" in payload:
                     row.owner = payload["owner"]
@@ -2435,6 +2460,7 @@ class GovernanceStore:
             "description": row.description,
             "source_type": row.source_type,
             "source_config": row.source_config or {},
+            "embedding_model": (row.source_config or {}).get("embedding_model") or "local/default",
             "environment": row.environment,
             "owner": row.owner,
             "domain": row.domain,

@@ -140,6 +140,7 @@ def test_knowledge_base_request_accepts_metadata_fields() -> None:
         owner="Claims Ops",
         domain="claims",
         sensitivity="confidential",
+        embedding_model="local/claims-embedding",
     )
 
     assert request.model_dump() == {
@@ -152,6 +153,7 @@ def test_knowledge_base_request_accepts_metadata_fields() -> None:
         "owner": "Claims Ops",
         "domain": "claims",
         "sensitivity": "confidential",
+        "embedding_model": "local/claims-embedding",
     }
 
 
@@ -342,6 +344,11 @@ def test_knowledge_base_source_and_index_lifecycle(store: GovernanceStore) -> No
     assert detailed["chunk_count"] == 12
     assert detailed["last_indexed_at"]
     assert detailed["latest_index"]["chunk_count"] == 12
+    listed = store.list_knowledge_bases(environment="demo")
+    listed_kb = next(item for item in listed if item["kb_id"] == "claims-policy-kb")
+    assert listed_kb["source_count"] == 1
+    assert listed_kb["assigned_agent_count"] == 0
+    assert listed_kb["latest_index"]["embedding_model"] == "local/test-embedding"
 
     updated = store.upsert_knowledge_base(
         {
@@ -356,6 +363,28 @@ def test_knowledge_base_source_and_index_lifecycle(store: GovernanceStore) -> No
     )
 
     assert updated["domain"] == ""
+
+
+def test_knowledge_base_embedding_model_is_stored_in_source_config(
+    store: GovernanceStore,
+) -> None:
+    kb = store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-embedding-kb",
+            "display_name": "Claims Embedding KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {"parser": "pdf"},
+            "environment": "demo",
+            "embedding_model": "local/claims-embedding",
+        }
+    )
+
+    assert kb["embedding_model"] == "local/claims-embedding"
+    assert kb["source_config"] == {
+        "parser": "pdf",
+        "embedding_model": "local/claims-embedding",
+    }
 
 
 def test_knowledge_source_upsert_rejects_source_id_from_other_kb(

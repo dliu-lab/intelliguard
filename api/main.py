@@ -196,6 +196,7 @@ class KnowledgeBaseRequest(BaseModel):
     owner: str = "Unassigned"
     domain: str = ""
     sensitivity: str = "internal"
+    embedding_model: str = "local/default"
 
 
 class KnowledgeSourceRequest(BaseModel):
