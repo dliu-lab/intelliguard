@@ -102,6 +102,9 @@ export function SelectedAgentModal({
   const [evaluatorTrigger, setEvaluatorTrigger] = useState("after_run");
   const [selectedKbId, setSelectedKbId] = useState("");
   const [kbAccessMode, setKbAccessMode] = useState("read");
+  const [kbRetrievalMode, setKbRetrievalMode] = useState("hybrid");
+  const [kbTopK, setKbTopK] = useState(5);
+  const [kbCitationRequired, setKbCitationRequired] = useState(true);
   const agentId = String(agent.agent_id || "");
 
   const toolOptions = useMemo(
@@ -406,6 +409,10 @@ export function SelectedAgentModal({
       await assignAgentKnowledgeBase(token, agentId, {
         kb_id: selectedKbId,
         access_mode: kbAccessMode,
+        retrieval_mode: kbRetrievalMode,
+        top_k: kbTopK,
+        citation_required: kbCitationRequired,
+        metadata_filters: {},
       });
       await refreshAssignments();
     }, "Knowledge base attached.");
@@ -475,7 +482,12 @@ export function SelectedAgentModal({
   const knowledgeItems: AssignmentItem[] = knowledgeAssignments.map((assignment) => ({
     id: recordId(assignment, ["assignment_id"]),
     label: readText(assignment, ["kb_id"]) || "Knowledge base",
-    detail: readText(assignment, ["access_mode"]) || "Attached knowledge base",
+    detail: joinParts([
+      readText(assignment, ["access_mode"]),
+      readText(assignment, ["retrieval_mode"]),
+      readText(assignment, ["top_k"]) ? `top ${readText(assignment, ["top_k"])}` : undefined,
+      assignment.citation_required === true || readText(assignment, ["citation_required"]) === "true" ? "citations required" : undefined,
+    ]) || "Attached knowledge base",
     meta: readText(assignment, ["environment"]),
   }));
 
@@ -775,20 +787,51 @@ export function SelectedAgentModal({
                 onRemove={(item) => removeAssignment("knowledge", item.id, item.label)}
                 title="Attach knowledge base"
               >
-                <form className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_auto]" onSubmit={attachKnowledge}>
-                  <select className="field-input" value={selectedKbId} onChange={(event) => setSelectedKbId(event.target.value)}>
-                    {availableKnowledgeBases.map((kb) => (
-                      <option key={readText(kb, ["kb_id"])} value={readText(kb, ["kb_id"])}>
-                        {readText(kb, ["display_name", "kb_id"])}
-                      </option>
-                    ))}
-                    {!availableKnowledgeBases.length ? <option value="">No knowledge bases available</option> : null}
-                  </select>
-                  <select className="field-input" value={kbAccessMode} onChange={(event) => setKbAccessMode(event.target.value)}>
-                    <option value="read">read</option>
-                    <option value="read_write">read_write</option>
-                  </select>
-                  <AttachButton disabled={loading || !selectedKbId} />
+                <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_150px_150px_110px_150px_auto]" onSubmit={attachKnowledge}>
+                  <BuilderField label="Knowledge Base">
+                    <select className="field-input" value={selectedKbId} onChange={(event) => setSelectedKbId(event.target.value)}>
+                      {availableKnowledgeBases.map((kb) => (
+                        <option key={readText(kb, ["kb_id"])} value={readText(kb, ["kb_id"])}>
+                          {readText(kb, ["display_name", "kb_id"])}
+                        </option>
+                      ))}
+                      {!availableKnowledgeBases.length ? <option value="">No knowledge bases available</option> : null}
+                    </select>
+                  </BuilderField>
+                  <BuilderField label="Access">
+                    <select className="field-input" value={kbAccessMode} onChange={(event) => setKbAccessMode(event.target.value)}>
+                      <option value="read">read</option>
+                      <option value="read_write">read_write</option>
+                    </select>
+                  </BuilderField>
+                  <BuilderField label="Retrieval">
+                    <select className="field-input" value={kbRetrievalMode} onChange={(event) => setKbRetrievalMode(event.target.value)}>
+                      <option value="hybrid">hybrid</option>
+                      <option value="semantic">semantic</option>
+                      <option value="keyword">keyword</option>
+                    </select>
+                  </BuilderField>
+                  <BuilderField label="Top K">
+                    <input
+                      className="field-input"
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={kbTopK}
+                      onChange={(event) => setKbTopK(Math.min(50, Math.max(1, Number(event.target.value) || 1)))}
+                    />
+                  </BuilderField>
+                  <label className="mt-auto inline-flex min-h-11 items-center gap-2 rounded-2xl border border-line bg-white/[0.035] px-4 py-3 text-sm font-semibold text-textSecondary">
+                    <input
+                      type="checkbox"
+                      checked={kbCitationRequired}
+                      onChange={(event) => setKbCitationRequired(event.target.checked)}
+                    />
+                    citations
+                  </label>
+                  <div className="mt-auto">
+                    <AttachButton disabled={loading || !selectedKbId} />
+                  </div>
                 </form>
               </AttachmentPanel>
             ) : null}
