@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
 import agent_governance.db as runtime_db
-from api.main import AgentKBAssignmentRequest
+import api.main as api_main
+from api.main import AgentKBAssignmentRequest, KnowledgeSourceRequest, KnowledgeSyncRequest
 from agent_governance.models import (
     AgentKBAssignment,
     KnowledgeBase,
@@ -44,6 +46,15 @@ def _assert_assignment_policy(
     assert assignment["citation_required"] is citation_required
     assert assignment["freshness_days"] == freshness_days
     assert assignment["metadata_filters"] == metadata_filters
+
+
+def _super_admin_user() -> dict:
+    return {
+        "role": "Admin",
+        "is_super_admin": True,
+        "allowed_environments": [],
+        "permissions_by_environment": {},
+    }
 
 
 def test_knowledge_models_are_declared() -> None:
@@ -408,6 +419,69 @@ def test_knowledge_source_and_index_reject_missing_kb(store: GovernanceStore) ->
                 "error": "Missing KB",
             },
         )
+
+
+def test_create_knowledge_source_translates_expected_store_errors(monkeypatch) -> None:
+    class FakeStore:
+        def get_knowledge_base(self, kb_id: str) -> dict:
+            return {"kb_id": kb_id, "environment": "demo"}
+
+        def upsert_knowledge_source(self, kb_id: str, payload: dict) -> dict:
+            raise ValueError("Source 'shared-source' belongs to knowledge base 'other-kb'")
+
+    monkeypatch.setattr(api_main, "store", FakeStore())
+
+    with pytest.raises(HTTPException) as exc_info:
+        api_main.create_knowledge_source(
+            "claims-policy-kb",
+            KnowledgeSourceRequest(
+                source_id="shared-source",
+                source_type="file",
+                display_name="Claims SOP",
+            ),
+            _super_admin_user(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Source 'shared-source' belongs to knowledge base 'other-kb'"
+
+
+def test_sync_knowledge_base_creates_pending_status_for_pending_source(
+    monkeypatch,
+    store: GovernanceStore,
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-policy-kb-sync",
+            "display_name": "Claims Policy KB",
+            "description": "Claims operating procedures.",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+    store.upsert_knowledge_source(
+        "claims-policy-kb-sync",
+        {
+            "source_type": "file",
+            "display_name": "Claims SOP",
+            "uri": "file://claims-sop.pdf",
+            "content_type": "application/pdf",
+            "source_config": {},
+        },
+    )
+
+    index = api_main.create_knowledge_sync_status(
+        "claims-policy-kb-sync",
+        KnowledgeSyncRequest(),
+        _super_admin_user(),
+    )
+
+    assert index["status"] == "pending"
+    assert index["source_count"] == 1
+    assert index["document_count"] == 0
+    assert index["chunk_count"] == 0
 
 
 def test_agent_kb_assignment_stores_retrieval_policy(store: GovernanceStore) -> None:

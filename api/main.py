@@ -1473,7 +1473,10 @@ def create_knowledge_source(
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     require_environment_access(user, kb["environment"], "agent:create")
-    return store.upsert_knowledge_source(kb_id, body.model_dump(exclude_none=True))
+    try:
+        return store.upsert_knowledge_source(kb_id, body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/v1/knowledge-bases/{kb_id}/sync")
@@ -1490,10 +1493,10 @@ def create_knowledge_sync_status(
     return store.create_knowledge_index_version(
         kb_id,
         {
-            "status": "ready" if sources else "pending",
+            "status": "pending",
             "source_count": len(sources),
-            "document_count": len(sources),
-            "chunk_count": len(sources),
+            "document_count": 0,
+            "chunk_count": 0,
             "embedding_model": body.embedding_model,
             "vector_backend": body.vector_backend,
         },

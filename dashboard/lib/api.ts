@@ -271,18 +271,25 @@ export function createKnowledgeSource(
   });
 }
 
-export function syncKnowledgeBase(token: string, kbId: string) {
+export function syncKnowledgeBase(
+  token: string,
+  kbId: string,
+  payload: { embedding_model?: string; vector_backend?: string } = {},
+) {
   return request<ApiRecord>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/sync`, {
     method: "POST",
     headers: authHeaders(token),
-    body: JSON.stringify({ embedding_model: "local/default", vector_backend: "local" }),
+    body: JSON.stringify({
+      embedding_model: payload.embedding_model ?? "local/default",
+      vector_backend: payload.vector_backend ?? "local",
+    }),
   });
 }
 
 export function queryKnowledgeBase(
   token: string,
   kbId: string,
-  payload: { query: string; top_k: number },
+  payload: { query: string; top_k?: number },
 ) {
   return request<ApiRecord[]>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/query`, {
     method: "POST",
