@@ -102,6 +102,88 @@ def ensure_runtime_schema(engine) -> None:
                     """
                 )
             )
+    if "knowledge_bases" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("knowledge_bases")}
+        with engine.begin() as connection:
+            if "owner" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE knowledge_bases ADD COLUMN owner VARCHAR(120) NOT NULL DEFAULT 'Unassigned'"
+                    )
+                )
+            if "domain" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE knowledge_bases ADD COLUMN domain VARCHAR(80) NOT NULL DEFAULT ''"
+                    )
+                )
+            if "sensitivity" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE knowledge_bases ADD COLUMN sensitivity VARCHAR(40) NOT NULL DEFAULT 'internal'"
+                    )
+                )
+            if "status" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE knowledge_bases ADD COLUMN status VARCHAR(40) NOT NULL DEFAULT 'draft'"
+                    )
+                )
+            if "document_count" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE knowledge_bases ADD COLUMN document_count INTEGER NOT NULL DEFAULT 0"
+                    )
+                )
+            if "chunk_count" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE knowledge_bases ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0"
+                    )
+                )
+            if "last_indexed_at" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE knowledge_bases ADD COLUMN last_indexed_at TIMESTAMP WITH TIME ZONE"
+                    )
+                )
+            if "last_error" not in cols:
+                connection.execute(text("ALTER TABLE knowledge_bases ADD COLUMN last_error TEXT"))
+    if "agent_kb_assignments" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("agent_kb_assignments")}
+        with engine.begin() as connection:
+            if "retrieval_mode" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE agent_kb_assignments ADD COLUMN retrieval_mode VARCHAR(20) NOT NULL DEFAULT 'hybrid'"
+                    )
+                )
+            if "top_k" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE agent_kb_assignments ADD COLUMN top_k INTEGER NOT NULL DEFAULT 5"
+                    )
+                )
+            if "score_threshold" not in cols:
+                connection.execute(
+                    text("ALTER TABLE agent_kb_assignments ADD COLUMN score_threshold FLOAT")
+                )
+            if "citation_required" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE agent_kb_assignments ADD COLUMN citation_required BOOLEAN NOT NULL DEFAULT TRUE"
+                    )
+                )
+            if "freshness_days" not in cols:
+                connection.execute(
+                    text("ALTER TABLE agent_kb_assignments ADD COLUMN freshness_days INTEGER")
+                )
+            if "metadata_filters" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE agent_kb_assignments ADD COLUMN metadata_filters JSONB NOT NULL DEFAULT '{}'::jsonb"
+                    )
+                )
 
 
 def seed_guardrail_defaults(session: Session) -> None:

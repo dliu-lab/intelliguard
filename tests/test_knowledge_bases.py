@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
+
+import agent_governance.db as runtime_db
 from agent_governance.models import (
     AgentKBAssignment,
     KnowledgeBase,
@@ -8,8 +12,160 @@ from agent_governance.models import (
 )
 
 
+def _column(model: type, name: str):
+    return model.__table__.c[name]
+
+
+def _default_arg(model: type, name: str):
+    return _column(model, name).default.arg
+
+
+def _default_factory_value(model: type, name: str):
+    return _default_arg(model, name)(None)
+
+
 def test_knowledge_models_are_declared() -> None:
     assert KnowledgeBase.__tablename__ == "knowledge_bases"
     assert KnowledgeSource.__tablename__ == "knowledge_sources"
     assert KnowledgeIndexVersion.__tablename__ == "knowledge_index_versions"
     assert AgentKBAssignment.__tablename__ == "agent_kb_assignments"
+
+
+def test_knowledge_base_metadata_fields_are_declared() -> None:
+    assert isinstance(_column(KnowledgeBase, "owner").type, String)
+    assert _column(KnowledgeBase, "owner").type.length == 120
+    assert _column(KnowledgeBase, "owner").nullable is False
+    assert _default_arg(KnowledgeBase, "owner") == "Unassigned"
+
+    assert isinstance(_column(KnowledgeBase, "domain").type, String)
+    assert _column(KnowledgeBase, "domain").type.length == 80
+    assert _column(KnowledgeBase, "domain").nullable is False
+    assert _default_arg(KnowledgeBase, "domain") == ""
+
+    assert isinstance(_column(KnowledgeBase, "document_count").type, Integer)
+    assert _column(KnowledgeBase, "document_count").nullable is False
+    assert _default_arg(KnowledgeBase, "document_count") == 0
+
+    assert isinstance(_column(KnowledgeBase, "last_indexed_at").type, DateTime)
+    assert _column(KnowledgeBase, "last_indexed_at").type.timezone is True
+    assert _column(KnowledgeBase, "last_indexed_at").nullable is True
+    assert isinstance(_column(KnowledgeBase, "last_error").type, Text)
+    assert _column(KnowledgeBase, "last_error").nullable is True
+
+
+def test_knowledge_source_and_index_version_columns_are_declared() -> None:
+    assert _column(KnowledgeSource, "source_id").primary_key is True
+    assert _column(KnowledgeSource, "kb_id").nullable is False
+    assert [fk.target_fullname for fk in _column(KnowledgeSource, "kb_id").foreign_keys] == [
+        "knowledge_bases.kb_id"
+    ]
+    assert isinstance(_column(KnowledgeSource, "source_config").type, JSONB)
+    assert _default_factory_value(KnowledgeSource, "source_config") == {}
+    assert _default_arg(KnowledgeSource, "status") == "pending"
+
+    assert _column(KnowledgeIndexVersion, "index_version_id").primary_key is True
+    assert _column(KnowledgeIndexVersion, "kb_id").nullable is False
+    assert [fk.target_fullname for fk in _column(KnowledgeIndexVersion, "kb_id").foreign_keys] == [
+        "knowledge_bases.kb_id"
+    ]
+    assert isinstance(_column(KnowledgeIndexVersion, "source_count").type, Integer)
+    assert _default_arg(KnowledgeIndexVersion, "source_count") == 0
+    assert _default_arg(KnowledgeIndexVersion, "vector_backend") == "local"
+    assert _column(KnowledgeIndexVersion, "completed_at").nullable is True
+
+
+def test_agent_kb_assignment_retrieval_policy_fields_are_declared() -> None:
+    assert isinstance(_column(AgentKBAssignment, "retrieval_mode").type, String)
+    assert _column(AgentKBAssignment, "retrieval_mode").type.length == 20
+    assert _column(AgentKBAssignment, "retrieval_mode").nullable is False
+    assert _default_arg(AgentKBAssignment, "retrieval_mode") == "hybrid"
+
+    assert isinstance(_column(AgentKBAssignment, "top_k").type, Integer)
+    assert _column(AgentKBAssignment, "top_k").nullable is False
+    assert _default_arg(AgentKBAssignment, "top_k") == 5
+
+    assert isinstance(_column(AgentKBAssignment, "score_threshold").type, Float)
+    assert _column(AgentKBAssignment, "score_threshold").nullable is True
+    assert isinstance(_column(AgentKBAssignment, "citation_required").type, Boolean)
+    assert _column(AgentKBAssignment, "citation_required").nullable is False
+    assert _default_arg(AgentKBAssignment, "citation_required") is True
+    assert _column(AgentKBAssignment, "freshness_days").nullable is True
+    assert isinstance(_column(AgentKBAssignment, "metadata_filters").type, JSONB)
+    assert _default_factory_value(AgentKBAssignment, "metadata_filters") == {}
+
+
+def test_runtime_schema_patches_existing_knowledge_tables(monkeypatch) -> None:
+    class FakeInspector:
+        def get_table_names(self) -> list[str]:
+            return ["knowledge_bases", "agent_kb_assignments"]
+
+        def get_columns(self, table_name: str) -> list[dict[str, str]]:
+            columns_by_table = {
+                "knowledge_bases": [
+                    {"name": "kb_id"},
+                    {"name": "display_name"},
+                    {"name": "description"},
+                    {"name": "source_type"},
+                    {"name": "source_config"},
+                    {"name": "environment"},
+                    {"name": "created_at"},
+                    {"name": "updated_at"},
+                ],
+                "agent_kb_assignments": [
+                    {"name": "assignment_id"},
+                    {"name": "agent_id"},
+                    {"name": "kb_id"},
+                    {"name": "access_mode"},
+                    {"name": "created_at"},
+                ],
+            }
+            return columns_by_table[table_name]
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, statement) -> None:
+            self.statements.append(str(statement))
+
+    class FakeBegin:
+        def __init__(self, connection: FakeConnection) -> None:
+            self.connection = connection
+
+        def __enter__(self) -> FakeConnection:
+            return self.connection
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeEngine:
+        def __init__(self) -> None:
+            self.connection = FakeConnection()
+
+        def begin(self) -> FakeBegin:
+            return FakeBegin(self.connection)
+
+    engine = FakeEngine()
+    monkeypatch.setattr(runtime_db, "inspect", lambda _engine: FakeInspector())
+
+    runtime_db.ensure_runtime_schema(engine)
+
+    statements = "\n".join(engine.connection.statements)
+    expected_column_snippets = (
+        "ADD COLUMN owner VARCHAR(120) NOT NULL DEFAULT 'Unassigned'",
+        "ADD COLUMN domain VARCHAR(80) NOT NULL DEFAULT ''",
+        "ADD COLUMN sensitivity VARCHAR(40) NOT NULL DEFAULT 'internal'",
+        "ADD COLUMN status VARCHAR(40) NOT NULL DEFAULT 'draft'",
+        "ADD COLUMN document_count INTEGER NOT NULL DEFAULT 0",
+        "ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0",
+        "ADD COLUMN last_indexed_at TIMESTAMP WITH TIME ZONE",
+        "ADD COLUMN last_error TEXT",
+        "ADD COLUMN retrieval_mode VARCHAR(20) NOT NULL DEFAULT 'hybrid'",
+        "ADD COLUMN top_k INTEGER NOT NULL DEFAULT 5",
+        "ADD COLUMN score_threshold FLOAT",
+        "ADD COLUMN citation_required BOOLEAN NOT NULL DEFAULT TRUE",
+        "ADD COLUMN freshness_days INTEGER",
+        "ADD COLUMN metadata_filters JSONB NOT NULL DEFAULT '{}'::jsonb",
+    )
+    for snippet in expected_column_snippets:
+        assert snippet in statements
