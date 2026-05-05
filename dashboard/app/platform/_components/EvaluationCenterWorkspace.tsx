@@ -1,7 +1,27 @@
-import type { ApiRecord, EvaluationRun, PlatformData } from "@/lib/api";
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { PlayCircle } from "lucide-react";
+import {
+  evaluateAgent,
+  evaluateTool,
+  evaluateWorkflowDefinition,
+  getSession,
+  type ApiRecord,
+  type EvaluationRun,
+  type PlatformData,
+} from "@/lib/api";
 import { ComponentRow, MetricSurface, PlatformSurface, ResourceGrid } from "./shared";
 import type { DataStatus } from "./types";
-import { formatCount, formatTimestamp, joinParts, readText } from "./utils";
+import { formatCount, formatTimestamp, isErrorMessage, joinParts, readText } from "./utils";
+
+type EvaluationTargetType = "tool" | "agent" | "workflow";
+
+const TARGET_TYPES: Array<{ label: string; value: EvaluationTargetType }> = [
+  { label: "Tool", value: "tool" },
+  { label: "Agent", value: "agent" },
+  { label: "Workflow", value: "workflow" },
+];
 
 function certificationStatus(record: ApiRecord) {
   const certification = record.certification;
@@ -33,6 +53,26 @@ function certifiedCount(records: ApiRecord[]) {
   return records.filter((record) => certificationStatus(record) === "CERTIFIED").length;
 }
 
+function targetId(record: ApiRecord, type: EvaluationTargetType) {
+  if (type === "tool") {
+    return readText(record, ["tool_id"]) || "";
+  }
+  if (type === "agent") {
+    return readText(record, ["agent_id"]) || "";
+  }
+  return readText(record, ["workflow_definition_id"]) || "";
+}
+
+function targetLabel(record: ApiRecord, type: EvaluationTargetType) {
+  if (type === "tool") {
+    return readText(record, ["display_name", "tool_name"]) || targetId(record, type);
+  }
+  if (type === "agent") {
+    return readText(record, ["display_name", "agent_id"]) || targetId(record, type);
+  }
+  return readText(record, ["name", "workflow_definition_id"]) || targetId(record, type);
+}
+
 function evaluatorMethod(record: ApiRecord) {
   return readText(record, ["llm_enabled"]) === "true" || record.llm_enabled === true
     ? "LLM-as-judge"
@@ -60,17 +100,45 @@ function evaluationRunTargetLabel(run: EvaluationRun, data: PlatformData) {
   return undefined;
 }
 
+function rulesFor(group: ApiRecord) {
+  return Array.isArray(group.rules) ? (group.rules.filter((rule) => typeof rule === "object" && rule !== null) as ApiRecord[]) : [];
+}
+
+function compactJson(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value) && !value.length) {
+    return undefined;
+  }
+  const text = JSON.stringify(value);
+  return text === "{}" || text === "[]" ? undefined : text;
+}
+
 export function EvaluationCenterWorkspace({
   data,
   dataStatus,
+  onRefresh,
 }: {
   data: PlatformData;
   dataStatus: DataStatus;
+  onRefresh: () => void | Promise<void>;
 }) {
   const loading = dataStatus === "loading";
+  const [targetType, setTargetType] = useState<EvaluationTargetType>("tool");
+  const [selectedTargetId, setSelectedTargetId] = useState("");
+  const [runningTarget, setRunningTarget] = useState("");
+  const [message, setMessage] = useState("");
   const toolStatusCounts = countByStatus(data.tools);
   const agentStatusCounts = countByStatus(data.agents);
-  const latestEvaluationRows = data.evaluationRuns.map((run) => {
+  const workflowStatusCounts = countByStatus(data.workflowDefinitions);
+  const evaluationTargets = useMemo(() => {
+    if (targetType === "tool") {
+      return data.tools;
+    }
+    if (targetType === "agent") {
+      return data.agents;
+    }
+    return data.workflowDefinitions;
+  }, [data.agents, data.tools, data.workflowDefinitions, targetType]);
+  const latestEvaluationRows = [...data.evaluationRuns].map((run) => {
     const targetLabel = evaluationRunTargetLabel(run, data) || run.target_id;
     const result = run.overall_result || run.status;
     return {
@@ -85,9 +153,60 @@ export function EvaluationCenterWorkspace({
       title: targetLabel,
     };
   });
+  const selectedTarget = evaluationTargets.find((record) => targetId(record, targetType) === selectedTargetId);
+  const running = Boolean(runningTarget);
+
+  useEffect(() => {
+    if (!evaluationTargets.some((record) => targetId(record, targetType) === selectedTargetId)) {
+      setSelectedTargetId(targetId(evaluationTargets[0] || {}, targetType));
+    }
+  }, [evaluationTargets, selectedTargetId, targetType]);
+
+  async function runEvaluation() {
+    const session = getSession();
+    if (!session?.token) {
+      setMessage("Session expired. Login again before running evaluation.");
+      return;
+    }
+    if (!selectedTargetId) {
+      setMessage("Select a target before running evaluation.");
+      return;
+    }
+
+    const runKey = `${targetType}:${selectedTargetId}`;
+    setRunningTarget(runKey);
+    setMessage("");
+    try {
+      if (targetType === "tool") {
+        await evaluateTool(session.token, selectedTargetId);
+      } else if (targetType === "agent") {
+        await evaluateAgent(session.token, selectedTargetId);
+      } else {
+        await evaluateWorkflowDefinition(session.token, selectedTargetId);
+      }
+      setMessage(`Evaluation completed for ${selectedTarget ? targetLabel(selectedTarget, targetType) : selectedTargetId}.`);
+      await Promise.resolve(onRefresh());
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to run evaluation.");
+    } finally {
+      setRunningTarget("");
+    }
+  }
 
   return (
     <section className="grid gap-6">
+      {message ? (
+        <div
+          className={`rounded-2xl border p-4 text-sm ${
+            isErrorMessage(message)
+              ? "border-red-400/45 bg-red-500/10 text-red-200"
+              : "border-line bg-white/[0.04] text-textSecondary"
+          }`}
+        >
+          {message}
+        </div>
+      ) : null}
+
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Evaluation coverage">
         <MetricSurface label="Evaluator Templates" loading={loading} tone="cyan" value={data.evaluatorTemplates.length} />
         <MetricSurface label="Certified Tools" loading={loading} tone="emerald" value={certifiedCount(data.tools)} />
@@ -96,6 +215,61 @@ export function EvaluationCenterWorkspace({
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(360px,0.55fr)]">
+        <PlatformSurface tone="indigo">
+          <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-start">
+            <div>
+              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
+                Run evaluation
+              </span>
+              <h3 className="mt-2 text-2xl font-semibold tracking-[-0.02em]">Certification target</h3>
+              <p className="mt-2 text-sm leading-6 text-textSecondary">
+                Run deterministic certification checks against registered tools, agents, and workflow definitions.
+              </p>
+            </div>
+            <span className="rounded-full border border-line bg-ink/60 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+              {formatCount(evaluationTargets.length, "target")}
+            </span>
+          </div>
+
+          <div className="mt-5 grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)_auto]">
+            <select
+              className="field-input"
+              value={targetType}
+              onChange={(event) => setTargetType(event.target.value as EvaluationTargetType)}
+            >
+              {TARGET_TYPES.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <select
+              className="field-input"
+              value={selectedTargetId}
+              onChange={(event) => setSelectedTargetId(event.target.value)}
+            >
+              {evaluationTargets.map((record) => {
+                const id = targetId(record, targetType);
+                return (
+                  <option key={id} value={id}>
+                    {targetLabel(record, targetType)} ({certificationStatus(record)})
+                  </option>
+                );
+              })}
+              {!evaluationTargets.length ? <option value="">No targets available</option> : null}
+            </select>
+            <button
+              type="button"
+              disabled={running || !selectedTargetId}
+              onClick={runEvaluation}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-accent/35 bg-accent/10 px-5 text-sm font-semibold text-textPrimary transition hover:border-accent/55 hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <PlayCircle size={16} aria-hidden="true" />
+              {running ? "Evaluating" : "Run"}
+            </button>
+          </div>
+        </PlatformSurface>
+
         <PlatformSurface tone="cyan">
           <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-start">
             <div>
@@ -151,9 +325,9 @@ export function EvaluationCenterWorkspace({
             />
             <CoverageRow
               count={data.workflowDefinitions.length}
-              coverage="0%"
+              coverage={coverage(data.workflowDefinitions)}
               label="Workflows"
-              statusCounts={{ DRAFT: data.workflowDefinitions.length }}
+              statusCounts={workflowStatusCounts}
             />
           </div>
         </PlatformSurface>
@@ -164,6 +338,60 @@ export function EvaluationCenterWorkspace({
         label="Latest evaluation runs"
         rows={latestEvaluationRows}
       />
+
+      <PlatformSurface tone="cyan">
+        <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-start">
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
+              Evaluation rules
+            </span>
+            <h3 className="mt-2 text-2xl font-semibold tracking-[-0.02em]">Rule catalog</h3>
+            <p className="mt-2 text-sm leading-6 text-textSecondary">
+              Certification checks and assigned evaluator templates currently available to the platform.
+            </p>
+          </div>
+          <span className="rounded-full border border-line bg-ink/60 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+            {formatCount(data.evaluationRules.reduce((total, group) => total + rulesFor(group).length, 0), "rule")}
+          </span>
+        </div>
+
+        <div className="mt-5 grid gap-4 xl:grid-cols-2">
+          {data.evaluationRules.length ? (
+            data.evaluationRules.map((group) => (
+              <section key={readText(group, ["group_id", "label"])} className="rounded-2xl border border-line bg-ink/45 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-textPrimary">{readText(group, ["label", "group_id"])}</p>
+                    <p className="mt-1 text-sm leading-6 text-textSecondary">{readText(group, ["description"])}</p>
+                  </div>
+                  <span className="rounded-full border border-line bg-white/[0.04] px-2.5 py-1 text-xs font-semibold text-textSecondary">
+                    {readText(group, ["scope"])}
+                  </span>
+                </div>
+                <div className="mt-4 grid gap-2">
+                  {rulesFor(group).map((rule) => (
+                    <ComponentRow
+                      key={readText(rule, ["rule_id", "label"])}
+                      title={readText(rule, ["label", "rule_id"]) || "Evaluation rule"}
+                      detail={readText(rule, ["description"]) || "Rule details are not configured."}
+                      meta={joinParts([
+                        readText(rule, ["engine"]),
+                        readText(rule, ["evaluator_type"]),
+                        compactJson(rule.default_config),
+                      ])}
+                    />
+                  ))}
+                  {!rulesFor(group).length ? (
+                    <ComponentRow title="No rules configured" detail="This rule group has no entries yet." />
+                  ) : null}
+                </div>
+              </section>
+            ))
+          ) : (
+            <ComponentRow title="No evaluation rules loaded" detail="Refresh the workspace to load the evaluation rule catalog." />
+          )}
+        </div>
+      </PlatformSurface>
     </section>
   );
 }

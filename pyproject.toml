@@ -16,6 +16,8 @@ dependencies = [
   "python-multipart>=0.0.20",
   "pyyaml>=6.0.0",
   "sqlalchemy>=2.0.0",
+  "tree-sitter>=0.25.2 ; platform_machine != 'arm64' or sys_platform != 'darwin'",
+  "tree-sitter-language-pack>=1.6.3 ; platform_machine != 'arm64' or sys_platform != 'darwin'",
   "uvicorn[standard]>=0.30.0",
 ]
 

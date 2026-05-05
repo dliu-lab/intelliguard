@@ -31,6 +31,7 @@ import { ComponentRow } from "./shared";
 import type { AgentModalTab } from "./types";
 import {
   AGENT_TYPE_VALUES,
+  agentDomain,
   agentProfileForm,
   getAgentTools,
   isErrorMessage,
@@ -50,6 +51,8 @@ type AssignmentItem = {
   meta?: string;
 };
 
+const DEFAULT_OLLAMA_JUDGE_MODEL = "qwen3.5:9b";
+
 function toolName(tool: ApiRecord) {
   return readText(tool, ["tool_name", "name", "display_name"]) || "";
 }
@@ -60,6 +63,107 @@ function displayTool(tool: ApiRecord) {
 
 function recordId(record: ApiRecord, keys: string[]) {
   return readText(record, keys) || "";
+}
+
+const UNSCOPED_DOMAINS = new Set(["", "all", "general", "shared"]);
+
+function asRecord(value: unknown): ApiRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as ApiRecord) : {};
+}
+
+function normalizeScope(value: string | undefined) {
+  return String(value || "").trim();
+}
+
+function normalizeScopeKey(value: string | undefined) {
+  return normalizeScope(value).toLowerCase();
+}
+
+function recordEnvironment(record: ApiRecord) {
+  return normalizeScope(readText(record, ["environment"]));
+}
+
+function selectedAgentDomain(agent: ApiRecord) {
+  return normalizeScope(agentDomain(agent) || readNestedText(agent, ["permissions", "scopes", "domain"]));
+}
+
+function resourceDomain(record: ApiRecord) {
+  return normalizeScope(
+    readText(record, ["domain"])
+      || readNestedText(record, ["metadata", "domain"])
+      || readNestedText(record, ["metadata", "data_domain"]),
+  );
+}
+
+function toolDomain(tool: ApiRecord) {
+  return resourceDomain(tool) || normalizeScope(readText(tool, ["category"])) || "general";
+}
+
+function domainsMatchAgent(agent: ApiRecord, resourceDomainValue: string) {
+  const agentDomainValue = normalizeScopeKey(selectedAgentDomain(agent));
+  const resourceDomainKey = normalizeScopeKey(resourceDomainValue);
+  return UNSCOPED_DOMAINS.has(agentDomainValue) || UNSCOPED_DOMAINS.has(resourceDomainKey) || agentDomainValue === resourceDomainKey;
+}
+
+function environmentMatchesAgent(agent: ApiRecord, record: ApiRecord) {
+  const agentEnvironment = recordEnvironment(agent);
+  const resourceEnvironment = recordEnvironment(record);
+  return !agentEnvironment || !resourceEnvironment || agentEnvironment === resourceEnvironment;
+}
+
+function toolMatchesAgent(tool: ApiRecord, agent: ApiRecord) {
+  return environmentMatchesAgent(agent, tool) && domainsMatchAgent(agent, toolDomain(tool));
+}
+
+function activeKnowledgeVersion(kb: ApiRecord) {
+  const publishedVersion = asRecord(kb.published_version);
+  if (Object.keys(publishedVersion).length) {
+    return publishedVersion;
+  }
+  const latestVersion = asRecord(kb.latest_version);
+  return Object.keys(latestVersion).length ? latestVersion : {};
+}
+
+function knowledgeScope(kb: ApiRecord) {
+  const sourceConfig = asRecord(kb.source_config);
+  const version = activeKnowledgeVersion(kb);
+  const scope =
+    normalizeScope(readText(version, ["kb_scope"]))
+    || normalizeScope(readText(sourceConfig, ["kb_scope"]))
+    || (resourceDomain(kb) ? "domain" : "shared");
+  const scopeRef =
+    normalizeScope(readText(version, ["scope_ref"]))
+    || normalizeScope(readText(sourceConfig, ["scope_ref", "linked_agent_id"]))
+    || resourceDomain(kb);
+
+  return { scope, scopeRef };
+}
+
+function knowledgeBaseMatchesAgent(kb: ApiRecord, agent: ApiRecord) {
+  if (!environmentMatchesAgent(agent, kb)) {
+    return false;
+  }
+
+  const { scope, scopeRef } = knowledgeScope(kb);
+  const scopeKey = normalizeScopeKey(scope);
+  if (scopeKey === "shared") {
+    return true;
+  }
+  if (scopeKey === "agent") {
+    return !scopeRef || scopeRef === readText(agent, ["agent_id"]);
+  }
+  return domainsMatchAgent(agent, scopeRef || resourceDomain(kb));
+}
+
+function evaluatorAssignmentMeta(assignment: ApiRecord) {
+  const config = asRecord(assignment.config);
+  const judgeConfig = asRecord(config.judge);
+  const judgeModel = readText(judgeConfig, ["model"]);
+  const judgeProvider = readText(judgeConfig, ["provider"]) || "judge";
+  return joinParts([
+    readText(assignment, ["environment"]),
+    judgeModel ? `${judgeProvider} ${judgeModel}` : undefined,
+  ]);
 }
 
 export function SelectedAgentModal({
@@ -100,6 +204,9 @@ export function SelectedAgentModal({
   const [guardrailMode, setGuardrailMode] = useState("enforce");
   const [selectedEvaluatorId, setSelectedEvaluatorId] = useState("");
   const [evaluatorTrigger, setEvaluatorTrigger] = useState("after_run");
+  const [evaluatorJudgeProvider, setEvaluatorJudgeProvider] = useState("ollama");
+  const [evaluatorJudgeModel, setEvaluatorJudgeModel] = useState(DEFAULT_OLLAMA_JUDGE_MODEL);
+  const [evaluatorJudgeBaseUrl, setEvaluatorJudgeBaseUrl] = useState("");
   const [selectedKbId, setSelectedKbId] = useState("");
   const [kbAccessMode, setKbAccessMode] = useState("read");
   const [kbRetrievalMode, setKbRetrievalMode] = useState("hybrid");
@@ -110,12 +217,13 @@ export function SelectedAgentModal({
   const toolOptions = useMemo(
     () =>
       tools
+        .filter((tool) => toolMatchesAgent(tool, agent))
         .map((tool) => {
           const status = readNestedText(tool, ["certification", "status"]) || "DRAFT";
           return { id: toolName(tool), label: `${displayTool(tool)} (${status})` };
         })
         .filter((tool) => tool.id),
-    [tools],
+    [agent, tools],
   );
   const availableTools = toolOptions.filter((tool) => !toolGrants.includes(tool.id));
   const availablePolicies = guardrailPolicies.filter(
@@ -126,7 +234,23 @@ export function SelectedAgentModal({
       !evaluatorAssignments.some((assignment) => readText(assignment, ["evaluator_id"]) === readText(template, ["evaluator_id"])),
   );
   const availableKnowledgeBases = knowledgeBases.filter(
-    (kb) => !knowledgeAssignments.some((assignment) => readText(assignment, ["kb_id"]) === readText(kb, ["kb_id"])),
+    (kb) =>
+      knowledgeBaseMatchesAgent(kb, agent)
+      && !knowledgeAssignments.some((assignment) => readText(assignment, ["kb_id"]) === readText(kb, ["kb_id"])),
+  );
+  const selectedEvaluatorTemplate = useMemo(
+    () =>
+      evaluatorTemplates.find((template) => readText(template, ["evaluator_id"]) === selectedEvaluatorId)
+      ?? ({} as ApiRecord),
+    [evaluatorTemplates, selectedEvaluatorId],
+  );
+  const selectedEvaluatorIsJudge = Boolean(
+    selectedEvaluatorId
+      && (
+        selectedEvaluatorTemplate.llm_enabled === true
+        || readNestedText(selectedEvaluatorTemplate, ["llm_enabled"]) === "true"
+        || readText(selectedEvaluatorTemplate, ["evaluator_type"]) === "response_quality"
+      ),
   );
 
   useEffect(() => {
@@ -217,6 +341,21 @@ export function SelectedAgentModal({
       setSelectedEvaluatorId(readText(availableEvaluators[0] || {}, ["evaluator_id"]) || "");
     }
   }, [availableEvaluators, selectedEvaluatorId]);
+
+  useEffect(() => {
+    if (!selectedEvaluatorId || !selectedEvaluatorIsJudge) {
+      setEvaluatorJudgeProvider("ollama");
+      setEvaluatorJudgeModel(DEFAULT_OLLAMA_JUDGE_MODEL);
+      setEvaluatorJudgeBaseUrl("");
+      return;
+    }
+
+    const defaultConfig = asRecord(selectedEvaluatorTemplate.default_config);
+    const judgeConfig = asRecord(defaultConfig.judge);
+    setEvaluatorJudgeProvider(readText(judgeConfig, ["provider"]) || "ollama");
+    setEvaluatorJudgeModel(readText(judgeConfig, ["model"]) || DEFAULT_OLLAMA_JUDGE_MODEL);
+    setEvaluatorJudgeBaseUrl(readText(judgeConfig, ["base_url", "endpoint"]) || "");
+  }, [selectedEvaluatorId, selectedEvaluatorIsJudge, selectedEvaluatorTemplate]);
 
   useEffect(() => {
     if (!availableKnowledgeBases.some((kb) => readText(kb, ["kb_id"]) === selectedKbId)) {
@@ -389,10 +528,20 @@ export function SelectedAgentModal({
     }
 
     await runAction(async (token) => {
+      const evaluatorConfig = selectedEvaluatorIsJudge
+        ? {
+            judge: {
+              provider: evaluatorJudgeProvider.trim() || "ollama",
+              model: evaluatorJudgeModel.trim() || DEFAULT_OLLAMA_JUDGE_MODEL,
+              ...(evaluatorJudgeBaseUrl.trim() ? { base_url: evaluatorJudgeBaseUrl.trim() } : {}),
+            },
+          }
+        : {};
+
       await assignAgentEvaluator(token, agentId, {
         evaluator_id: selectedEvaluatorId,
         trigger: evaluatorTrigger,
-        config: {},
+        config: evaluatorConfig,
       });
       await refreshAssignments();
     }, "Evaluator attached.");
@@ -477,7 +626,7 @@ export function SelectedAgentModal({
     id: recordId(assignment, ["assignment_id"]),
     label: readText(assignment, ["evaluator_id"]) || "Evaluator",
     detail: readText(assignment, ["trigger"]) || "Attached evaluator",
-    meta: readText(assignment, ["environment"]),
+    meta: evaluatorAssignmentMeta(assignment),
   }));
   const knowledgeItems: AssignmentItem[] = knowledgeAssignments.map((assignment) => ({
     id: recordId(assignment, ["assignment_id"]),
@@ -763,21 +912,53 @@ export function SelectedAgentModal({
                 onRemove={(item) => removeAssignment("evaluator", item.id, item.label)}
                 title="Attach evaluator"
               >
-                <form className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_auto]" onSubmit={attachEvaluator}>
-                  <select className="field-input" value={selectedEvaluatorId} onChange={(event) => setSelectedEvaluatorId(event.target.value)}>
-                    {availableEvaluators.map((evaluator) => (
-                      <option key={readText(evaluator, ["evaluator_id"])} value={readText(evaluator, ["evaluator_id"])}>
-                        {readText(evaluator, ["display_name", "evaluator_id"])}
-                      </option>
-                    ))}
-                    {!availableEvaluators.length ? <option value="">No evaluators available</option> : null}
-                  </select>
-                  <select className="field-input" value={evaluatorTrigger} onChange={(event) => setEvaluatorTrigger(event.target.value)}>
-                    <option value="after_run">after_run</option>
-                    <option value="after_workflow">after_workflow</option>
-                    <option value="manual">manual</option>
-                  </select>
-                  <AttachButton disabled={loading || !selectedEvaluatorId} />
+                <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1.2fr)_160px_160px_minmax(0,1fr)_minmax(0,1fr)_auto]" onSubmit={attachEvaluator}>
+                  <BuilderField label="Evaluator">
+                    <select className="field-input" value={selectedEvaluatorId} onChange={(event) => setSelectedEvaluatorId(event.target.value)}>
+                      {availableEvaluators.map((evaluator) => (
+                        <option key={readText(evaluator, ["evaluator_id"])} value={readText(evaluator, ["evaluator_id"])}>
+                          {readText(evaluator, ["display_name", "evaluator_id"])}
+                        </option>
+                      ))}
+                      {!availableEvaluators.length ? <option value="">No evaluators available</option> : null}
+                    </select>
+                  </BuilderField>
+                  <BuilderField label="Trigger">
+                    <select className="field-input" value={evaluatorTrigger} onChange={(event) => setEvaluatorTrigger(event.target.value)}>
+                      <option value="after_run">after_run</option>
+                      <option value="after_workflow">after_workflow</option>
+                      <option value="manual">manual</option>
+                    </select>
+                  </BuilderField>
+                  {selectedEvaluatorIsJudge ? (
+                    <>
+                      <BuilderField label="Judge Provider">
+                        <select className="field-input" value={evaluatorJudgeProvider} onChange={(event) => setEvaluatorJudgeProvider(event.target.value)}>
+                          <option value="ollama">Ollama</option>
+                          <option value="openai_compatible">OpenAI compatible</option>
+                        </select>
+                      </BuilderField>
+                      <BuilderField label="Judge Model">
+                        <input
+                          className="field-input"
+                          value={evaluatorJudgeModel}
+                          onChange={(event) => setEvaluatorJudgeModel(event.target.value)}
+                          placeholder={DEFAULT_OLLAMA_JUDGE_MODEL}
+                        />
+                      </BuilderField>
+                      <BuilderField label="Judge Base URL">
+                        <input
+                          className="field-input"
+                          value={evaluatorJudgeBaseUrl}
+                          onChange={(event) => setEvaluatorJudgeBaseUrl(event.target.value)}
+                          placeholder="http://host.docker.internal:11434"
+                        />
+                      </BuilderField>
+                    </>
+                  ) : null}
+                  <div className="self-end">
+                    <AttachButton disabled={loading || !selectedEvaluatorId || (selectedEvaluatorIsJudge && !evaluatorJudgeModel.trim())} />
+                  </div>
                 </form>
               </AttachmentPanel>
             ) : null}

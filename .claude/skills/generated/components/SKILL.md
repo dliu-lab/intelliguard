@@ -1,11 +1,11 @@
 ---
 name: components
-description: "Skill for the _components area of intelliguard. 246 symbols across 13 files."
+description: "Skill for the _components area of intelliguard. 327 symbols across 17 files."
 ---
 
 # _components
 
-246 symbols | 13 files | Cohesion: 70%
+327 symbols | 17 files | Cohesion: 70%
 
 ## When to Use
 
@@ -17,51 +17,51 @@ description: "Skill for the _components area of intelliguard. 246 symbols across
 
 | File | Symbols |
 |------|---------|
-| `dashboard/lib/api.ts` | request, authHeaders, withParams, me, listAgents (+47) |
-| `dashboard/app/platform/_components/RecordListWorkspace.tsx` | workflowDomain, asRecords, numberValue, objectValue, decisionTone (+46) |
-| `dashboard/app/platform/_components/WorkflowBuilderWorkspace.tsx` | canvasWorldWidth, clamp, defaultNodePositions, safeOption, addStep (+43) |
-| `dashboard/app/platform/_components/utils.ts` | joinParts, padTimePart, formatIsoTimestamp, formatTimestamp, readNestedText (+20) |
-| `dashboard/app/platform/_components/SelectedAgentModal.tsx` | loadAssignments, loadCertification, refreshAssignments, refreshCertification, runAction (+13) |
-| `dashboard/app/platform/_components/ToolRegistryWorkspace.tsx` | submitTool, runEvaluation, saveTool, certificationStatus, toolUpdatedAt (+13) |
+| `dashboard/lib/api.ts` | request, authHeaders, withParams, me, listAgents (+56) |
+| `dashboard/app/platform/_components/WorkflowBuilderWorkspace.tsx` | canvasWorldWidth, clamp, cubicPoint, defaultNodePositions, safeOption (+46) |
+| `dashboard/app/platform/_components/KnowledgeBasesWorkspace.tsx` | emptyKbForm, scopeLabel, chunkingStrategyLabel, usesFixedSizeControls, displayVersion (+41) |
+| `dashboard/app/platform/_components/RecordListWorkspace.tsx` | numberValue, objectValue, stringArrayValue, riskTypes, decisionTone (+40) |
+| `dashboard/app/platform/_components/SelectedAgentModal.tsx` | loadAssignments, loadCertification, refreshAssignments, refreshCertification, runAction (+26) |
+| `dashboard/app/platform/_components/utils.ts` | joinParts, formatTimestamp, formatCount, readText, agentProfileForm (+20) |
+| `dashboard/app/platform/_components/ToolRegistryWorkspace.tsx` | certificationStatus, toolStatusLabel, statusClasses, shortHash, isRecord (+13) |
+| `dashboard/app/platform/_components/OverviewWorkspace.tsx` | restrictedTools, resolvedReviews, averageRisk, certificationStatus, certifiedCount (+5) |
 | `dashboard/app/platform/_components/EvaluationCenterWorkspace.tsx` | CoverageRow, certificationStatus, countByStatus, coverage, certifiedCount (+4) |
 | `dashboard/app/platform/_components/MonitoringWorkspace.tsx` | DecisionBar, decisionCounts, riskCounts, averageRisk, certificationStatus (+2) |
-| `dashboard/app/platform/_components/ControlPlaneWorkspace.tsx` | agentDomainFilterValue, agentDomainLabel, agentUpdatedAt, ControlPlaneWorkspace, selectTab (+2) |
-| `dashboard/app/platform/page.tsx` | loadWorkspace, logout, refreshWorkspace, PlatformPage, openBackendComponent |
 
 ## Entry Points
 
 Start here when exploring this area:
 
-- **`request`** (Function) — `dashboard/lib/api.ts:93`
-- **`authHeaders`** (Function) — `dashboard/lib/api.ts:120`
-- **`withParams`** (Function) — `dashboard/lib/api.ts:126`
-- **`me`** (Function) — `dashboard/lib/api.ts:162`
-- **`listAgents`** (Function) — `dashboard/lib/api.ts:168`
+- **`request`** (Function) — `dashboard/lib/api.ts:150`
+- **`authHeaders`** (Function) — `dashboard/lib/api.ts:178`
+- **`withParams`** (Function) — `dashboard/lib/api.ts:184`
+- **`me`** (Function) — `dashboard/lib/api.ts:220`
+- **`listAgents`** (Function) — `dashboard/lib/api.ts:226`
 
 ## Key Symbols
 
 | Symbol | Type | File | Line |
 |--------|------|------|------|
-| `request` | Function | `dashboard/lib/api.ts` | 93 |
-| `authHeaders` | Function | `dashboard/lib/api.ts` | 120 |
-| `withParams` | Function | `dashboard/lib/api.ts` | 126 |
-| `me` | Function | `dashboard/lib/api.ts` | 162 |
-| `listAgents` | Function | `dashboard/lib/api.ts` | 168 |
-| `listWorkflows` | Function | `dashboard/lib/api.ts` | 174 |
-| `getWorkflowDetail` | Function | `dashboard/lib/api.ts` | 180 |
-| `listWorkflowDefinitions` | Function | `dashboard/lib/api.ts` | 186 |
-| `listSessions` | Function | `dashboard/lib/api.ts` | 192 |
-| `listReviewQueue` | Function | `dashboard/lib/api.ts` | 198 |
-| `resolveReview` | Function | `dashboard/lib/api.ts` | 204 |
-| `listAuditEvents` | Function | `dashboard/lib/api.ts` | 216 |
-| `listGuardrailPolicies` | Function | `dashboard/lib/api.ts` | 222 |
-| `listEvaluatorTemplates` | Function | `dashboard/lib/api.ts` | 228 |
-| `listKnowledgeBases` | Function | `dashboard/lib/api.ts` | 234 |
-| `listTools` | Function | `dashboard/lib/api.ts` | 240 |
-| `listEnvironments` | Function | `dashboard/lib/api.ts` | 246 |
-| `getMonitoringMetrics` | Function | `dashboard/lib/api.ts` | 252 |
-| `createAgent` | Function | `dashboard/lib/api.ts` | 258 |
-| `deleteAgent` | Function | `dashboard/lib/api.ts` | 266 |
+| `request` | Function | `dashboard/lib/api.ts` | 150 |
+| `authHeaders` | Function | `dashboard/lib/api.ts` | 178 |
+| `withParams` | Function | `dashboard/lib/api.ts` | 184 |
+| `me` | Function | `dashboard/lib/api.ts` | 220 |
+| `listAgents` | Function | `dashboard/lib/api.ts` | 226 |
+| `listWorkflows` | Function | `dashboard/lib/api.ts` | 232 |
+| `getWorkflowDetail` | Function | `dashboard/lib/api.ts` | 238 |
+| `listWorkflowDefinitions` | Function | `dashboard/lib/api.ts` | 244 |
+| `listSessions` | Function | `dashboard/lib/api.ts` | 250 |
+| `listReviewQueue` | Function | `dashboard/lib/api.ts` | 256 |
+| `resolveReview` | Function | `dashboard/lib/api.ts` | 262 |
+| `listAuditEvents` | Function | `dashboard/lib/api.ts` | 274 |
+| `listGuardrailPolicies` | Function | `dashboard/lib/api.ts` | 280 |
+| `listEvaluatorTemplates` | Function | `dashboard/lib/api.ts` | 286 |
+| `listKnowledgeBases` | Function | `dashboard/lib/api.ts` | 292 |
+| `getKnowledgeBaseDetail` | Function | `dashboard/lib/api.ts` | 298 |
+| `listKnowledgeSources` | Function | `dashboard/lib/api.ts` | 304 |
+| `listKnowledgeDocuments` | Function | `dashboard/lib/api.ts` | 310 |
+| `listKnowledgeBaseVersions` | Function | `dashboard/lib/api.ts` | 316 |
+| `createKnowledgeBaseVersion` | Function | `dashboard/lib/api.ts` | 322 |
 
 ## Execution Flows
 
@@ -69,20 +69,14 @@ Start here when exploring this area:
 |------|------|-------|
 | `WorkflowCanvas → IsRecord` | cross_community | 6 |
 | `WorkflowCanvas → CanvasNodeIds` | cross_community | 6 |
+| `OpenEditForm → IsRecord` | cross_community | 6 |
+| `OpenDuplicateForm → IsRecord` | cross_community | 6 |
+| `KnowledgeBasesWorkspace → IsRecord` | cross_community | 5 |
+| `SelectedAgentModal → NormalizeScope` | cross_community | 5 |
+| `SelectedAgentModal → ReadText` | cross_community | 5 |
+| `SelectedAgentModal → AgentDomain` | cross_community | 5 |
+| `SelectedAgentModal → ReadNestedText` | cross_community | 5 |
 | `WorkflowTraceWorkspace → ReadText` | cross_community | 5 |
-| `WorkflowCanvas → CanvasWorldWidth` | cross_community | 5 |
-| `WorkflowCanvas → Clamp` | cross_community | 5 |
-| `StartDrag → IsRecord` | cross_community | 5 |
-| `StartDrag → CanvasNodeIds` | cross_community | 5 |
-| `WorkflowTraceWorkspace → AsRecords` | cross_community | 4 |
-| `EvaluationCenterWorkspace → ReadText` | cross_community | 4 |
-| `EvaluationCenterWorkspace → PadTimePart` | cross_community | 4 |
-
-## Connected Areas
-
-| Area | Connections |
-|------|-------------|
-| Agent_governance | 9 calls |
 
 ## How to Explore
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from datetime import timedelta
 from typing import Any, Iterator
@@ -24,6 +25,7 @@ from agent_governance.models import (
     EvaluatorTemplate,
     GuardrailPolicy,
     KnowledgeBase,
+    KnowledgeBaseVersion,
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeIndexVersion,
@@ -43,6 +45,7 @@ from agent_governance.models import (
     new_id,
     utc_now,
 )
+from agent_governance.knowledge_storage import SUPPORTED_SUFFIXES
 from agent_governance.workflow_graph import (
     WorkflowGraphError,
     normalize_agent_type,
@@ -61,6 +64,29 @@ DEFAULT_AGENT_LLM_CONFIG = {
 _UNSET: Any = object()
 KNOWLEDGE_DOCUMENT_STATUSES = {"uploaded", "queued", "parsing", "embedding", "indexed", "failed"}
 KNOWLEDGE_DOCUMENT_INGESTION_ERROR = "One or more documents failed ingestion"
+KNOWLEDGE_BASE_VERSION_STATUSES = {"draft", "indexed", "published", "archived", "failed"}
+KNOWLEDGE_BASE_RETRIEVAL_MODES = {"file", "vector"}
+KNOWLEDGE_BASE_SCOPES = {"domain", "agent", "shared"}
+CANONICAL_KNOWLEDGE_BASE_CHUNKING_STRATEGIES = {
+    "sentence",
+    "token",
+    "markdown",
+    "json",
+    "html",
+    "code",
+    "semantic",
+    "hierarchical",
+}
+LEGACY_KNOWLEDGE_BASE_CHUNKING_STRATEGIES = {
+    "semantic_sections": "semantic",
+    "fixed_size": "token",
+    "qa_pairs": "sentence",
+    "procedure_steps": "markdown",
+}
+KNOWLEDGE_BASE_CHUNKING_STRATEGIES = CANONICAL_KNOWLEDGE_BASE_CHUNKING_STRATEGIES | set(
+    LEGACY_KNOWLEDGE_BASE_CHUNKING_STRATEGIES
+)
+SEMANTIC_KB_VERSION_PATTERN = re.compile(r"^v\d+\.\d+\.\d+$")
 
 
 def metadata_with_default_llm(metadata: dict[str, Any] | None) -> dict[str, Any]:
@@ -2222,13 +2248,17 @@ class GovernanceStore:
                     .select_from(AgentKBAssignment)
                     .where(AgentKBAssignment.kb_id == kb_id)
                 )
-                latest_index = db.scalar(
-                    select(KnowledgeIndexVersion)
-                    .where(KnowledgeIndexVersion.kb_id == kb_id)
-                    .order_by(KnowledgeIndexVersion.created_at.desc())
-                )
+                latest_index = self._latest_kb_index(db, kb_id)
+                latest_version = self._latest_kb_version(db, kb_id)
+                published_version = self._published_kb_version(db, kb_id)
                 payload["latest_index"] = (
                     self._kb_index_to_dict(latest_index) if latest_index else None
+                )
+                payload["latest_version"] = (
+                    self._kb_version_to_dict(latest_version) if latest_version else None
+                )
+                payload["published_version"] = (
+                    self._kb_version_to_dict(published_version) if published_version else None
                 )
             return payloads
 
@@ -2240,6 +2270,7 @@ class GovernanceStore:
     def upsert_knowledge_base(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.session() as db:
             row = db.get(KnowledgeBase, payload["kb_id"])
+            create_initial_version = bool(payload.get("create_initial_version", True))
             explicit_source_config = payload.get("source_config")
             source_config = (
                 dict(explicit_source_config)
@@ -2248,6 +2279,7 @@ class GovernanceStore:
                 if row
                 else {}
             )
+            source_config.pop("create_initial_version", None)
             if "embedding_model" in payload:
                 source_config["embedding_model"] = payload["embedding_model"]
             if not row:
@@ -2264,6 +2296,30 @@ class GovernanceStore:
                     status=payload["status"] if "status" in payload else "draft",
                 )
                 db.add(row)
+                db.flush()
+                if create_initial_version:
+                    self._create_kb_version_row(
+                        db,
+                        row,
+                        {
+                            "version": source_config.get("version") or "v0.1.0",
+                            "status": source_config.get("version_status") or "draft",
+                            "retrieval_mode": source_config.get("retrieval_mode") or "file",
+                            "kb_scope": source_config.get("kb_scope")
+                            or ("domain" if row.domain else "shared"),
+                            "scope_ref": source_config.get("linked_agent_id")
+                            or source_config.get("scope_ref")
+                            or row.domain,
+                            "vector_backend": source_config.get("vector_backend") or "pgvector",
+                            "embedding_model": source_config.get("embedding_model")
+                            or payload.get("embedding_model")
+                            or "local/default",
+                            "chunking_strategy": source_config.get("chunking_strategy")
+                            or "semantic",
+                            "chunk_size": int(source_config.get("chunk_size") or 1024),
+                            "chunk_overlap": int(source_config.get("chunk_overlap") or 160),
+                        },
+                    )
             else:
                 row.display_name = payload["display_name"]
                 row.description = payload.get("description") or ""
@@ -2282,6 +2338,126 @@ class GovernanceStore:
             db.flush()
             return self._kb_to_dict(row)
 
+    def evaluate_knowledge_base(self, kb_id: str) -> dict[str, Any]:
+        with self.session() as db:
+            kb = db.get(KnowledgeBase, kb_id)
+            if not kb:
+                raise ValueError(f"Knowledge base {kb_id!r} not found")
+            documents = db.scalars(
+                select(KnowledgeDocument)
+                .where(KnowledgeDocument.kb_id == kb_id)
+                .order_by(KnowledgeDocument.created_at.asc())
+            ).all()
+            latest_version = self._latest_kb_version(db, kb_id)
+            latest_index = self._latest_kb_index(db, kb_id)
+            source_config = dict(kb.source_config or {})
+            retrieval_mode = source_config.get("retrieval_mode") or (
+                latest_version.retrieval_mode if latest_version else "file"
+            )
+            unsupported_files = [
+                document.file_name
+                for document in documents
+                if not any(
+                    document.file_name.lower().endswith(suffix) for suffix in SUPPORTED_SUFFIXES
+                )
+            ]
+            indexed_documents = [document for document in documents if document.status == "indexed"]
+            checks: dict[str, dict[str, Any]] = {
+                "file_count": {
+                    "status": "passed" if documents else "failed",
+                    "observed": len(documents),
+                },
+                "supported_files": {
+                    "status": "passed" if not unsupported_files else "failed",
+                    "unsupported_files": unsupported_files,
+                },
+                "version": {
+                    "status": "passed" if latest_version else "failed",
+                    "version": latest_version.version if latest_version else None,
+                },
+                "owner": {
+                    "status": "passed" if kb.owner else "failed",
+                    "owner": kb.owner,
+                },
+                "scope": {
+                    "status": "passed",
+                    "kb_scope": latest_version.kb_scope
+                    if latest_version
+                    else source_config.get("kb_scope"),
+                    "scope_ref": latest_version.scope_ref
+                    if latest_version
+                    else source_config.get("scope_ref"),
+                },
+            }
+            if retrieval_mode == "vector":
+                vector_passed = bool(
+                    latest_index
+                    and latest_index.status == "ready"
+                    and documents
+                    and len(indexed_documents) == len(documents)
+                    and latest_index.chunk_count > 0
+                )
+                checks["vector_index"] = {
+                    "status": "passed" if vector_passed else "failed",
+                    "index_version_id": latest_index.index_version_id if latest_index else None,
+                    "index_status": latest_index.status if latest_index else None,
+                    "indexed_document_count": len(indexed_documents),
+                    "chunk_count": latest_index.chunk_count if latest_index else 0,
+                }
+            else:
+                checks["vector_index"] = {
+                    "status": "skipped",
+                    "reason": "File knowledge bases do not use vector indexing",
+                }
+
+            failed_checks = [
+                name for name, check in checks.items() if check.get("status") == "failed"
+            ]
+            status = "failed" if failed_checks else "passed"
+            evaluation = {
+                "status": status,
+                "summary": {
+                    "kb_id": kb_id,
+                    "retrieval_mode": retrieval_mode,
+                    "file_count": len(documents),
+                    "failed_checks": failed_checks,
+                },
+                "checks": checks,
+                "evaluated_at": utc_now().isoformat(),
+            }
+            source_config["evaluation"] = evaluation
+            kb.source_config = source_config
+            kb.updated_at = utc_now()
+            db.flush()
+            return evaluation
+
+    def delete_knowledge_base(self, kb_id: str) -> bool:
+        with self.session() as db:
+            kb = db.get(KnowledgeBase, kb_id)
+            if not kb:
+                return False
+            assignment_count = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(AgentKBAssignment)
+                    .where(AgentKBAssignment.kb_id == kb_id)
+                )
+                or 0
+            )
+            if assignment_count:
+                raise ValueError("Knowledge base is assigned to agents")
+            db.query(KnowledgeChunk).filter(KnowledgeChunk.kb_id == kb_id).delete()
+            db.query(KnowledgeDocument).filter(KnowledgeDocument.kb_id == kb_id).delete()
+            db.query(KnowledgeSource).filter(KnowledgeSource.kb_id == kb_id).delete()
+            db.query(KnowledgeBaseVersion).filter(
+                KnowledgeBaseVersion.kb_id == kb_id,
+                KnowledgeBaseVersion.index_version_id.is_not(None),
+            ).update({KnowledgeBaseVersion.index_version_id: None}, synchronize_session=False)
+            db.query(KnowledgeIndexVersion).filter(KnowledgeIndexVersion.kb_id == kb_id).delete()
+            db.query(KnowledgeBaseVersion).filter(KnowledgeBaseVersion.kb_id == kb_id).delete()
+            db.delete(kb)
+            return True
+
     def get_knowledge_base_detail(self, kb_id: str) -> dict[str, Any] | None:
         with self.session() as db:
             row = db.get(KnowledgeBase, kb_id)
@@ -2293,17 +2469,21 @@ class GovernanceStore:
                 .where(KnowledgeSource.kb_id == kb_id)
                 .order_by(KnowledgeSource.created_at.desc())
             ).all()
-            latest_index = db.scalar(
-                select(KnowledgeIndexVersion)
-                .where(KnowledgeIndexVersion.kb_id == kb_id)
-                .order_by(KnowledgeIndexVersion.created_at.desc())
-            )
+            latest_index = self._latest_kb_index(db, kb_id)
             assignments = db.scalars(
                 select(AgentKBAssignment).where(AgentKBAssignment.kb_id == kb_id)
             ).all()
             payload["source_count"] = len(sources)
             payload["assigned_agent_count"] = len(assignments)
             payload["latest_index"] = self._kb_index_to_dict(latest_index) if latest_index else None
+            latest_version = self._latest_kb_version(db, kb_id)
+            published_version = self._published_kb_version(db, kb_id)
+            payload["latest_version"] = (
+                self._kb_version_to_dict(latest_version) if latest_version else None
+            )
+            payload["published_version"] = (
+                self._kb_version_to_dict(published_version) if published_version else None
+            )
             return payload
 
     def list_knowledge_sources(self, kb_id: str) -> list[dict[str, Any]]:
@@ -2360,9 +2540,7 @@ class GovernanceStore:
             source = db.get(KnowledgeSource, source_id)
             if not source or source.kb_id != kb_id:
                 raise ValueError(f"Knowledge source {source_id!r} not found for {kb_id!r}")
-            status = self._validate_knowledge_document_status(
-                payload.get("status") or "uploaded"
-            )
+            status = self._validate_knowledge_document_status(payload.get("status") or "uploaded")
             row = KnowledgeDocument(
                 document_id=new_id("kbd"),
                 kb_id=kb_id,
@@ -2413,9 +2591,7 @@ class GovernanceStore:
             db.flush()
             return self._kb_document_to_dict(row)
 
-    def mark_knowledge_document_indexed(
-        self, document_id: str, chunk_count: int
-    ) -> dict[str, Any]:
+    def mark_knowledge_document_indexed(self, document_id: str, chunk_count: int) -> dict[str, Any]:
         with self.session() as db:
             row = db.get(KnowledgeDocument, document_id)
             if not row:
@@ -2596,9 +2772,7 @@ class GovernanceStore:
                 else "draft"
             )
             kb.last_error = (
-                KNOWLEDGE_DOCUMENT_INGESTION_ERROR
-                if kb.status in {"degraded", "failed"}
-                else None
+                KNOWLEDGE_DOCUMENT_INGESTION_ERROR if kb.status in {"degraded", "failed"} else None
             )
             kb.last_indexed_at = indexed_at if chunk_count else kb.last_indexed_at
             kb.updated_at = indexed_at
@@ -2618,6 +2792,60 @@ class GovernanceStore:
                 index.error = kb.last_error
             db.flush()
             return self._kb_to_dict(kb)
+
+    def list_knowledge_base_versions(self, kb_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            if not db.get(KnowledgeBase, kb_id):
+                raise ValueError(f"Knowledge base {kb_id!r} not found")
+            rows = db.scalars(
+                select(KnowledgeBaseVersion)
+                .where(KnowledgeBaseVersion.kb_id == kb_id)
+                .order_by(KnowledgeBaseVersion.created_at.desc())
+            ).all()
+            return [self._kb_version_to_dict(row) for row in rows]
+
+    def create_knowledge_base_version(
+        self,
+        kb_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            kb = db.get(KnowledgeBase, kb_id)
+            if not kb:
+                raise ValueError(f"Knowledge base {kb_id!r} not found")
+            row = self._create_kb_version_row(db, kb, payload)
+            db.flush()
+            return self._kb_version_to_dict(row)
+
+    def publish_knowledge_base_version(
+        self,
+        kb_id: str,
+        version_id: str,
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            kb = db.get(KnowledgeBase, kb_id)
+            if not kb:
+                raise ValueError(f"Knowledge base {kb_id!r} not found")
+            row = db.get(KnowledgeBaseVersion, version_id)
+            if not row or row.kb_id != kb_id:
+                raise ValueError(f"Knowledge base version {version_id!r} not found for {kb_id!r}")
+            row.status = "published"
+            row.published_at = utc_now()
+            kb.status = "ready" if row.retrieval_mode == "file" else kb.status
+            source_config = dict(kb.source_config or {})
+            source_config["published_version"] = row.version
+            source_config["retrieval_mode"] = row.retrieval_mode
+            source_config["kb_scope"] = row.kb_scope
+            source_config["scope_ref"] = row.scope_ref
+            source_config["vector_backend"] = row.vector_backend
+            source_config["embedding_model"] = row.embedding_model
+            source_config["chunking_strategy"] = row.chunking_strategy
+            source_config["chunk_size"] = row.chunk_size
+            source_config["chunk_overlap"] = row.chunk_overlap
+            kb.source_config = source_config
+            kb.updated_at = utc_now()
+            db.flush()
+            return self._kb_version_to_dict(row)
 
     def list_agent_kb_assignments(self, agent_id: str) -> list[dict[str, Any]]:
         with self.session() as db:
@@ -2692,6 +2920,161 @@ class GovernanceStore:
             )
             db.delete(row)
             return True
+
+    def _create_kb_version_row(
+        self,
+        db: Session,
+        kb: KnowledgeBase,
+        payload: dict[str, Any],
+    ) -> KnowledgeBaseVersion:
+        version = self._validate_kb_semantic_version(payload.get("version") or "v0.1.0")
+        if db.scalar(
+            select(KnowledgeBaseVersion).where(
+                KnowledgeBaseVersion.kb_id == kb.kb_id,
+                KnowledgeBaseVersion.version == version,
+            )
+        ):
+            raise ValueError(f"Knowledge base version {version!r} already exists for {kb.kb_id!r}")
+        source_config = dict(kb.source_config or {})
+        retrieval_mode = self._validate_kb_retrieval_mode(
+            payload.get("retrieval_mode") or source_config.get("retrieval_mode") or "file"
+        )
+        kb_scope = self._validate_kb_scope(
+            payload.get("kb_scope")
+            or source_config.get("kb_scope")
+            or ("domain" if kb.domain else "shared")
+        )
+        chunking_strategy = self._validate_kb_chunking_strategy(
+            payload.get("chunking_strategy") or source_config.get("chunking_strategy") or "semantic"
+        )
+        status = self._validate_kb_version_status(payload.get("status") or "draft")
+        index_version_id = payload.get("index_version_id")
+        if index_version_id:
+            self._knowledge_index_for_kb(db, kb.kb_id, index_version_id)
+
+        row = KnowledgeBaseVersion(
+            version_id=new_id("kbv"),
+            kb_id=kb.kb_id,
+            version=version,
+            status=status,
+            notes=payload.get("notes") or "",
+            profile=payload.get("profile") or self._kb_to_dict(kb),
+            file_manifest=(
+                payload["file_manifest"]
+                if payload.get("file_manifest") is not None
+                else self._knowledge_file_manifest(db, kb.kb_id)
+            ),
+            retrieval_mode=retrieval_mode,
+            kb_scope=kb_scope,
+            scope_ref=(
+                payload.get("scope_ref")
+                or source_config.get("linked_agent_id")
+                or source_config.get("scope_ref")
+                or kb.domain
+            ),
+            vector_backend=payload.get("vector_backend")
+            or source_config.get("vector_backend")
+            or "pgvector",
+            embedding_model=payload.get("embedding_model")
+            or source_config.get("embedding_model")
+            or "local/default",
+            chunking_strategy=chunking_strategy,
+            chunk_size=int(payload.get("chunk_size") or source_config.get("chunk_size") or 1024),
+            chunk_overlap=int(
+                payload.get("chunk_overlap") or source_config.get("chunk_overlap") or 160
+            ),
+            index_version_id=index_version_id,
+            published_at=utc_now() if status == "published" else None,
+        )
+        db.add(row)
+        return row
+
+    @staticmethod
+    def _latest_kb_version(db: Session, kb_id: str) -> KnowledgeBaseVersion | None:
+        return db.scalar(
+            select(KnowledgeBaseVersion)
+            .where(KnowledgeBaseVersion.kb_id == kb_id)
+            .order_by(KnowledgeBaseVersion.created_at.desc())
+        )
+
+    @staticmethod
+    def _published_kb_version(db: Session, kb_id: str) -> KnowledgeBaseVersion | None:
+        return db.scalar(
+            select(KnowledgeBaseVersion)
+            .where(
+                KnowledgeBaseVersion.kb_id == kb_id,
+                KnowledgeBaseVersion.status == "published",
+            )
+            .order_by(KnowledgeBaseVersion.published_at.desc())
+        )
+
+    @staticmethod
+    def _latest_kb_index(db: Session, kb_id: str) -> KnowledgeIndexVersion | None:
+        meaningful_index = db.scalar(
+            select(KnowledgeIndexVersion)
+            .where(
+                KnowledgeIndexVersion.kb_id == kb_id,
+                KnowledgeIndexVersion.status != "pending",
+            )
+            .order_by(KnowledgeIndexVersion.created_at.desc())
+        )
+        if meaningful_index:
+            return meaningful_index
+        return db.scalar(
+            select(KnowledgeIndexVersion)
+            .where(KnowledgeIndexVersion.kb_id == kb_id)
+            .order_by(KnowledgeIndexVersion.created_at.desc())
+        )
+
+    @staticmethod
+    def _knowledge_file_manifest(db: Session, kb_id: str) -> list[dict[str, Any]]:
+        rows = db.scalars(
+            select(KnowledgeDocument)
+            .where(KnowledgeDocument.kb_id == kb_id)
+            .order_by(KnowledgeDocument.created_at.asc())
+        ).all()
+        return [
+            {
+                "document_id": row.document_id,
+                "file_name": row.file_name,
+                "checksum": row.checksum,
+                "status": row.status,
+                "chunk_count": row.chunk_count,
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _validate_kb_semantic_version(version: str) -> str:
+        if not SEMANTIC_KB_VERSION_PATTERN.fullmatch(version):
+            raise ValueError("Knowledge base version must use v0.0.0 format")
+        return version
+
+    @staticmethod
+    def _validate_kb_version_status(status: str) -> str:
+        if status not in KNOWLEDGE_BASE_VERSION_STATUSES:
+            raise ValueError(f"Unsupported knowledge base version status {status!r}")
+        return status
+
+    @staticmethod
+    def _validate_kb_retrieval_mode(retrieval_mode: str) -> str:
+        if retrieval_mode not in KNOWLEDGE_BASE_RETRIEVAL_MODES:
+            raise ValueError(f"Unsupported knowledge base retrieval mode {retrieval_mode!r}")
+        return retrieval_mode
+
+    @staticmethod
+    def _validate_kb_scope(kb_scope: str) -> str:
+        if kb_scope not in KNOWLEDGE_BASE_SCOPES:
+            raise ValueError(f"Unsupported knowledge base scope {kb_scope!r}")
+        return kb_scope
+
+    @staticmethod
+    def _validate_kb_chunking_strategy(chunking_strategy: str) -> str:
+        if chunking_strategy in LEGACY_KNOWLEDGE_BASE_CHUNKING_STRATEGIES:
+            return LEGACY_KNOWLEDGE_BASE_CHUNKING_STRATEGIES[chunking_strategy]
+        if chunking_strategy not in CANONICAL_KNOWLEDGE_BASE_CHUNKING_STRATEGIES:
+            raise ValueError(f"Unsupported knowledge base chunking strategy {chunking_strategy!r}")
+        return chunking_strategy
 
     @staticmethod
     def _validate_knowledge_document_status(status: str) -> str:
@@ -2828,6 +3211,31 @@ class GovernanceStore:
             "error": row.error,
             "created_at": row.created_at.isoformat(),
             "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        }
+
+    @staticmethod
+    def _kb_version_to_dict(row: KnowledgeBaseVersion | None) -> dict[str, Any]:
+        if not row:
+            return {}
+        return {
+            "version_id": row.version_id,
+            "kb_id": row.kb_id,
+            "version": row.version,
+            "status": row.status,
+            "notes": row.notes,
+            "profile": row.profile or {},
+            "file_manifest": row.file_manifest or [],
+            "retrieval_mode": row.retrieval_mode,
+            "kb_scope": row.kb_scope,
+            "scope_ref": row.scope_ref,
+            "vector_backend": row.vector_backend,
+            "embedding_model": row.embedding_model,
+            "chunking_strategy": row.chunking_strategy,
+            "chunk_size": row.chunk_size,
+            "chunk_overlap": row.chunk_overlap,
+            "index_version_id": row.index_version_id,
+            "created_at": row.created_at.isoformat(),
+            "published_at": row.published_at.isoformat() if row.published_at else None,
         }
 
     @staticmethod

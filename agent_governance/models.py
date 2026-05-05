@@ -508,7 +508,9 @@ class KnowledgeDocument(Base):
 
     document_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.kb_id"), nullable=False)
-    source_id: Mapped[str] = mapped_column(ForeignKey("knowledge_sources.source_id"), nullable=False)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_sources.source_id"), nullable=False
+    )
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     content_type: Mapped[str] = mapped_column(String(120), default="")
     storage_uri: Mapped[str] = mapped_column(Text, nullable=False)
@@ -527,7 +529,9 @@ class KnowledgeChunk(Base):
 
     chunk_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.kb_id"), nullable=False)
-    source_id: Mapped[str] = mapped_column(ForeignKey("knowledge_sources.source_id"), nullable=False)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_sources.source_id"), nullable=False
+    )
     document_id: Mapped[str] = mapped_column(
         ForeignKey("knowledge_documents.document_id"), nullable=False
     )
@@ -557,6 +561,34 @@ class KnowledgeIndexVersion(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class KnowledgeBaseVersion(Base):
+    __tablename__ = "knowledge_base_versions"
+    __table_args__ = (UniqueConstraint("kb_id", "version", name="uq_knowledge_base_version_label"),)
+
+    version_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.kb_id"), nullable=False)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft")
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    file_manifest: Mapped[list] = mapped_column(JSONB, default=list)
+    retrieval_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="file")
+    kb_scope: Mapped[str] = mapped_column(String(20), nullable=False, default="domain")
+    scope_ref: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    vector_backend: Mapped[str] = mapped_column(String(80), nullable=False, default="pgvector")
+    embedding_model: Mapped[str] = mapped_column(
+        String(160), nullable=False, default="local/default"
+    )
+    chunking_strategy: Mapped[str] = mapped_column(String(40), nullable=False, default="semantic")
+    chunk_size: Mapped[int] = mapped_column(Integer, nullable=False, default=1024)
+    chunk_overlap: Mapped[int] = mapped_column(Integer, nullable=False, default=160)
+    index_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("knowledge_index_versions.index_version_id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AgentKBAssignment(Base):

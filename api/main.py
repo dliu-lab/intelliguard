@@ -4,7 +4,7 @@ import os
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -14,8 +14,9 @@ from agent_governance.knowledge import KnowledgeRetrievalService, RetrievedDoc a
 from agent_governance.knowledge_indexing import (
     KnowledgeIngestionService,
     LlamaIndexKnowledgeIndexer,
+    OllamaEmbeddingProvider,
 )
-from agent_governance.knowledge_storage import KnowledgeFileStorage
+from agent_governance.knowledge_storage import KnowledgeFileStorage, is_image_file
 from agent_governance.models import utc_now
 from agent_governance.multi_agent import run_customer_support_workflow
 from agent_governance.policy import load_policy, policy_to_dict
@@ -29,6 +30,36 @@ from agent_governance.workflow_graph import WorkflowGraphError
 settings = load_settings()
 registry = build_customer_tool_registry()
 store = GovernanceStore(settings.database_url)
+KB_CHUNKING_STRATEGY_PATTERN = (
+    "^(sentence|token|markdown|json|html|code|semantic|hierarchical|"
+    "semantic_sections|fixed_size|qa_pairs|procedure_steps)$"
+)
+
+
+def reject_vector_image_uploads(retrieval_mode: str, files: list[UploadFile]) -> None:
+    if retrieval_mode != "vector":
+        return
+    if any(is_image_file(upload.filename or "", upload.content_type or "") for upload in files):
+        raise HTTPException(
+            status_code=400,
+            detail="Image files can only be attached to File KBs. Vector KBs support text, Markdown, PDF, DOCX, JSON, HTML, YAML, and source code until OCR indexing is available.",
+        )
+
+
+def config_int(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def knowledge_indexer_for_config(source_config: dict[str, Any]) -> LlamaIndexKnowledgeIndexer:
+    return LlamaIndexKnowledgeIndexer(
+        embedding_model=str(source_config.get("embedding_model") or "nomic-embed-text"),
+        chunking_strategy=str(source_config.get("chunking_strategy") or "semantic"),
+        chunk_size=config_int(source_config.get("chunk_size"), 512),
+        chunk_overlap=config_int(source_config.get("chunk_overlap"), 80),
+    )
 
 
 def build_runner(agent_id: str) -> GovernedToolRunner:
@@ -205,6 +236,51 @@ class KnowledgeBaseRequest(BaseModel):
     embedding_model: str = "local/default"
 
 
+class KnowledgeBaseCreateWithFilesMetadata(BaseModel):
+    kb_id: str = Field(min_length=1)
+    display_name: str = Field(min_length=1)
+    description: str = ""
+    owner: str = "Unassigned"
+    domain: str = ""
+    environment: str = Field(default="demo", min_length=1)
+    sensitivity: str = "internal"
+    retrieval_mode: str = Field(pattern="^(file|vector)$", default="file")
+    kb_scope: str = Field(pattern="^(domain|agent|shared)$", default="domain")
+    scope_ref: str = ""
+    linked_agent_id: str = ""
+    version: str = Field(pattern=r"^v\d+\.\d+\.\d+$", default="v0.1.0")
+    notes: str = ""
+    vector_backend: str = "pgvector"
+    embedding_model: str = "nomic-embed-text"
+    chunking_strategy: str = Field(
+        pattern=KB_CHUNKING_STRATEGY_PATTERN,
+        default="semantic",
+    )
+    chunk_size: int = Field(default=512, ge=128, le=8192)
+    chunk_overlap: int = Field(default=80, ge=0, le=2048)
+    index_after_create: bool = False
+
+
+class KnowledgeBaseVersionRequest(BaseModel):
+    version: str = Field(pattern=r"^v\d+\.\d+\.\d+$")
+    status: str = Field(pattern="^(draft|indexed|published|archived|failed)$", default="draft")
+    notes: str = ""
+    profile: dict[str, Any] = Field(default_factory=dict)
+    file_manifest: list[dict[str, Any]] | None = None
+    retrieval_mode: str = Field(pattern="^(file|vector)$", default="file")
+    kb_scope: str = Field(pattern="^(domain|agent|shared)$", default="domain")
+    scope_ref: str = ""
+    vector_backend: str = "pgvector"
+    embedding_model: str = "local/default"
+    chunking_strategy: str = Field(
+        pattern=KB_CHUNKING_STRATEGY_PATTERN,
+        default="semantic",
+    )
+    chunk_size: int = Field(default=512, ge=128, le=8192)
+    chunk_overlap: int = Field(default=80, ge=0, le=2048)
+    index_version_id: str | None = None
+
+
 class KnowledgeSourceRequest(BaseModel):
     source_id: str | None = None
     source_type: str = Field(pattern="^(vector_store|url|file)$", min_length=1)
@@ -215,8 +291,11 @@ class KnowledgeSourceRequest(BaseModel):
 
 
 class KnowledgeSyncRequest(BaseModel):
-    embedding_model: str = "local/default"
-    vector_backend: str = "local"
+    embedding_model: str | None = None
+    vector_backend: str | None = None
+    chunk_size: int | None = Field(default=None, ge=128, le=8192)
+    chunk_overlap: int | None = Field(default=None, ge=0, le=2048)
+    force_reindex: bool = True
 
 
 class AgentKBAssignmentRequest(BaseModel):
@@ -233,6 +312,7 @@ class AgentKBAssignmentRequest(BaseModel):
 class KBQueryRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1, le=50)
+    score_threshold: float | None = Field(default=None, ge=0, le=1)
 
 
 class AuditEventResponse(BaseModel):
@@ -327,6 +407,145 @@ def require_agent_identity_for_access(
         raise HTTPException(status_code=404, detail="Agent not found")
     require_environment_access(user, identity.get("environment"), permission)
     return identity
+
+
+def _record_metadata(record: dict[str, Any]) -> dict[str, Any]:
+    metadata = record.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _normalized_scope(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _normalized_scope_key(value: object) -> str:
+    return _normalized_scope(value).casefold()
+
+
+def _agent_domain(agent: dict[str, Any]) -> str:
+    metadata = _record_metadata(agent)
+    permissions = agent.get("permissions") if isinstance(agent.get("permissions"), dict) else {}
+    scopes = permissions.get("scopes") if isinstance(permissions.get("scopes"), dict) else {}
+    return _normalized_scope(
+        metadata.get("domain") or metadata.get("data_domain") or scopes.get("domain")
+    )
+
+
+def _resource_domain(record: dict[str, Any]) -> str:
+    metadata = _record_metadata(record)
+    return _normalized_scope(
+        record.get("domain") or metadata.get("domain") or metadata.get("data_domain")
+    )
+
+
+def _ensure_same_agent_environment(
+    agent: dict[str, Any],
+    record: dict[str, Any],
+    *,
+    resource_type: str,
+    resource_label: str,
+) -> None:
+    agent_environment = _normalized_scope(agent.get("environment"))
+    record_environment = _normalized_scope(record.get("environment"))
+    if agent_environment and record_environment and agent_environment != record_environment:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{resource_type} {resource_label} belongs to environment {record_environment} "
+                f"and cannot be attached to agent environment {agent_environment}."
+            ),
+        )
+
+
+def _ensure_same_agent_domain(
+    agent: dict[str, Any],
+    resource_domain: str,
+    *,
+    resource_type: str,
+    resource_label: str,
+) -> None:
+    agent_domain = _agent_domain(agent)
+    agent_key = _normalized_scope_key(agent_domain)
+    resource_key = _normalized_scope_key(resource_domain)
+    unscoped = {"", "all", "general", "shared"}
+    if agent_key in unscoped or resource_key in unscoped or agent_key == resource_key:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"{resource_type} {resource_label} belongs to domain {resource_domain} "
+            f"and cannot be attached to agent domain {agent_domain}."
+        ),
+    )
+
+
+def _knowledge_base_scope(kb: dict[str, Any]) -> tuple[str, str]:
+    source_config = kb.get("source_config") if isinstance(kb.get("source_config"), dict) else {}
+    scope = _normalized_scope(source_config.get("kb_scope") or "domain")
+    scope_ref = _normalized_scope(
+        source_config.get("scope_ref") or source_config.get("linked_agent_id") or kb.get("domain")
+    )
+
+    try:
+        versions = store.list_knowledge_base_versions(str(kb["kb_id"]))
+    except ValueError:
+        versions = []
+    published_version = next(
+        (version for version in versions if version.get("status") == "published"), None
+    )
+    active_version = published_version or versions[0] if versions else None
+    if active_version:
+        scope = _normalized_scope(active_version.get("kb_scope") or scope)
+        scope_ref = _normalized_scope(active_version.get("scope_ref") or scope_ref)
+    return scope, scope_ref
+
+
+def _ensure_tool_attachable_to_agent(agent: dict[str, Any], tool: dict[str, Any]) -> None:
+    tool_label = _normalized_scope(tool.get("tool_name") or tool.get("display_name") or "tool")
+    _ensure_same_agent_environment(
+        agent,
+        tool,
+        resource_type="Tool",
+        resource_label=tool_label,
+    )
+    _ensure_same_agent_domain(
+        agent,
+        _resource_domain(tool),
+        resource_type="Tool",
+        resource_label=tool_label,
+    )
+
+
+def _ensure_kb_attachable_to_agent(agent: dict[str, Any], kb: dict[str, Any]) -> None:
+    kb_label = _normalized_scope(kb.get("kb_id") or kb.get("display_name") or "knowledge base")
+    _ensure_same_agent_environment(
+        agent,
+        kb,
+        resource_type="Knowledge base",
+        resource_label=kb_label,
+    )
+    scope, scope_ref = _knowledge_base_scope(kb)
+    scope_key = _normalized_scope_key(scope)
+    if scope_key == "shared":
+        return
+    if scope_key == "agent":
+        agent_id = _normalized_scope(agent.get("agent_id"))
+        if not scope_ref or scope_ref == agent_id:
+            return
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Knowledge base {kb_label} is scoped to agent {scope_ref} "
+                f"and cannot be attached to agent {agent_id}."
+            ),
+        )
+
+    _ensure_same_agent_domain(
+        agent,
+        scope_ref or _resource_domain(kb),
+        resource_type="Knowledge base",
+        resource_label=kb_label,
+    )
 
 
 def _tool_payload(request: ToolCreateRequest) -> dict[str, Any]:
@@ -1003,6 +1222,7 @@ def grant_agent_tool(
         raise HTTPException(status_code=400, detail="Unknown tool")
     agent = require_agent_identity_for_access(agent_id, user, "tool:grant")
     agent_environment = str(agent["environment"])
+    _ensure_tool_attachable_to_agent(agent, tool)
     try:
         check_tool_certification(store, tool["tool_id"], agent_environment)
     except CertificationEnforcementError as exc:
@@ -1320,6 +1540,14 @@ def list_evaluator_templates(user: dict[str, Any] = Depends(current_user)) -> li
     return store.list_evaluator_templates()
 
 
+@app.get("/v1/evaluation-rules")
+def list_evaluation_rules(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+    from agent_governance.evaluation.rules import evaluation_rule_catalog
+
+    _ = user
+    return evaluation_rule_catalog(store.list_evaluator_templates())
+
+
 @app.post("/v1/evaluator-templates")
 def create_evaluator_template(
     request: EvaluatorTemplateRequest,
@@ -1448,6 +1676,129 @@ def create_knowledge_base(
     return store.upsert_knowledge_base(body.model_dump())
 
 
+@app.post("/v1/knowledge-bases/create-with-files")
+async def create_knowledge_base_with_files(
+    metadata: str = Form(...),
+    files: list[UploadFile] = File(default=[]),
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    try:
+        body = KnowledgeBaseCreateWithFilesMetadata.model_validate_json(metadata)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    require_environment_access(user, body.environment, "agent:create")
+    if store.get_knowledge_base(body.kb_id):
+        raise HTTPException(status_code=409, detail="Knowledge base already exists")
+    if not files:
+        raise HTTPException(status_code=400, detail="Attach at least one file before creating a KB")
+    if len(files) > 10:
+        raise HTTPException(status_code=400, detail="A KB can include at most 10 files")
+    reject_vector_image_uploads(body.retrieval_mode, files)
+
+    scope_ref = (
+        body.linked_agent_id
+        if body.kb_scope == "agent"
+        else body.scope_ref or body.domain or "shared"
+    )
+    vector_backend = body.vector_backend if body.retrieval_mode == "vector" else ""
+    try:
+        kb = store.upsert_knowledge_base(
+            {
+                "kb_id": body.kb_id,
+                "display_name": body.display_name,
+                "description": body.description,
+                "source_type": "file",
+                "source_config": {
+                    "kb_scope": body.kb_scope,
+                    "linked_agent_id": body.linked_agent_id,
+                    "scope_ref": scope_ref,
+                    "retrieval_mode": body.retrieval_mode,
+                    "vector_backend": vector_backend,
+                    "embedding_model": body.embedding_model,
+                    "chunking_strategy": body.chunking_strategy,
+                    "chunk_size": body.chunk_size,
+                    "chunk_overlap": body.chunk_overlap,
+                },
+                "environment": body.environment,
+                "owner": body.owner,
+                "domain": body.domain,
+                "sensitivity": body.sensitivity,
+                "embedding_model": body.embedding_model,
+                "create_initial_version": False,
+            }
+        )
+        documents = []
+        for upload in files:
+            data = await upload.read()
+            stored = KnowledgeFileStorage(DEFAULT_KB_UPLOAD_DIR).save_upload(
+                kb_id=body.kb_id,
+                file_name=upload.filename or "upload.txt",
+                content_type=upload.content_type or "",
+                data=data,
+            )
+            source = store.upsert_knowledge_source(
+                body.kb_id,
+                {
+                    "source_type": "file",
+                    "display_name": stored.file_name,
+                    "uri": stored.storage_uri,
+                    "content_type": stored.content_type,
+                    "source_config": {"checksum": stored.checksum},
+                    "status": "pending",
+                },
+            )
+            documents.append(
+                store.create_knowledge_document(
+                    body.kb_id,
+                    source["source_id"],
+                    {
+                        "file_name": stored.file_name,
+                        "content_type": stored.content_type,
+                        "storage_uri": stored.storage_uri,
+                        "size_bytes": stored.size_bytes,
+                        "checksum": stored.checksum,
+                    },
+                )
+            )
+        version = store.create_knowledge_base_version(
+            body.kb_id,
+            {
+                "version": body.version,
+                "status": "draft",
+                "notes": body.notes,
+                "retrieval_mode": body.retrieval_mode,
+                "kb_scope": body.kb_scope,
+                "scope_ref": scope_ref,
+                "vector_backend": vector_backend,
+                "embedding_model": body.embedding_model,
+                "chunking_strategy": body.chunking_strategy,
+                "chunk_size": body.chunk_size,
+                "chunk_overlap": body.chunk_overlap,
+                "profile": kb,
+                "file_manifest": None,
+            },
+        )
+        index = None
+        if body.retrieval_mode == "vector" and body.index_after_create and documents:
+            index = KnowledgeIngestionService(
+                store,
+                LlamaIndexKnowledgeIndexer(
+                    embedding_model=body.embedding_model,
+                    chunking_strategy=body.chunking_strategy,
+                    chunk_size=body.chunk_size,
+                    chunk_overlap=body.chunk_overlap,
+                ),
+            ).process_pending_documents(body.kb_id)
+        return {
+            "knowledge_base": store.get_knowledge_base(body.kb_id) or kb,
+            "documents": documents,
+            "version": version,
+            "index": index,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/v1/knowledge-bases/{kb_id}")
 def get_knowledge_base_detail(
     kb_id: str,
@@ -1459,6 +1810,86 @@ def get_knowledge_base_detail(
     require_environment_access(user, kb["environment"], "read")
     detail = store.get_knowledge_base_detail(kb_id)
     return detail or {}
+
+
+@app.get("/v1/knowledge-bases/{kb_id}/versions")
+def list_knowledge_base_versions(
+    kb_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "read")
+    try:
+        return store.list_knowledge_base_versions(kb_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/v1/knowledge-bases/{kb_id}/versions")
+def create_knowledge_base_version(
+    kb_id: str,
+    body: KnowledgeBaseVersionRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "agent:create")
+    try:
+        return store.create_knowledge_base_version(kb_id, body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/v1/knowledge-bases/{kb_id}/versions/{version_id}/publish")
+def publish_knowledge_base_version(
+    kb_id: str,
+    version_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "agent:create")
+    try:
+        return store.publish_knowledge_base_version(kb_id, version_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/v1/knowledge-bases/{kb_id}/evaluate")
+def evaluate_knowledge_base(
+    kb_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "read")
+    try:
+        return store.evaluate_knowledge_base(kb_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/v1/knowledge-bases/{kb_id}")
+def delete_knowledge_base(
+    kb_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, bool]:
+    kb = store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    require_environment_access(user, kb["environment"], "agent:create")
+    try:
+        deleted = store.delete_knowledge_base(kb_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    return {"deleted": True}
 
 
 @app.get("/v1/knowledge-bases/{kb_id}/sources")
@@ -1499,6 +1930,11 @@ async def upload_knowledge_file(
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     require_environment_access(user, kb["environment"], "agent:create")
+    if len(store.list_knowledge_documents(kb_id)) >= 10:
+        raise HTTPException(status_code=400, detail="This KB already has 10 files")
+    source_config = kb.get("source_config") if isinstance(kb.get("source_config"), dict) else {}
+    retrieval_mode = source_config.get("retrieval_mode") or "file"
+    reject_vector_image_uploads(retrieval_mode, [file])
     data = await file.read()
     try:
         stored = KnowledgeFileStorage(DEFAULT_KB_UPLOAD_DIR).save_upload(
@@ -1556,10 +1992,19 @@ def create_knowledge_sync_status(
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     require_environment_access(user, kb["environment"], "agent:create")
     try:
+        source_config = kb.get("source_config") if isinstance(kb.get("source_config"), dict) else {}
+        index_config = {
+            **source_config,
+            "embedding_model": body.embedding_model
+            or source_config.get("embedding_model")
+            or "nomic-embed-text",
+            "chunk_size": body.chunk_size or source_config.get("chunk_size"),
+            "chunk_overlap": body.chunk_overlap or source_config.get("chunk_overlap"),
+        }
         return KnowledgeIngestionService(
             store,
-            LlamaIndexKnowledgeIndexer(),
-        ).process_pending_documents(kb_id)
+            knowledge_indexer_for_config(index_config),
+        ).process_pending_documents(kb_id, force_reindex=body.force_reindex)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1579,10 +2024,11 @@ def assign_kb_to_agent(
     body: AgentKBAssignmentRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    require_agent_identity_for_access(agent_id, user, "agent:create")
+    agent = require_agent_identity_for_access(agent_id, user, "agent:create")
     kb = store.get_knowledge_base(body.kb_id)
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
+    _ensure_kb_attachable_to_agent(agent, kb)
     policy_updates = body.model_dump(
         include={
             "retrieval_mode",
@@ -1625,10 +2071,18 @@ def query_knowledge_base(
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     require_environment_access(user, kb["environment"], "read")
-    docs = KnowledgeRetrievalService(store).query(
+    source_config = kb.get("source_config") if isinstance(kb.get("source_config"), dict) else {}
+    embedding_model = (
+        source_config.get("embedding_model") or kb.get("embedding_model") or "nomic-embed-text"
+    )
+    docs = KnowledgeRetrievalService(
+        store,
+        embedding_provider=OllamaEmbeddingProvider(model_name=str(embedding_model)),
+    ).query(
         kb_id,
         body.query,
         kb["environment"],
         top_k=body.top_k,
+        score_threshold=body.score_threshold,
     )
     return [{"content": d.content, "score": d.score, "metadata": d.metadata} for d in docs]

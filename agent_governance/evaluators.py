@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from agent_governance.evaluation.judge import JudgeResult, run_judge_sync
 from agent_governance.store import GovernanceStore
 
 
@@ -12,6 +13,17 @@ class EvaluatorResult:
     score: int
     passed: bool
     findings: list[dict[str, Any]]
+
+
+def _merge_evaluator_config(default_config: Any, assignment_config: Any) -> dict[str, Any]:
+    base = default_config if isinstance(default_config, dict) else {}
+    override = assignment_config if isinstance(assignment_config, dict) else {}
+    config = {**base, **override}
+    base_judge = base.get("judge") if isinstance(base.get("judge"), dict) else {}
+    override_judge = override.get("judge") if isinstance(override.get("judge"), dict) else {}
+    if base_judge or override_judge:
+        config["judge"] = {**base_judge, **override_judge}
+    return config
 
 
 class EvaluatorEngine:
@@ -78,9 +90,13 @@ class EvaluatorEngine:
         session_id: str | None = None,
         workflow_id: str | None = None,
     ) -> EvaluatorResult:
-        config = {**template["default_config"], **assignment.get("config", {})}
+        config = _merge_evaluator_config(
+            template.get("default_config", {}),
+            assignment.get("config", {}),
+        )
         evaluator_type = template["evaluator_type"]
         evaluator_id = template.get("evaluator_id", evaluator_type)
+        llm_enabled = bool(template.get("llm_enabled"))
 
         if evaluator_type == "policy_compliance":
             return self._policy_compliance(evaluator_id, session_id, config)
@@ -91,7 +107,12 @@ class EvaluatorEngine:
         if evaluator_type == "workflow_completion":
             return self._workflow_completion(evaluator_id, workflow_id, config)
         if evaluator_type == "response_quality":
-            return self._response_quality(evaluator_id, session_id, config)
+            return self._response_quality(
+                evaluator_id,
+                session_id,
+                config,
+                llm_enabled=llm_enabled,
+            )
         return EvaluatorResult(
             evaluator_id=evaluator_id,
             score=0,
@@ -250,10 +271,31 @@ class EvaluatorEngine:
         )
 
     def _response_quality(
-        self, evaluator_id: str, session_id: str, config: dict
+        self,
+        evaluator_id: str,
+        session_id: str,
+        config: dict,
+        *,
+        llm_enabled: bool = False,
     ) -> EvaluatorResult:
         pass_threshold = config.get("pass_threshold", 80)
         events = self.store.workflow_for_session(session_id) if session_id else []
+        if llm_enabled:
+            judge_config = config.get("judge") if isinstance(config.get("judge"), dict) else config
+            judge_result = run_judge_sync(
+                "response_quality",
+                {
+                    "session_id": session_id,
+                    "events": events,
+                    "pass_threshold": pass_threshold,
+                },
+                judge_config,
+            )
+            return self._judge_to_evaluator_result(
+                evaluator_id,
+                judge_result,
+                pass_threshold=pass_threshold,
+            )
         checks = [e for e in events if e["event_type"] == "FINAL_RESPONSE_CHECK"]
         if not checks:
             return EvaluatorResult(
@@ -280,6 +322,35 @@ class EvaluatorEngine:
                     "check": "response_quality",
                     "result": "pass" if passed else "fail",
                     "detail": f"Final response check: {latest['status']}",
+                }
+            ],
+        )
+
+    @staticmethod
+    def _judge_to_evaluator_result(
+        evaluator_id: str,
+        judge_result: JudgeResult,
+        *,
+        pass_threshold: int,
+    ) -> EvaluatorResult:
+        score = 50 if judge_result.score is None else judge_result.score
+        passed = judge_result.status == "PASS" and score >= pass_threshold
+        return EvaluatorResult(
+            evaluator_id=evaluator_id,
+            score=score,
+            passed=passed,
+            findings=[
+                {
+                    "check": judge_result.criterion_name,
+                    "result": "pass"
+                    if passed
+                    else "review"
+                    if judge_result.status == "REVIEW"
+                    else "fail",
+                    "detail": judge_result.evidence_sentence,
+                    "judge_model": judge_result.judge_model,
+                    "prompt_version": judge_result.prompt_version,
+                    "raw_response": judge_result.raw_response,
                 }
             ],
         )

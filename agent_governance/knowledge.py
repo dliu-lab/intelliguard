@@ -37,6 +37,11 @@ class KnowledgeRetrievalService:
     ) -> list[RetrievedDoc]:
         query_embedding = self.embedding_provider.embed_query(query)
         filters = metadata_filters or {}
+        detail = self.store.get_knowledge_base_detail(kb_id) or {}
+        latest_index = detail.get("latest_index")
+        latest_index_id = (
+            latest_index.get("index_version_id") if isinstance(latest_index, dict) else None
+        )
         with self.store.session() as db:
             distance = KnowledgeChunk.embedding.cosine_distance(query_embedding)
             stmt = (
@@ -45,6 +50,8 @@ class KnowledgeRetrievalService:
                 .order_by(distance)
                 .limit(max(top_k, 1) * 3)
             )
+            if latest_index_id:
+                stmt = stmt.where(KnowledgeChunk.index_version_id == latest_index_id)
             rows = db.execute(stmt).all()
 
         docs: list[RetrievedDoc] = []

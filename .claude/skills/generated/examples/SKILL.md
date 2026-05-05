@@ -42,7 +42,7 @@ Start here when exploring this area:
 | `test_review_trigger_workflow_cli_database_url_helpers` | Function | `tests/test_runner_guardrails.py` | 254 |
 | `build_database_url` | Function | `examples/review_trigger_workflow.py` | 75 |
 | `main` | Function | `examples/review_trigger_workflow.py` | 118 |
-| `load_settings` | Function | `agent_governance/settings.py` | 18 |
+| `load_settings` | Function | `agent_governance/settings.py` | 25 |
 | `_store_database_url` | Function | `examples/review_trigger_workflow.py` | 71 |
 
 ## Execution Flows

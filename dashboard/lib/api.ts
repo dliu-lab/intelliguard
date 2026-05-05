@@ -18,6 +18,15 @@ export type BootstrapStatus = {
 };
 
 export type ApiRecord = Record<string, unknown>;
+export type KnowledgeChunkingStrategy =
+  | "sentence"
+  | "token"
+  | "markdown"
+  | "json"
+  | "html"
+  | "code"
+  | "semantic"
+  | "hierarchical";
 
 export type CertificationStatus = "DRAFT" | "EVALUATING" | "CERTIFIED" | "FAILED" | "NEEDS_REEVALUATION";
 
@@ -28,6 +37,45 @@ export type KnowledgeSourcePayload = {
   uri?: string;
   content_type?: string;
   source_config?: ApiRecord;
+};
+
+export type KnowledgeBaseVersionPayload = {
+  version: string;
+  status?: "draft" | "indexed" | "published" | "archived" | "failed";
+  notes?: string;
+  profile?: ApiRecord;
+  file_manifest?: ApiRecord[] | null;
+  retrieval_mode?: "file" | "vector";
+  kb_scope?: "domain" | "agent" | "shared";
+  scope_ref?: string;
+  vector_backend?: string;
+  embedding_model?: string;
+  chunking_strategy?: KnowledgeChunkingStrategy;
+  chunk_size?: number;
+  chunk_overlap?: number;
+  index_version_id?: string | null;
+};
+
+export type KnowledgeBaseCreateWithFilesPayload = {
+  kb_id: string;
+  display_name: string;
+  description?: string;
+  owner?: string;
+  domain?: string;
+  environment: string;
+  sensitivity?: string;
+  retrieval_mode: "file" | "vector";
+  kb_scope: "domain" | "agent" | "shared";
+  scope_ref?: string;
+  linked_agent_id?: string;
+  version: string;
+  notes?: string;
+  vector_backend?: string;
+  embedding_model?: string;
+  chunking_strategy?: KnowledgeChunkingStrategy;
+  chunk_size?: number;
+  chunk_overlap?: number;
+  index_after_create?: boolean;
 };
 
 export type EvaluationRun = {
@@ -88,6 +136,7 @@ export type PlatformData = {
   auditEvents: ApiRecord[];
   guardrailPolicies: ApiRecord[];
   evaluatorTemplates: ApiRecord[];
+  evaluationRules: ApiRecord[];
   evaluationRuns: EvaluationRun[];
   knowledgeBases: ApiRecord[];
   tools: ApiRecord[];
@@ -266,6 +315,64 @@ export function listKnowledgeDocuments(token: string, kbId: string) {
   });
 }
 
+export function listKnowledgeBaseVersions(token: string, kbId: string) {
+  return request<ApiRecord[]>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/versions`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function createKnowledgeBaseVersion(
+  token: string,
+  kbId: string,
+  payload: KnowledgeBaseVersionPayload,
+) {
+  return request<ApiRecord>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/versions`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createKnowledgeBaseWithFiles(
+  token: string,
+  payload: KnowledgeBaseCreateWithFilesPayload,
+  files: File[],
+) {
+  const body = new FormData();
+  body.append("metadata", JSON.stringify(payload));
+  files.forEach((file) => body.append("files", file));
+
+  return request<ApiRecord>("/v1/knowledge-bases/create-with-files", {
+    method: "POST",
+    headers: authHeaders(token),
+    body,
+  });
+}
+
+export function evaluateKnowledgeBase(token: string, kbId: string) {
+  return request<ApiRecord>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/evaluate`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export function deleteKnowledgeBase(token: string, kbId: string) {
+  return request<ApiRecord>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+}
+
+export function publishKnowledgeBaseVersion(token: string, kbId: string, versionId: string) {
+  return request<ApiRecord>(
+    `/v1/knowledge-bases/${encodeURIComponent(kbId)}/versions/${encodeURIComponent(versionId)}/publish`,
+    {
+      method: "POST",
+      headers: authHeaders(token),
+    },
+  );
+}
+
 export function createKnowledgeSource(
   token: string,
   kbId: string,
@@ -291,15 +398,18 @@ export function uploadKnowledgeFile(token: string, kbId: string, file: File) {
 export function syncKnowledgeBase(
   token: string,
   kbId: string,
-  payload: { embedding_model?: string; vector_backend?: string } = {},
+  payload: {
+    embedding_model?: string;
+    vector_backend?: string;
+    chunk_size?: number;
+    chunk_overlap?: number;
+    force_reindex?: boolean;
+  } = {},
 ) {
   return request<ApiRecord>(`/v1/knowledge-bases/${encodeURIComponent(kbId)}/sync`, {
     method: "POST",
     headers: authHeaders(token),
-    body: JSON.stringify({
-      embedding_model: payload.embedding_model ?? "local/default",
-      vector_backend: payload.vector_backend ?? "local",
-    }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -391,11 +501,27 @@ export function listEvaluationRuns(
   );
 }
 
+export function listEvaluationRules(token: string) {
+  return request<ApiRecord[]>("/v1/evaluation-rules", {
+    headers: authHeaders(token),
+  });
+}
+
 export function evaluateAgent(token: string, agentId: string) {
   return request<ApiRecord>(`/v1/agents/${encodeURIComponent(agentId)}/evaluate`, {
     method: "POST",
     headers: authHeaders(token),
   });
+}
+
+export function evaluateWorkflowDefinition(token: string, workflowDefinitionId: string) {
+  return request<ApiRecord>(
+    `/v1/workflow-definitions/${encodeURIComponent(workflowDefinitionId)}/evaluate`,
+    {
+      method: "POST",
+      headers: authHeaders(token),
+    },
+  );
 }
 
 export function getAgentCertification(token: string, agentId: string) {
@@ -544,6 +670,7 @@ export async function platformOverview(token: string, environment = "all"): Prom
     auditEvents,
     guardrailPolicies,
     evaluatorTemplates,
+    evaluationRules,
     evaluationRuns,
     knowledgeBases,
     tools,
@@ -558,6 +685,7 @@ export async function platformOverview(token: string, environment = "all"): Prom
     listAuditEvents(token, 100, environment),
     listGuardrailPolicies(token, environment),
     listEvaluatorTemplates(token),
+    listEvaluationRules(token),
     listEvaluationRuns(token, 100, environment),
     listKnowledgeBases(token, environment),
     listTools(token, environment),
@@ -613,6 +741,7 @@ export async function platformOverview(token: string, environment = "all"): Prom
     auditEvents,
     guardrailPolicies,
     evaluatorTemplates,
+    evaluationRules,
     evaluationRuns,
     knowledgeBases,
     tools,

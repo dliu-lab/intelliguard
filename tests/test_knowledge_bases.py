@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 from typing import Any
 
@@ -17,12 +18,14 @@ import api.main as api_main
 from api.main import (
     AgentKBAssignmentRequest,
     KnowledgeBaseRequest,
+    KnowledgeBaseVersionRequest,
     KnowledgeSourceRequest,
     KnowledgeSyncRequest,
 )
 from agent_governance.models import (
     AgentKBAssignment,
     KnowledgeBase,
+    KnowledgeBaseVersion,
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeIndexVersion,
@@ -111,8 +114,21 @@ def _create_file_document(
     return source, document
 
 
+def _upload_file(
+    file_name: str,
+    data: bytes = b"# Claims\n\nPolicy text.",
+    content_type: str = "text/markdown",
+) -> UploadFile:
+    return UploadFile(
+        filename=file_name,
+        file=BytesIO(data),
+        headers=Headers({"content-type": content_type}),
+    )
+
+
 def test_knowledge_models_are_declared() -> None:
     assert KnowledgeBase.__tablename__ == "knowledge_bases"
+    assert KnowledgeBaseVersion.__tablename__ == "knowledge_base_versions"
     assert KnowledgeSource.__tablename__ == "knowledge_sources"
     assert KnowledgeDocument.__tablename__ == "knowledge_documents"
     assert KnowledgeChunk.__tablename__ == "knowledge_chunks"
@@ -163,15 +179,38 @@ def test_knowledge_source_and_index_version_columns_are_declared() -> None:
     assert _column(KnowledgeIndexVersion, "completed_at").nullable is True
 
 
+def test_knowledge_base_version_columns_are_declared() -> None:
+    assert _column(KnowledgeBaseVersion, "version_id").primary_key is True
+    assert _column(KnowledgeBaseVersion, "kb_id").nullable is False
+    assert [fk.target_fullname for fk in _column(KnowledgeBaseVersion, "kb_id").foreign_keys] == [
+        "knowledge_bases.kb_id"
+    ]
+    assert [
+        fk.target_fullname for fk in _column(KnowledgeBaseVersion, "index_version_id").foreign_keys
+    ] == ["knowledge_index_versions.index_version_id"]
+    assert isinstance(_column(KnowledgeBaseVersion, "version").type, String)
+    assert _column(KnowledgeBaseVersion, "version").type.length == 32
+    assert _default_arg(KnowledgeBaseVersion, "status") == "draft"
+    assert isinstance(_column(KnowledgeBaseVersion, "profile").type, JSONB)
+    assert _default_factory_value(KnowledgeBaseVersion, "profile") == {}
+    assert isinstance(_column(KnowledgeBaseVersion, "file_manifest").type, JSONB)
+    assert _default_factory_value(KnowledgeBaseVersion, "file_manifest") == []
+    assert _default_arg(KnowledgeBaseVersion, "retrieval_mode") == "file"
+    assert _default_arg(KnowledgeBaseVersion, "kb_scope") == "domain"
+    assert _default_arg(KnowledgeBaseVersion, "vector_backend") == "pgvector"
+    assert _default_arg(KnowledgeBaseVersion, "chunking_strategy") == "semantic"
+    assert _default_arg(KnowledgeBaseVersion, "chunk_size") == 1024
+    assert _default_arg(KnowledgeBaseVersion, "chunk_overlap") == 160
+    assert _column(KnowledgeBaseVersion, "published_at").nullable is True
+
+
 def test_knowledge_document_and_chunk_columns_are_declared() -> None:
     assert _column(KnowledgeDocument, "document_id").primary_key is True
     assert _column(KnowledgeDocument, "kb_id").nullable is False
     assert [fk.target_fullname for fk in _column(KnowledgeDocument, "kb_id").foreign_keys] == [
         "knowledge_bases.kb_id"
     ]
-    assert [
-        fk.target_fullname for fk in _column(KnowledgeDocument, "source_id").foreign_keys
-    ] == [
+    assert [fk.target_fullname for fk in _column(KnowledgeDocument, "source_id").foreign_keys] == [
         "knowledge_sources.source_id"
     ]
     assert isinstance(_column(KnowledgeDocument, "file_name").type, String)
@@ -306,9 +345,7 @@ def test_init_db_creates_vector_extension_before_tables(monkeypatch) -> None:
     monkeypatch.setattr(
         runtime_db,
         "ensure_vector_extension",
-        lambda passed_engine: calls.append(
-            "vector" if passed_engine is engine else "wrong-engine"
-        ),
+        lambda passed_engine: calls.append("vector" if passed_engine is engine else "wrong-engine"),
         raising=False,
     )
     monkeypatch.setattr(
@@ -399,6 +436,13 @@ def test_runtime_schema_patches_existing_knowledge_tables(monkeypatch) -> None:
         ),
     )
     monkeypatch.setattr(
+        KnowledgeBaseVersion.__table__,
+        "create",
+        lambda engine, checkfirst=True: engine.connection.statements.append(
+            "CREATE TABLE knowledge_base_versions"
+        ),
+    )
+    monkeypatch.setattr(
         KnowledgeDocument.__table__,
         "create",
         lambda engine, checkfirst=True: engine.connection.statements.append(
@@ -428,6 +472,7 @@ def test_runtime_schema_patches_existing_knowledge_tables(monkeypatch) -> None:
     assert created_knowledge_tables == [
         "CREATE TABLE knowledge_sources",
         "CREATE TABLE knowledge_index_versions",
+        "CREATE TABLE knowledge_base_versions",
         "CREATE TABLE knowledge_documents",
         "CREATE TABLE knowledge_chunks",
     ]
@@ -486,6 +531,7 @@ def test_runtime_schema_creates_all_missing_knowledge_tables_in_order(monkeypatc
         (KnowledgeBase.__table__, "knowledge_bases"),
         (KnowledgeSource.__table__, "knowledge_sources"),
         (KnowledgeIndexVersion.__table__, "knowledge_index_versions"),
+        (KnowledgeBaseVersion.__table__, "knowledge_base_versions"),
         (KnowledgeDocument.__table__, "knowledge_documents"),
         (KnowledgeChunk.__table__, "knowledge_chunks"),
     ):
@@ -508,6 +554,7 @@ def test_runtime_schema_creates_all_missing_knowledge_tables_in_order(monkeypatc
         "CREATE TABLE knowledge_bases",
         "CREATE TABLE knowledge_sources",
         "CREATE TABLE knowledge_index_versions",
+        "CREATE TABLE knowledge_base_versions",
         "CREATE TABLE knowledge_documents",
         "CREATE TABLE knowledge_chunks",
     ]
@@ -585,6 +632,165 @@ def test_knowledge_base_source_and_index_lifecycle(store: GovernanceStore) -> No
     )
 
     assert updated["domain"] == ""
+
+
+def test_upsert_knowledge_base_can_delay_initial_version(
+    store: GovernanceStore,
+) -> None:
+    kb = store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-delayed-version-kb",
+            "display_name": "Claims Delayed Version KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {"retrieval_mode": "file"},
+            "environment": "demo",
+            "create_initial_version": False,
+        }
+    )
+
+    assert kb["source_config"] == {"retrieval_mode": "file"}
+    assert store.list_knowledge_base_versions("claims-delayed-version-kb") == []
+
+
+def test_create_file_kb_with_files_creates_initial_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    store: GovernanceStore,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    monkeypatch.setattr(api_main, "DEFAULT_KB_UPLOAD_DIR", str(tmp_path))
+    metadata = {
+        "kb_id": "claims-file-kb",
+        "display_name": "Claims File KB",
+        "description": "Claims source files.",
+        "owner": "Claims Ops",
+        "domain": "claims",
+        "environment": "demo",
+        "sensitivity": "internal",
+        "retrieval_mode": "file",
+        "kb_scope": "domain",
+        "scope_ref": "claims",
+        "version": "v0.1.0",
+        "notes": "Initial file KB.",
+    }
+
+    body = anyio.run(
+        api_main.create_knowledge_base_with_files,
+        json.dumps(metadata),
+        [_upload_file("claims.md")],
+        _super_admin_user(),
+    )
+
+    assert body["knowledge_base"]["kb_id"] == "claims-file-kb"
+    assert body["knowledge_base"]["source_config"]["retrieval_mode"] == "file"
+    assert body["documents"][0]["file_name"] == "claims.md"
+    assert body["version"]["version"] == "v0.1.0"
+    assert len(body["version"]["file_manifest"]) == 1
+    assert body["index"] is None
+
+
+def test_create_knowledge_base_with_files_rejects_more_than_ten_files(
+    monkeypatch: pytest.MonkeyPatch,
+    store: GovernanceStore,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    monkeypatch.setattr(api_main, "DEFAULT_KB_UPLOAD_DIR", str(tmp_path))
+    metadata = {
+        "kb_id": "claims-too-many-files-kb",
+        "display_name": "Claims Too Many Files KB",
+        "environment": "demo",
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(
+            api_main.create_knowledge_base_with_files,
+            json.dumps(metadata),
+            [_upload_file(f"claims-{index}.md") for index in range(11)],
+            _super_admin_user(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "A KB can include at most 10 files"
+
+
+def test_knowledge_base_version_lifecycle_snapshots_files_and_publishes(
+    store: GovernanceStore,
+) -> None:
+    _source, document = _create_file_document(store, "claims-versioned-kb")
+
+    initial_versions = store.list_knowledge_base_versions("claims-versioned-kb")
+
+    assert len(initial_versions) == 1
+    assert initial_versions[0]["version"] == "v0.1.0"
+    assert initial_versions[0]["status"] == "draft"
+
+    draft = store.create_knowledge_base_version(
+        "claims-versioned-kb",
+        {
+            "version": "v0.2.0",
+            "status": "draft",
+            "notes": "Added claims SOP file.",
+            "retrieval_mode": "vector",
+            "kb_scope": "agent",
+            "scope_ref": "agent_claims_triage",
+            "vector_backend": "pgvector",
+            "embedding_model": "nomic-embed-text",
+            "chunking_strategy": "semantic",
+            "chunk_size": 1024,
+            "chunk_overlap": 160,
+        },
+    )
+
+    assert draft["version"] == "v0.2.0"
+    assert draft["status"] == "draft"
+    assert draft["file_manifest"] == [
+        {
+            "document_id": document["document_id"],
+            "file_name": "claims-sop.txt",
+            "checksum": "claims-sop-checksum",
+            "status": "uploaded",
+            "chunk_count": 0,
+        }
+    ]
+    assert draft["retrieval_mode"] == "vector"
+    assert draft["kb_scope"] == "agent"
+    assert draft["scope_ref"] == "agent_claims_triage"
+
+    published = store.publish_knowledge_base_version(
+        "claims-versioned-kb",
+        draft["version_id"],
+    )
+
+    assert published["status"] == "published"
+    assert published["published_at"]
+    versions = store.list_knowledge_base_versions("claims-versioned-kb")
+    assert [version["version"] for version in versions] == ["v0.2.0", "v0.1.0"]
+    assert versions[0]["status"] == "published"
+
+
+def test_knowledge_base_version_rejects_invalid_semantic_version(
+    store: GovernanceStore,
+) -> None:
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-bad-version-kb",
+            "display_name": "Claims Bad Version KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {},
+            "environment": "demo",
+        }
+    )
+
+    with pytest.raises(ValueError, match="Knowledge base version must use v0.0.0 format"):
+        store.create_knowledge_base_version(
+            "claims-bad-version-kb",
+            {
+                "version": "1.0",
+            },
+        )
 
 
 def test_knowledge_document_and_chunk_lifecycle_updates_counts(
@@ -669,9 +875,7 @@ def test_knowledge_document_and_chunk_lifecycle_updates_counts(
         ],
     )
     updated = store.mark_knowledge_document_indexed(document["document_id"], 2)
-    aggregate = store.refresh_knowledge_base_index_state(
-        "claims-doc-kb", index["index_version_id"]
-    )
+    aggregate = store.refresh_knowledge_base_index_state("claims-doc-kb", index["index_version_id"])
 
     assert chunk_count == 2
     assert updated["status"] == "indexed"
@@ -796,9 +1000,7 @@ def test_knowledge_document_indexed_keeps_source_degraded_with_failed_sibling(
         },
     )
 
-    store.mark_knowledge_document_status(
-        failed_document["document_id"], "failed", "Parser failed"
-    )
+    store.mark_knowledge_document_status(failed_document["document_id"], "failed", "Parser failed")
     store.mark_knowledge_document_indexed(indexed_document["document_id"], 1)
     sources = store.list_knowledge_sources("claims-source-sibling-kb")
 
@@ -852,9 +1054,7 @@ def test_knowledge_document_status_keeps_source_degraded_with_failed_sibling(
         },
     )
 
-    store.mark_knowledge_document_status(
-        failed_document["document_id"], "failed", "Parser failed"
-    )
+    store.mark_knowledge_document_status(failed_document["document_id"], "failed", "Parser failed")
     store.mark_knowledge_document_status(parsing_document["document_id"], "parsing")
     sources = store.list_knowledge_sources("claims-source-transient-sibling-kb")
 
@@ -908,9 +1108,7 @@ def test_replace_knowledge_chunks_validates_index_version_kb(store: GovernanceSt
         store.replace_knowledge_chunks(document["document_id"], "missing-index", [])
 
     with pytest.raises(ValueError, match="belongs to knowledge base 'claims-other-index-kb'"):
-        store.replace_knowledge_chunks(
-            document["document_id"], other_index["index_version_id"], []
-        )
+        store.replace_knowledge_chunks(document["document_id"], other_index["index_version_id"], [])
 
 
 def test_refresh_knowledge_base_index_state_validates_index_version(
@@ -1077,7 +1275,9 @@ def test_refresh_counts_only_provided_index_version(store: GovernanceStore) -> N
         ],
     )
     store.mark_knowledge_document_indexed(document["document_id"], 1)
-    store.refresh_knowledge_base_index_state("claims-scoped-refresh-kb", old_index["index_version_id"])
+    store.refresh_knowledge_base_index_state(
+        "claims-scoped-refresh-kb", old_index["index_version_id"]
+    )
 
     new_index = store.create_knowledge_index_version(
         "claims-scoped-refresh-kb",
@@ -1134,9 +1334,7 @@ def test_refresh_degrades_when_indexed_and_failed_documents_mix(
         ],
     )
     store.mark_knowledge_document_indexed(indexed_document["document_id"], 1)
-    store.mark_knowledge_document_status(
-        failed_document["document_id"], "failed", "Parser failed"
-    )
+    store.mark_knowledge_document_status(failed_document["document_id"], "failed", "Parser failed")
 
     aggregate = store.refresh_knowledge_base_index_state(
         "claims-degraded-health-kb", index["index_version_id"]
@@ -1337,6 +1535,196 @@ def test_failed_knowledge_index_updates_kb_aggregate_health(store: GovernanceSto
     assert detailed["latest_index"]["error"] == "Parser failed"
 
 
+def test_evaluate_file_knowledge_base_skips_vector_index(
+    store: GovernanceStore,
+) -> None:
+    _create_file_document(store, "claims-file-evaluation-kb")
+
+    evaluation = store.evaluate_knowledge_base("claims-file-evaluation-kb")
+    refreshed = store.get_knowledge_base("claims-file-evaluation-kb")
+
+    assert evaluation["status"] == "passed"
+    assert evaluation["checks"]["file_count"]["status"] == "passed"
+    assert evaluation["checks"]["supported_files"]["status"] == "passed"
+    assert evaluation["checks"]["version"]["status"] == "passed"
+    assert evaluation["checks"]["owner"]["status"] == "passed"
+    assert evaluation["checks"]["scope"]["status"] == "passed"
+    assert evaluation["checks"]["vector_index"]["status"] == "skipped"
+    assert refreshed["source_config"]["evaluation"] == evaluation
+
+
+def test_evaluate_vector_knowledge_base_checks_latest_index(
+    store: GovernanceStore,
+) -> None:
+    _source, document = _create_file_document(store, "claims-vector-evaluation-kb")
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-vector-evaluation-kb",
+            "display_name": "Claims Vector Evaluation KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {"retrieval_mode": "vector"},
+            "environment": "demo",
+        }
+    )
+
+    failed = store.evaluate_knowledge_base("claims-vector-evaluation-kb")
+    assert failed["status"] == "failed"
+    assert failed["checks"]["vector_index"]["status"] == "failed"
+
+    index = store.create_knowledge_index_version(
+        "claims-vector-evaluation-kb",
+        {
+            "status": "ready",
+            "source_count": 1,
+            "document_count": 1,
+            "chunk_count": 1,
+            "embedding_model": "nomic-embed-text",
+            "vector_backend": "pgvector",
+        },
+    )
+    store.replace_knowledge_chunks(
+        document["document_id"],
+        index["index_version_id"],
+        [
+            {
+                "chunk_index": 0,
+                "content": "Claims vector text.",
+                "content_hash": "claims-vector-text",
+                "embedding": [0.1] * 768,
+                "metadata": {"kb_id": "claims-vector-evaluation-kb"},
+            }
+        ],
+    )
+    store.mark_knowledge_document_indexed(document["document_id"], 1)
+    store.refresh_knowledge_base_index_state(
+        "claims-vector-evaluation-kb",
+        index["index_version_id"],
+    )
+
+    passed = store.evaluate_knowledge_base("claims-vector-evaluation-kb")
+    assert passed["status"] == "passed"
+    assert passed["checks"]["vector_index"]["status"] == "passed"
+
+
+def test_delete_knowledge_base_blocks_assignments_and_deletes_rows(
+    store: GovernanceStore,
+) -> None:
+    _source, document = _create_file_document(store, "claims-delete-kb")
+    index = store.create_knowledge_index_version(
+        "claims-delete-kb",
+        {
+            "status": "indexing",
+            "embedding_model": "nomic-embed-text",
+            "vector_backend": "pgvector",
+        },
+    )
+    store.replace_knowledge_chunks(
+        document["document_id"],
+        index["index_version_id"],
+        [
+            {
+                "chunk_index": 0,
+                "content": "Claims delete text.",
+                "content_hash": "claims-delete-text",
+                "embedding": [0.1] * 768,
+                "metadata": {"kb_id": "claims-delete-kb"},
+            }
+        ],
+    )
+    store.create_knowledge_base_version(
+        "claims-delete-kb",
+        {
+            "version": "v0.2.0",
+            "index_version_id": index["index_version_id"],
+        },
+    )
+    store.upsert_agent_identity(
+        {
+            "agent_id": "claims-delete-agent",
+            "display_name": "Claims Delete Agent",
+            "agent_type": "task_agent",
+            "owner": "Claims Ops",
+            "environment": "demo",
+            "purpose": "Test KB delete assignment safety.",
+        }
+    )
+    assignment = store.upsert_agent_kb_assignment(
+        agent_id="claims-delete-agent",
+        kb_id="claims-delete-kb",
+        access_mode="read",
+    )
+
+    with pytest.raises(ValueError, match="assigned to agents"):
+        store.delete_knowledge_base("claims-delete-kb")
+
+    store.delete_agent_kb_assignment(assignment["assignment_id"])
+    assert store.delete_knowledge_base("claims-delete-kb") is True
+    assert store.delete_knowledge_base("claims-delete-kb") is False
+    assert store.get_knowledge_base("claims-delete-kb") is None
+    with store.session() as db:
+        assert (
+            db.scalar(
+                select(KnowledgeDocument).where(KnowledgeDocument.kb_id == "claims-delete-kb")
+            )
+            is None
+        )
+        assert (
+            db.scalar(select(KnowledgeChunk).where(KnowledgeChunk.kb_id == "claims-delete-kb"))
+            is None
+        )
+        assert (
+            db.scalar(
+                select(KnowledgeBaseVersion).where(KnowledgeBaseVersion.kb_id == "claims-delete-kb")
+            )
+            is None
+        )
+
+
+def test_evaluate_and_delete_knowledge_base_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+    store: GovernanceStore,
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    _create_file_document(store, "claims-kb-endpoints")
+
+    evaluation = api_main.evaluate_knowledge_base("claims-kb-endpoints", _super_admin_user())
+    deleted = api_main.delete_knowledge_base("claims-kb-endpoints", _super_admin_user())
+
+    assert evaluation["status"] == "passed"
+    assert deleted == {"deleted": True}
+    assert store.get_knowledge_base("claims-kb-endpoints") is None
+
+
+def test_delete_knowledge_base_endpoint_returns_409_for_assigned_kb(
+    monkeypatch: pytest.MonkeyPatch,
+    store: GovernanceStore,
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    _create_file_document(store, "claims-kb-delete-conflict")
+    store.upsert_agent_identity(
+        {
+            "agent_id": "claims-delete-conflict-agent",
+            "display_name": "Claims Delete Conflict Agent",
+            "agent_type": "task_agent",
+            "owner": "Claims Ops",
+            "environment": "demo",
+            "purpose": "Test KB delete conflict.",
+        }
+    )
+    store.upsert_agent_kb_assignment(
+        agent_id="claims-delete-conflict-agent",
+        kb_id="claims-kb-delete-conflict",
+        access_mode="read",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        api_main.delete_knowledge_base("claims-kb-delete-conflict", _super_admin_user())
+
+    assert exc_info.value.status_code == 409
+    assert "assigned to agents" in exc_info.value.detail
+
+
 def test_knowledge_source_and_index_reject_missing_kb(store: GovernanceStore) -> None:
     with pytest.raises(ValueError, match="Knowledge base 'missing-kb' not found"):
         store.upsert_knowledge_source(
@@ -1385,6 +1773,48 @@ def test_create_knowledge_source_translates_expected_store_errors(monkeypatch) -
     assert exc_info.value.detail == "Source 'shared-source' belongs to knowledge base 'other-kb'"
 
 
+def test_knowledge_base_version_endpoints_create_list_and_publish(
+    monkeypatch: pytest.MonkeyPatch,
+    store: GovernanceStore,
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    _create_file_document(store, "claims-version-api-kb")
+
+    created = api_main.create_knowledge_base_version(
+        "claims-version-api-kb",
+        KnowledgeBaseVersionRequest(
+            version="v0.2.0",
+            notes="Added claims SOP file.",
+            retrieval_mode="vector",
+            kb_scope="domain",
+            scope_ref="claims",
+            vector_backend="pgvector",
+            embedding_model="nomic-embed-text",
+            chunking_strategy="semantic",
+            chunk_size=1024,
+            chunk_overlap=160,
+        ),
+        _super_admin_user(),
+    )
+
+    assert created["version"] == "v0.2.0"
+    assert created["status"] == "draft"
+    assert created["file_manifest"][0]["file_name"] == "claims-sop.txt"
+
+    published = api_main.publish_knowledge_base_version(
+        "claims-version-api-kb",
+        created["version_id"],
+        _super_admin_user(),
+    )
+
+    assert published["status"] == "published"
+    versions = api_main.list_knowledge_base_versions(
+        "claims-version-api-kb",
+        _super_admin_user(),
+    )
+    assert [version["version"] for version in versions][:2] == ["v0.2.0", "v0.1.0"]
+
+
 def test_sync_knowledge_base_creates_pending_status_for_pending_source(
     monkeypatch,
     store: GovernanceStore,
@@ -1423,6 +1853,55 @@ def test_sync_knowledge_base_creates_pending_status_for_pending_source(
     assert index["chunk_count"] == 0
 
 
+def test_sync_knowledge_base_uses_selected_chunking_strategy_for_indexer(
+    monkeypatch: pytest.MonkeyPatch,
+    store: GovernanceStore,
+) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeIngestionService:
+        def __init__(self, passed_store: GovernanceStore, _indexer: object) -> None:
+            assert passed_store is store
+
+        def process_pending_documents(
+            self, kb_id: str, *, force_reindex: bool = False
+        ) -> dict[str, object]:
+            return {"kb_id": kb_id, "force_reindex": force_reindex}
+
+    class FakeIndexer:
+        def __init__(self, **kwargs: object) -> None:
+            captured_kwargs.update(kwargs)
+
+    monkeypatch.setattr(api_main, "store", store)
+    monkeypatch.setattr(api_main, "KnowledgeIngestionService", FakeIngestionService)
+    monkeypatch.setattr(api_main, "LlamaIndexKnowledgeIndexer", FakeIndexer)
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-sync-strategy-kb",
+            "display_name": "Claims Sync Strategy KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {
+                "retrieval_mode": "vector",
+                "chunking_strategy": "semantic",
+                "embedding_model": "nomic-embed-text",
+                "chunk_size": 512,
+                "chunk_overlap": 80,
+            },
+            "environment": "demo",
+        }
+    )
+
+    result = api_main.create_knowledge_sync_status(
+        "claims-sync-strategy-kb",
+        KnowledgeSyncRequest(force_reindex=True),
+        _super_admin_user(),
+    )
+
+    assert result == {"kb_id": "claims-sync-strategy-kb", "force_reindex": True}
+    assert captured_kwargs["chunking_strategy"] == "semantic"
+
+
 def test_upload_knowledge_file_creates_source_and_document(
     monkeypatch: pytest.MonkeyPatch, store: GovernanceStore, tmp_path
 ) -> None:
@@ -1458,6 +1937,96 @@ def test_upload_knowledge_file_creates_source_and_document(
     assert sources[0]["uri"] == document["storage_uri"]
 
 
+def test_upload_knowledge_file_allows_image_for_file_kb(
+    monkeypatch: pytest.MonkeyPatch, store: GovernanceStore, tmp_path
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    monkeypatch.setattr(api_main, "DEFAULT_KB_UPLOAD_DIR", str(tmp_path))
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-upload-image-kb",
+            "display_name": "Claims Upload Image KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {"retrieval_mode": "file"},
+            "environment": "demo",
+        }
+    )
+    upload = UploadFile(
+        filename="claim-photo.jpg",
+        file=BytesIO(b"fake jpeg bytes"),
+        headers=Headers({"content-type": "image/jpeg"}),
+    )
+
+    document = anyio.run(
+        api_main.upload_knowledge_file,
+        "claims-upload-image-kb",
+        upload,
+        _super_admin_user(),
+    )
+
+    assert document["file_name"] == "claim-photo.jpg"
+    assert document["content_type"] == "image/jpeg"
+
+
+def test_upload_knowledge_file_rejects_image_for_vector_kb(
+    monkeypatch: pytest.MonkeyPatch, store: GovernanceStore, tmp_path
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    monkeypatch.setattr(api_main, "DEFAULT_KB_UPLOAD_DIR", str(tmp_path))
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-upload-vector-image-kb",
+            "display_name": "Claims Upload Vector Image KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {"retrieval_mode": "vector"},
+            "environment": "demo",
+        }
+    )
+    upload = UploadFile(
+        filename="claim-photo.jpg",
+        file=BytesIO(b"fake jpeg bytes"),
+        headers=Headers({"content-type": "image/jpeg"}),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(
+            api_main.upload_knowledge_file,
+            "claims-upload-vector-image-kb",
+            upload,
+            _super_admin_user(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Image files can only be attached to File KBs" in exc_info.value.detail
+
+
+def test_upload_knowledge_file_rejects_more_than_ten_files(
+    monkeypatch: pytest.MonkeyPatch, store: GovernanceStore, tmp_path
+) -> None:
+    monkeypatch.setattr(api_main, "store", store)
+    monkeypatch.setattr(api_main, "DEFAULT_KB_UPLOAD_DIR", str(tmp_path))
+    for index in range(10):
+        _create_file_document(store, "claims-upload-limit-kb", label=f"Claims SOP {index}")
+    upload = UploadFile(
+        filename="extra.md",
+        file=BytesIO(b"# Extra claims guidance"),
+        headers=Headers({"content-type": "text/markdown"}),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(
+            api_main.upload_knowledge_file,
+            "claims-upload-limit-kb",
+            upload,
+            _super_admin_user(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "This KB already has 10 files"
+
+
 def test_list_knowledge_documents_returns_uploaded_files(
     monkeypatch: pytest.MonkeyPatch, store: GovernanceStore
 ) -> None:
@@ -1475,9 +2044,15 @@ def test_list_knowledge_documents_returns_uploaded_files(
 def test_query_knowledge_base_uses_retrieval_service(
     monkeypatch: pytest.MonkeyPatch, store: GovernanceStore
 ) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeEmbeddingProvider:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
     class FakeRetrieval:
-        def __init__(self, _store):
-            pass
+        def __init__(self, _store, embedding_provider: object | None = None):
+            captured["embedding_model"] = getattr(embedding_provider, "model_name", None)
 
         def query(
             self,
@@ -1485,7 +2060,9 @@ def test_query_knowledge_base_uses_retrieval_service(
             query: str,
             environment: str,
             top_k: int = 5,
+            score_threshold: float | None = None,
         ) -> list[api_main.RetrievedDoc]:
+            captured["score_threshold"] = score_threshold
             return [
                 api_main.RetrievedDoc(
                     content=f"{kb_id}:{query}:{environment}:{top_k}",
@@ -1502,14 +2079,15 @@ def test_query_knowledge_base_uses_retrieval_service(
             "display_name": "Claims Query KB",
             "description": "",
             "source_type": "file",
-            "source_config": {},
+            "source_config": {"embedding_model": "qwen3-embedding:8b"},
             "environment": "demo",
         }
     )
 
+    monkeypatch.setattr(api_main, "OllamaEmbeddingProvider", FakeEmbeddingProvider)
     results = api_main.query_knowledge_base(
         "claims-query-kb",
-        api_main.KBQueryRequest(query="review", top_k=3),
+        api_main.KBQueryRequest(query="review", top_k=3, score_threshold=0.42),
         _super_admin_user(),
     )
 
@@ -1520,6 +2098,68 @@ def test_query_knowledge_base_uses_retrieval_service(
             "metadata": {"kb_id": "claims-query-kb", "chunk_id": "chunk_1"},
         }
     ]
+    assert captured == {"embedding_model": "qwen3-embedding:8b", "score_threshold": 0.42}
+
+
+def test_query_knowledge_base_does_not_apply_default_score_threshold(
+    monkeypatch: pytest.MonkeyPatch, store: GovernanceStore
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeEmbeddingProvider:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
+    class FakeRetrieval:
+        def __init__(self, _store, embedding_provider: object | None = None):
+            captured["embedding_model"] = getattr(embedding_provider, "model_name", None)
+
+        def query(
+            self,
+            kb_id: str,
+            query: str,
+            environment: str,
+            top_k: int = 5,
+            score_threshold: float | None = None,
+        ) -> list[api_main.RetrievedDoc]:
+            captured["query"] = query
+            captured["top_k"] = top_k
+            captured["score_threshold"] = score_threshold
+            return [
+                api_main.RetrievedDoc(
+                    content="Semantic candidate with a modest similarity score.",
+                    score=0.24,
+                    metadata={"kb_id": kb_id, "environment": environment},
+                )
+            ]
+
+    monkeypatch.setattr(api_main, "store", store)
+    monkeypatch.setattr(api_main, "KnowledgeRetrievalService", FakeRetrieval)
+    monkeypatch.setattr(api_main, "OllamaEmbeddingProvider", FakeEmbeddingProvider)
+    store.upsert_knowledge_base(
+        {
+            "kb_id": "claims-threshold-query-kb",
+            "display_name": "Claims Threshold Query KB",
+            "description": "",
+            "source_type": "file",
+            "source_config": {"embedding_model": "nomic-embed-text"},
+            "environment": "demo",
+        }
+    )
+
+    results = api_main.query_knowledge_base(
+        "claims-threshold-query-kb",
+        api_main.KBQueryRequest(query="what this is", top_k=3),
+        _super_admin_user(),
+    )
+
+    assert results[0]["score"] == 0.24
+    assert captured == {
+        "embedding_model": "nomic-embed-text",
+        "query": "what this is",
+        "top_k": 3,
+        "score_threshold": None,
+    }
 
 
 def test_agent_kb_assignment_stores_retrieval_policy(store: GovernanceStore) -> None:

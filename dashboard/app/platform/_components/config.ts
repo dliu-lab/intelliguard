@@ -93,6 +93,7 @@ export const emptyPlatformData: PlatformData = {
   auditEvents: [],
   guardrailPolicies: [],
   evaluatorTemplates: [],
+  evaluationRules: [],
   evaluationRuns: [],
   knowledgeBases: [],
   tools: [],

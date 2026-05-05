@@ -88,7 +88,7 @@ export function WorkspaceViewContent({
   }
 
   if (activeView === "evaluation-center") {
-    return <EvaluationCenterWorkspace data={data} dataStatus={dataStatus} />;
+    return <EvaluationCenterWorkspace data={data} dataStatus={dataStatus} onRefresh={onRefresh} />;
   }
 
   if (activeView === "agentic-workflows") {
