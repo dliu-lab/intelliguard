@@ -127,6 +127,18 @@ export default function PlatformPage() {
     );
   }
 
+  function openWorkflowTrace(workflowIdOrSessionId: string) {
+    setSelectedTraceWorkflowId(workflowIdOrSessionId);
+    setActiveView("agentic-workflows");
+    window.history.replaceState(
+      null,
+      "",
+      workflowIdOrSessionId
+        ? `/platform/?view=agentic-workflows&workflow=${encodeURIComponent(workflowIdOrSessionId)}`
+        : "/platform/?view=agentic-workflows",
+    );
+  }
+
   if (status === "loading") {
     return <PlatformFrame message="Validating workspace session..." />;
   }
@@ -148,6 +160,7 @@ export default function PlatformPage() {
       onRefresh={refreshWorkspace}
       onViewSelect={switchWorkspaceView}
       onWorkflowAuditSelect={openWorkflowAudit}
+      onWorkflowTraceSelect={openWorkflowTrace}
       selectedEnvironment={selectedEnvironment}
       selectedTraceWorkflowId={selectedTraceWorkflowId}
       user={user}

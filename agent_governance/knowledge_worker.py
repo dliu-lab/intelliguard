@@ -10,6 +10,7 @@ from agent_governance.knowledge_indexing import (
 )
 from agent_governance.settings import DEFAULT_DATABASE_URL
 from agent_governance.store import GovernanceStore
+from agent_governance.telemetry import init_telemetry, set_attribute, trace_kb_operation
 
 
 def _config_int(value: object, fallback: int) -> int:
@@ -37,13 +38,21 @@ def process_once(database_url: str = DEFAULT_DATABASE_URL) -> int:
         if source_config.get("retrieval_mode") == "file":
             continue
         service = KnowledgeIngestionService(store, _indexer_for_kb(kb))
-        result = service.process_pending_documents(kb["kb_id"])
+        with trace_kb_operation(
+            operation="kb.worker.index",
+            kb_id=kb["kb_id"],
+            retrieval_mode=str(source_config.get("retrieval_mode") or "vector"),
+        ):
+            result = service.process_pending_documents(kb["kb_id"])
+            set_attribute("agentic.document_count", result.get("document_count"))
+            set_attribute("agentic.chunk_count", result.get("chunk_count"))
         if result.get("document_count") or result.get("chunk_count"):
             processed += 1
     return processed
 
 
 def main() -> None:
+    init_telemetry(service_name="agent-governance-kb-worker")
     database_url = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
     init_db(database_url)
     interval_seconds = int(os.getenv("KB_WORKER_INTERVAL_SECONDS", "15"))

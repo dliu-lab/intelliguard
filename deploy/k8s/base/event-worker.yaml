@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intelliguard-event-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: intelliguard-event-worker
+  template:
+    metadata:
+      labels:
+        app: intelliguard-event-worker
+        role: event-worker
+    spec:
+      containers:
+        - name: event-worker
+          image: ghcr.io/example/intelliguard-api:latest
+          command: ["python", "-m", "agent_governance.runtime.event_worker"]
+          envFrom:
+            - configMapRef:
+                name: intelliguard-runtime-config
+            - secretRef:
+                name: intelliguard-runtime-secrets
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

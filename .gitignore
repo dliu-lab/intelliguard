@@ -1,6 +1,9 @@
 AGENTS.md
 CLAUDE.md
 __pycache__/
+.claude/skills/
+.claude/settings.local.json
+.agents/skills/
 .playwright-mcp/
 *.py[cod]
 .pytest_cache/
@@ -9,13 +12,14 @@ __pycache__/
 *.egg-info/
 *.tsbuildinfo
 
-dashboard/node_modules/
+node_modules/
 dashboard/dist/
 dashboard/.next/
 dashboard/out/
 
 .env
 .DS_Store
+mockups/
 
 
 .gitnexus

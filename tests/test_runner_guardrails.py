@@ -198,6 +198,33 @@ def test_side_effect_tool_requires_review_before_execution(store):
     assert "SIDE_EFFECT_REQUIRES_REVIEW" in result.risk_types
 
 
+def test_tool_review_items_include_temporal_signal_metadata(store):
+    session_id = new_id("sess")
+    metadata = {"temporal_workflow_id": "wf-temporal", "temporal_run_id": "run-temporal"}
+    runner = GovernedToolRunner(
+        agent_id="customer-support-agent",
+        database_url=store.session_factory.kw["bind"].url.render_as_string(hide_password=False),
+        policy_path="policies/policy.yaml",
+        tools=build_customer_tool_registry(),
+        review_metadata=metadata,
+    )
+
+    result = runner.evaluate_tool_call(
+        session_id=session_id,
+        user_query="Update contact details for customer C123",
+        tool_name="update_contact_info",
+        tool_args={"customer_id": "C123", "new_value": {"phone": "+61 400 000 000"}},
+    )
+
+    review = next(
+        item
+        for item in store.list_review_queue(environment="demo")
+        if item["review_id"] == result.review_id
+    )
+    assert review["metadata"]["temporal_workflow_id"] == "wf-temporal"
+    assert review["metadata"]["temporal_run_id"] == "run-temporal"
+
+
 def test_review_trigger_workflow_script_creates_review_item(store):
     workflow_definition = install_review_trigger_workflow(store)
     assert workflow_definition["workflow_definition_id"] == "review-trigger-email-search"
@@ -214,6 +241,31 @@ def test_review_trigger_workflow_script_creates_review_item(store):
     assert review["status"] == "PENDING"
     assert "PII_EXPOSURE" in review["risk_types"]
     assert review["tool_args"]["filter"]["include_email"] is True
+
+
+def test_multi_agent_workflow_threads_temporal_review_metadata(store):
+    workflow_definition = install_review_trigger_workflow(store)
+    workflow_definition["metadata"] = {
+        **(workflow_definition.get("metadata") or {}),
+        "temporal_workflow_id": "wf-temporal",
+        "temporal_run_id": "run-temporal",
+    }
+
+    result = run_customer_support_workflow(
+        database_url=store.session_factory.kw["bind"].url.render_as_string(hide_password=False),
+        policy_path="policies/policy.yaml",
+        tools=build_customer_tool_registry(),
+        query="Find customers in Melbourne and include their emails",
+        workflow_definition=workflow_definition,
+    )
+
+    review = next(
+        item
+        for item in store.list_review_queue(environment="demo")
+        if item["workflow_id"] == result["workflow_id"] and item["tool_name"] == "search_customers"
+    )
+    assert review["metadata"]["temporal_workflow_id"] == "wf-temporal"
+    assert review["metadata"]["temporal_run_id"] == "run-temporal"
 
 
 def test_multi_agent_workflow_records_lead_routing_decision(store):
@@ -242,9 +294,7 @@ def test_multi_agent_workflow_records_lead_routing_decision(store):
 def test_multi_agent_workflow_requires_explicit_definition(store):
     with pytest.raises(ValueError, match="workflow_definition is required"):
         run_customer_support_workflow(
-            database_url=store.session_factory.kw["bind"].url.render_as_string(
-                hide_password=False
-            ),
+            database_url=store.session_factory.kw["bind"].url.render_as_string(hide_password=False),
             policy_path="policies/policy.yaml",
             tools=build_customer_tool_registry(),
             query="I need to check my bank account.",

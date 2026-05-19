@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intelliguard-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: intelliguard-api
+  template:
+    metadata:
+      labels:
+        app: intelliguard-api
+        role: control-plane
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/example/intelliguard-api:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: intelliguard-runtime-config
+            - secretRef:
+                name: intelliguard-runtime-secrets
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: intelliguard-api
+spec:
+  selector:
+    app: intelliguard-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

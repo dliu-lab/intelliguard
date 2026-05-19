@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intelliguard-kb-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: intelliguard-kb-worker
+  template:
+    metadata:
+      labels:
+        app: intelliguard-kb-worker
+        role: kb-worker
+    spec:
+      containers:
+        - name: kb-worker
+          image: ghcr.io/example/intelliguard-api:latest
+          command: ["python", "-m", "agent_governance.knowledge_worker"]
+          envFrom:
+            - configMapRef:
+                name: intelliguard-runtime-config
+            - secretRef:
+                name: intelliguard-runtime-secrets
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi

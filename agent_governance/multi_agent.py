@@ -1,18 +1,30 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 from uuid import uuid4
 
 from agent_governance.evaluators import EvaluatorEngine
 from agent_governance.customer_agent import format_tool_response
 from agent_governance.runner import GovernedToolRunner
+from agent_governance.runtime.tool_gateway import ToolGateway, ToolGatewayRequest
 from agent_governance.store import GovernanceStore
+from agent_governance.telemetry import (
+    add_event,
+    current_trace_id,
+    set_attribute,
+    set_attributes,
+    trace_agent_step,
+    trace_tool_call,
+    trace_workflow,
+)
 from agent_governance.tools import ToolRegistry
 from agent_governance.workflow_graph import workflow_graph_hash
 
 
 CUSTOMER_ID_RE = re.compile(r"\bC\d{3,}\b", re.IGNORECASE)
 LEAD_NODE_ID = "lead"
+
 
 def _workflow_connections(workflow_definition: dict, steps: list[dict]) -> list[dict]:
     step_ids: list[str] = []
@@ -96,6 +108,17 @@ def _incoming_connections(connections: list[dict]) -> dict[str, list[str]]:
     return incoming
 
 
+def _review_metadata_from_workflow_definition(workflow_definition: dict) -> dict[str, Any]:
+    metadata = workflow_definition.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        key: metadata[key]
+        for key in ("temporal_workflow_id", "temporal_run_id")
+        if metadata.get(key)
+    }
+
+
 def run_customer_support_workflow(
     *,
     database_url: str,
@@ -107,6 +130,63 @@ def run_customer_support_workflow(
     if workflow_definition is None:
         raise ValueError("workflow_definition is required")
 
+    with trace_workflow(
+        workflow_definition_id=workflow_definition.get("workflow_definition_id"),
+        environment=workflow_definition.get("environment"),
+        domain=workflow_definition.get("domain")
+        or (workflow_definition.get("metadata") or {}).get("domain"),
+        attributes={"agentic.query_length": len(query)},
+    ):
+        add_event(
+            "workflow.run.started",
+            {
+                "agentic.workflow_definition_id": workflow_definition.get("workflow_definition_id"),
+                "agentic.lead_agent_id": workflow_definition.get("lead_agent_id"),
+            },
+        )
+        result = _run_customer_support_workflow_impl(
+            database_url=database_url,
+            policy_path=policy_path,
+            tools=tools,
+            query=query,
+            workflow_definition=workflow_definition,
+        )
+        set_attributes(
+            {
+                "agentic.workflow_id": result.get("workflow_id"),
+                "agentic.decision": result.get("decision"),
+                "langfuse.session.id": result.get("workflow_id"),
+                "langfuse.trace.metadata.workflow_id": result.get("workflow_id"),
+                "langfuse.trace.metadata.decision": result.get("decision"),
+                "langfuse.trace.output": result.get("summary"),
+            }
+        )
+        add_event(
+            "workflow.run.completed",
+            {
+                "agentic.workflow_id": result.get("workflow_id"),
+                "agentic.decision": result.get("decision"),
+                "agentic.step_count": len(result.get("sessions") or {}),
+            },
+        )
+        trace_id = current_trace_id()
+        if trace_id:
+            result["trace_id"] = trace_id
+        return result
+
+
+def _run_customer_support_workflow_impl(
+    *,
+    database_url: str,
+    policy_path: str,
+    tools: ToolRegistry,
+    query: str,
+    workflow_definition: dict | None = None,
+) -> dict:
+    if workflow_definition is None:
+        raise ValueError("workflow_definition is required")
+
+    review_metadata = _review_metadata_from_workflow_definition(workflow_definition)
     store = GovernanceStore(database_url)
     steps = _workflow_steps(workflow_definition)
     connections = _workflow_connections(workflow_definition, steps)
@@ -148,6 +228,18 @@ def run_customer_support_workflow(
         customer_id=customer_id,
         query=query,
     )
+    set_attribute("agentic.graph_version_hash", graph_version_hash)
+    set_attribute("agentic.selected_step_count", len(routing["selected_steps"]))
+    add_event(
+        "workflow.routing.completed",
+        {
+            "agentic.selected_node_ids": routing["audit_payload"]["selected_node_ids"],
+            "agentic.skipped_node_count": len(
+                routing["audit_payload"]["skipped_conditional_node_ids"]
+            ),
+            "agentic.connection_count": len(connections),
+        },
+    )
     workflow_id = store.create_agent_workflow(
         name=f"{workflow_definition.get('name', 'Customer support investigation')} for {customer_id}",
         user_goal=query,
@@ -176,6 +268,13 @@ def run_customer_support_workflow(
             "lead_delegations": lead_delegations,
             "lead_routing": routing["audit_payload"],
         },
+    )
+    set_attributes(
+        {
+            "agentic.workflow_id": workflow_id,
+            "langfuse.session.id": workflow_id,
+            "langfuse.trace.metadata.workflow_id": workflow_id,
+        }
     )
 
     lead_session_id = f"sess_lead_{uuid4().hex[:10]}"
@@ -276,76 +375,128 @@ def run_customer_support_workflow(
         session_id = f"sess_{step_id}_{uuid4().hex[:10]}"
         role = step.get("role") or f"{step.get('node_type', 'task_agent')}:{step_id}"
         tool_name = step.get("tool_name")
-        store.ensure_agent_session(
-            session_id,
-            agent_id,
-            step.get("task") or step.get("label") or f"Run workflow step {step_id}",
-        )
-        store.link_session_to_workflow(
-            workflow_id=workflow_id,
-            session_id=session_id,
+        with trace_agent_step(
             agent_id=agent_id,
+            step_id=step_id,
             role=role,
-            parent_session_id=parent_session_id,
-            metadata={
-                "delegated_by": lead_agent_id,
-                "step_id": step_id,
-                "node_type": step.get("node_type"),
-                "activation_policy": step.get("activation_policy"),
-                "activation_stage": step.get("activation_stage"),
-                "connected_from": connected_from,
-                "direct_from_lead": LEAD_NODE_ID in connected_from,
+            node_type=step.get("node_type"),
+            attributes={
+                "agentic.workflow_id": workflow_id,
+                "agentic.parent_session_id": parent_session_id,
+                "agentic.connected_from": connected_from,
+                "langfuse.observation.metadata.workflow_id": workflow_id,
             },
-        )
-        step_session_ids[step_id] = session_id
-        identity = store.get_agent_identity(agent_id)
-        store.add_workflow_event(
-            session_id=session_id,
-            agent_id=agent_id,
-            event_type="AGENT_SELECTED",
-            label=identity["display_name"],
-            status="ACTIVE",
-            payload={"agent_identity": identity, "role": role, "step_id": step_id},
-        )
-        if tool_name:
-            runner = GovernedToolRunner(
-                agent_id=agent_id,
-                database_url=database_url,
-                policy_path=policy_path,
-                tools=tools,
+        ):
+            add_event(
+                "workflow.step.started",
+                {
+                    "agentic.workflow_id": workflow_id,
+                    "agentic.session_id": session_id,
+                    "agentic.tool_name": tool_name,
+                },
             )
-            result = runner.call_tool(
+            store.ensure_agent_session(
+                session_id,
+                agent_id,
+                step.get("task") or step.get("label") or f"Run workflow step {step_id}",
+            )
+            store.link_session_to_workflow(
+                workflow_id=workflow_id,
                 session_id=session_id,
-                user_query=_render_template(
-                    step.get("task") or step.get("label") or query, customer_id
-                ),
-                tool_name=tool_name,
-                tool_args=_render_value(step.get("tool_args") or {}, customer_id),
+                agent_id=agent_id,
+                role=role,
+                parent_session_id=parent_session_id,
+                metadata={
+                    "delegated_by": lead_agent_id,
+                    "step_id": step_id,
+                    "node_type": step.get("node_type"),
+                    "activation_policy": step.get("activation_policy"),
+                    "activation_stage": step.get("activation_stage"),
+                    "connected_from": connected_from,
+                    "direct_from_lead": LEAD_NODE_ID in connected_from,
+                },
             )
-            if result.decision == "ALLOW":
-                result = runner.check_final_response(
-                    session_id=session_id,
-                    response_text=format_tool_response(tool_name, result.result),
-                )
-        else:
-            decisions = [item["decision"] for item in step_results]
-            decision = (
-                "BLOCK" if "BLOCK" in decisions else "REVIEW" if "REVIEW" in decisions else "ALLOW"
-            )
+            step_session_ids[step_id] = session_id
+            identity = store.get_agent_identity(agent_id)
             store.add_workflow_event(
                 session_id=session_id,
                 agent_id=agent_id,
-                event_type="WORKFLOW_REVIEW",
-                label=step.get("label") or "Review workflow outputs",
-                status=decision,
-                payload={"step_results": step_results, "final_recommendation": decision},
+                event_type="AGENT_SELECTED",
+                label=identity["display_name"],
+                status="ACTIVE",
+                payload={"agent_identity": identity, "role": role, "step_id": step_id},
             )
-            result = _StepResult(
-                decision=decision, reason=f"{step.get('label', step_id)} completed."
-            )
-        store.update_session_status(session_id, "COMPLETED")
-        step_results.append(
-            {
+            if tool_name:
+
+                def runner_factory(runner_agent_id: str) -> GovernedToolRunner:
+                    return GovernedToolRunner(
+                        agent_id=runner_agent_id,
+                        database_url=database_url,
+                        policy_path=policy_path,
+                        tools=tools,
+                        review_metadata=review_metadata,
+                    )
+
+                gateway = ToolGateway(runner_factory)
+                with trace_tool_call(
+                    tool_name=tool_name,
+                    agent_id=agent_id,
+                    step_id=step_id,
+                    attributes={
+                        "agentic.session_id": session_id,
+                        "agentic.workflow_id": workflow_id,
+                        "langfuse.observation.metadata.workflow_id": workflow_id,
+                    },
+                ):
+                    result = gateway.invoke(
+                        ToolGatewayRequest(
+                            agent_id=agent_id,
+                            session_id=session_id,
+                            user_query=_render_template(
+                                step.get("task") or step.get("label") or query, customer_id
+                            ),
+                            tool_name=tool_name,
+                            tool_args=_render_value(step.get("tool_args") or {}, customer_id),
+                        ),
+                    )
+                    set_attribute("agentic.tool_decision", result.decision)
+                    set_attribute("agentic.risk_score", result.risk_score)
+                    add_event(
+                        "tool.call.completed",
+                        {
+                            "agentic.decision": result.decision,
+                            "agentic.risk_types": result.risk_types,
+                            "agentic.review_id": result.review_id,
+                        },
+                    )
+                    if result.decision == "ALLOW":
+                        result = runner_factory(agent_id).check_final_response(
+                            session_id=session_id,
+                            response_text=format_tool_response(tool_name, result.result),
+                        )
+                        set_attribute("agentic.final_response_decision", result.decision)
+            else:
+                decisions = [item["decision"] for item in step_results]
+                decision = (
+                    "BLOCK"
+                    if "BLOCK" in decisions
+                    else "REVIEW"
+                    if "REVIEW" in decisions
+                    else "ALLOW"
+                )
+                store.add_workflow_event(
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    event_type="WORKFLOW_REVIEW",
+                    label=step.get("label") or "Review workflow outputs",
+                    status=decision,
+                    payload={"step_results": step_results, "final_recommendation": decision},
+                )
+                result = _StepResult(
+                    decision=decision, reason=f"{step.get('label', step_id)} completed."
+                )
+            store.update_session_status(session_id, "COMPLETED")
+            step_result = {
                 "step_id": step_id,
                 "agent_id": agent_id,
                 "tool_name": tool_name,
@@ -353,7 +504,17 @@ def run_customer_support_workflow(
                 "reason": result.reason,
                 "session_id": session_id,
             }
-        )
+            set_attribute("agentic.step_decision", result.decision)
+            add_event(
+                "workflow.step.completed",
+                {
+                    "agentic.step_id": step_id,
+                    "agentic.agent_id": agent_id,
+                    "agentic.decision": result.decision,
+                    "agentic.tool_name": tool_name,
+                },
+            )
+        step_results.append(step_result)
 
     decisions = [item["decision"] for item in step_results]
     final_decision = (
@@ -428,6 +589,11 @@ def run_customer_support_workflow(
         "summary": summary,
         "lead_session_id": lead_session_id,
         "sessions": step_session_ids,
+        "step_results": step_results,
+        "evaluator_results": [
+            {"evaluator_id": result.evaluator_id, "score": result.score, "passed": result.passed}
+            for result in eval_results
+        ],
     }
 
 

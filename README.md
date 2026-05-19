@@ -56,9 +56,47 @@ Services:
 - API docs: `http://localhost:8000/docs`
 - Dashboard: `http://localhost:5175`
 - Postgres: `localhost:55432`
+- Workflow runner health: `http://localhost:8010/health`
 
 The API initializes and migrates tables on startup when `AUTO_INIT_DB=true`.
 It does not seed demo records by default. Set `SEED_DEMO_DATA=true` only for local demos.
+
+Production-like runtime workers are included in the base Compose file:
+
+- `workflow-runner` claims queued `workflow_runtime_runs` and executes certified deployment manifests.
+- `evaluator-worker` reserves the async evaluator queue boundary.
+- `event-worker` reserves the runtime event outbox publishing boundary.
+- `kb-worker` indexes knowledge-base documents.
+
+Optional Temporal services can be rendered or started with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.temporal.yml config
+docker compose -f docker-compose.yml -f docker-compose.temporal.yml up --build
+```
+
+Runtime configuration variables:
+
+| Variable | Purpose |
+|---|---|
+| `RUNTIME_QUEUE_BACKEND` | Queue implementation selector; current local default uses Postgres-backed polling. |
+| `TEMPORAL_ADDRESS` | Temporal frontend address for durable workflow workers. |
+| `WORKFLOW_RUNNER_CONCURRENCY` | Maximum workflow runs a runner process should execute concurrently. |
+| `TOOL_GATEWAY_TIMEOUT_MS` | Connector/tool call timeout budget. |
+| `MODEL_GATEWAY_ALLOWED_PROVIDERS` | Comma-separated model providers allowed through the model gateway. |
+| `RUNTIME_MAX_PARALLEL_NODES` | Platform cap for manifest `max_parallel_nodes`. |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | SQLAlchemy pool sizing per process. |
+| `MAX_DB_CONNECTION_BUDGET` | Guardrail for maximum DB connections consumed by a worker process. |
+
+Runtime performance smoke:
+
+```bash
+python scripts/runtime_load_test.py --deployment-id dep_123 --runs 1000 --concurrency 50
+```
+
+The script reports p50, p95, and p99 workflow latency plus placeholders for tool gateway,
+policy decision, evaluator, event stream lag, and queue wait metrics. Those placeholder
+metrics are populated once the corresponding runtime spans are exported by the event worker.
 
 ## Demo CLI
 

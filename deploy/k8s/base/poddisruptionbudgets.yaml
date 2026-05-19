@@ -1,0 +1,19 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: intelliguard-api
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: intelliguard-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: intelliguard-workflow-runner
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: intelliguard-workflow-runner

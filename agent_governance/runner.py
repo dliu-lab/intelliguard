@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field, replace as dataclass_replace
 from typing import Any
 
 from agent_governance.detectors import (
+    DetectorFinding,
     RiskAssessment,
     assess_final_response,
     assess_tool_call,
@@ -42,10 +43,12 @@ class GovernedToolRunner:
         database_url: str,
         policy_path: str,
         tools: ToolRegistry,
+        review_metadata: dict[str, Any] | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.store = GovernanceStore(database_url)
         self.tools = tools
+        self.review_metadata = dict(review_metadata or {})
         self.policy_id: str | None
         self.guardrail_mode, self.policy, self.policy_id = self._resolve_policy(policy_path)
         self.policy_hash = policy_snapshot_hash(self.policy)
@@ -90,6 +93,7 @@ class GovernedToolRunner:
         user_query: str,
         tool_name: str,
         tool_args: dict[str, Any],
+        idempotency_key: str | None = None,
     ) -> GovernedToolResult:
         self.store.ensure_agent_session(session_id, self.agent_id, user_query)
         agent_identity = self.store.get_agent_identity(self.agent_id)
@@ -115,6 +119,7 @@ class GovernedToolRunner:
                 "agent_identity": agent_identity,
                 "permission_snapshot": agent_identity.get("permissions", {}),
                 "requested_action": self._action_for_tool(tool_name),
+                "idempotency_key": idempotency_key,
             },
         )
 
@@ -143,30 +148,83 @@ class GovernedToolRunner:
         user_query: str,
         tool_name: str,
         tool_args: dict[str, Any],
+        idempotency_key: str | None = None,
     ) -> GovernedToolResult:
+        if idempotency_key and self._is_write_tool(tool_name):
+            prior = self.store.get_tool_call_by_idempotency_key(
+                self.agent_id, tool_name, idempotency_key
+            )
+            if prior:
+                return self._replay_idempotent_tool_call(
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    idempotency_key=idempotency_key,
+                    prior=prior,
+                )
+
         decision = self.evaluate_tool_call(
             session_id=session_id,
             user_query=user_query,
             tool_name=tool_name,
             tool_args=tool_args,
+            idempotency_key=idempotency_key,
         )
         if decision.decision != "ALLOW":
             self.store.update_session_status(session_id, decision.decision)
             return decision
 
-        self.store.add_tool_call(
+        tool = self.tools.get(tool_name)
+        try:
+            with self.store.session() as db:
+                result = tool(db, **tool_args)
+        except Exception as exc:
+            audit_event_id = self._audit(
+                session_id=session_id,
+                tool_name=tool_name,
+                assessment=RiskAssessment(
+                    decision="REVIEW",
+                    risk_score=70,
+                    findings=[
+                        DetectorFinding(
+                            risk_type="TOOL_RUNTIME_ERROR",
+                            score=70,
+                            reason=str(exc),
+                            rule="tool_runtime_error",
+                        )
+                    ],
+                    reason=str(exc),
+                ),
+                stage="tool_runtime_error",
+            )
+            self.store.update_session_status(session_id, "REVIEW")
+            return GovernedToolResult(
+                decision="REVIEW",
+                risk_score=70,
+                risk_types=["TOOL_RUNTIME_ERROR"],
+                reason=str(exc),
+                audit_event_id=audit_event_id,
+                metadata={"retryable": True},
+            )
+
+        result_assessment = assess_tool_result(self.policy, tool_name, result)
+        result_assessment = self._apply_mode(result_assessment)
+        result_summary = {
+            "result": result,
+            "risk_score": result_assessment.risk_score,
+            "risk_types": result_assessment.risk_types,
+            "reason": result_assessment.reason,
+        }
+        tool_call_id = self.store.add_tool_call(
             session_id=session_id,
             agent_id=self.agent_id,
             tool_name=tool_name,
             tool_args=tool_args,
-            decision="ALLOW",
+            idempotency_key=idempotency_key if self._is_write_tool(tool_name) else None,
+            decision=result_assessment.decision,
+            result_summary=result_summary,
         )
-        tool = self.tools.get(tool_name)
-        with self.store.session() as db:
-            result = tool(db, **tool_args)
-
-        result_assessment = assess_tool_result(self.policy, tool_name, result)
-        result_assessment = self._apply_mode(result_assessment)
+        if idempotency_key and self._is_write_tool(tool_name):
+            self.store.record_tool_idempotency_key(tool_call_id, idempotency_key)
         self.store.add_workflow_event(
             session_id=session_id,
             agent_id=self.agent_id,
@@ -208,6 +266,49 @@ class GovernedToolRunner:
             reason=decision.reason,
             result=result,
             audit_event_id=decision.audit_event_id,
+        )
+
+    def _is_write_tool(self, tool_name: str) -> bool:
+        try:
+            side_effect_level = str(
+                self.tools.metadata_for(tool_name).get("side_effect_level") or "read_only"
+            )
+        except KeyError:
+            return False
+        return side_effect_level not in {"", "none", "read_only"}
+
+    def _replay_idempotent_tool_call(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        idempotency_key: str,
+        prior: dict[str, Any],
+    ) -> GovernedToolResult:
+        result_summary = prior.get("result_summary") or {}
+        self.store.add_workflow_event(
+            session_id=session_id,
+            agent_id=self.agent_id,
+            event_type="TOOL_IDEMPOTENCY_REPLAY",
+            label="Tool idempotency replay",
+            status=prior.get("decision") or "ALLOW",
+            payload={
+                "tool_name": tool_name,
+                "idempotency_key": idempotency_key,
+                "tool_call_id": prior.get("tool_call_id"),
+            },
+        )
+        return GovernedToolResult(
+            decision=prior.get("decision") or "ALLOW",
+            risk_score=int(result_summary.get("risk_score") or 0),
+            risk_types=list(result_summary.get("risk_types") or []),
+            reason=str(result_summary.get("reason") or "Idempotent tool call replayed."),
+            result=result_summary.get("result"),
+            metadata={
+                "idempotency_key": idempotency_key,
+                "idempotency_replay": True,
+                "tool_call_id": prior.get("tool_call_id"),
+            },
         )
 
     def check_final_response(
@@ -401,6 +502,7 @@ class GovernedToolRunner:
                 risk_score=assessment.risk_score,
                 risk_types=assessment.risk_types,
                 reason=assessment.reason,
+                metadata=dict(self.review_metadata) if self.review_metadata else None,
             )
             self.store.add_workflow_event(
                 session_id=session_id,

@@ -1,0 +1,48 @@
+services:
+  temporal:
+    image: temporalio/auto-setup:1.25
+    environment:
+      DB: postgresql
+      DB_PORT: "5432"
+      POSTGRES_USER: governance
+      POSTGRES_PWD: governance
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+    ports:
+      - "7233:7233"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:5175
+    ports:
+      - "8088:8080"
+    depends_on:
+      - temporal
+
+  temporal-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        UV_EXTRAS: "--extra temporal"
+    command: ["python", "-m", "agent_governance.temporal.worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
+      POLICY_PATH: policies/policy.yaml
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_TASK_QUEUE: intelliguard-runtime
+      OTEL_ENABLED: "false"
+      OTEL_SERVICE_NAME: agent-governance-temporal-worker
+      OTEL_SERVICE_VERSION: "0.1.0"
+      OTEL_TRACES_EXPORTER: otlp
+      DEPLOYMENT_ENVIRONMENT: local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started

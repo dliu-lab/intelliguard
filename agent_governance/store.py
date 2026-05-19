@@ -19,6 +19,7 @@ from agent_governance.models import (
     AgentSession,
     AgentWorkflow,
     AuditEvent,
+    DeploymentJob,
     EvaluationCriterionResult,
     EvaluationRun,
     EvaluationResult,
@@ -32,6 +33,10 @@ from agent_governance.models import (
     KnowledgeSource,
     PolicyDecision,
     ReviewQueueItem,
+    RuntimeEventOutbox,
+    ScenarioRun,
+    ScenarioSuite,
+    ServiceConnector,
     ToolCertification,
     ToolCall,
     ToolRecord,
@@ -39,13 +44,19 @@ from agent_governance.models import (
     UserSession,
     UserEnvironmentAccess,
     WorkflowCertification,
+    WorkflowDeploymentRevision,
     WorkflowDefinition,
+    WorkflowDefinitionVersion,
     WorkflowEvent,
+    WorkflowGeneratedArtifact,
+    WorkflowRuntimeRun,
     WorkflowSessionLink,
     new_id,
     utc_now,
 )
 from agent_governance.knowledge_storage import SUPPORTED_SUFFIXES
+from agent_governance.adapters.http_service import validate_connector_record
+from agent_governance.telemetry import with_trace_context
 from agent_governance.workflow_graph import (
     WorkflowGraphError,
     normalize_agent_type,
@@ -67,6 +78,24 @@ KNOWLEDGE_DOCUMENT_INGESTION_ERROR = "One or more documents failed ingestion"
 KNOWLEDGE_BASE_VERSION_STATUSES = {"draft", "indexed", "published", "archived", "failed"}
 KNOWLEDGE_BASE_RETRIEVAL_MODES = {"file", "vector"}
 KNOWLEDGE_BASE_SCOPES = {"domain", "agent", "shared"}
+WORKFLOW_LIFECYCLE_TRANSITIONS = {
+    "DRAFT": {"IN_REVIEW", "ARCHIVED"},
+    "IN_REVIEW": {"CERTIFIED", "DRAFT", "ARCHIVED"},
+    "CERTIFIED": {"PACKAGED", "ARCHIVED"},
+    "PACKAGED": {"DEPLOYED", "ARCHIVED"},
+    "DEPLOYED": {"ACTIVE", "ARCHIVED"},
+    "ACTIVE": {"RETIRED"},
+    "RETIRED": {"ARCHIVED"},
+    "ARCHIVED": set(),
+}
+WORKFLOW_LOCKED_LIFECYCLE_STATUSES = {
+    "CERTIFIED",
+    "PACKAGED",
+    "DEPLOYED",
+    "ACTIVE",
+    "RETIRED",
+    "ARCHIVED",
+}
 CANONICAL_KNOWLEDGE_BASE_CHUNKING_STRATEGIES = {
     "sentence",
     "token",
@@ -115,6 +144,7 @@ SIGNUP_ROLE_ACCESS = {
                 "agent:create",
                 "agent:run",
                 "workflow:create",
+                "workflow:deploy",
                 "workflow:run",
                 "tool:create",
                 "tool:grant",
@@ -130,6 +160,7 @@ SIGNUP_ROLE_ACCESS = {
                 "agent:create",
                 "agent:run",
                 "workflow:create",
+                "workflow:deploy",
                 "workflow:run",
                 "tool:create",
                 "tool:grant",
@@ -139,6 +170,7 @@ SIGNUP_ROLE_ACCESS = {
                 "agent:create",
                 "agent:run",
                 "workflow:create",
+                "workflow:deploy",
                 "workflow:run",
                 "tool:create",
                 "tool:grant",
@@ -453,7 +485,7 @@ class GovernanceStore:
             rows = db.scalars(stmt).all()
             return [
                 self._workflow_definition_to_dict(
-                    row,
+                    self._ensure_workflow_lineage(db, row),
                     db.scalar(
                         select(WorkflowCertification).where(
                             WorkflowCertification.workflow_definition_id
@@ -469,6 +501,7 @@ class GovernanceStore:
             definition = db.get(WorkflowDefinition, workflow_definition_id)
             if not definition:
                 return None
+            definition = self._ensure_workflow_lineage(db, definition)
             cert = db.scalar(
                 select(WorkflowCertification).where(
                     WorkflowCertification.workflow_definition_id == workflow_definition_id
@@ -515,6 +548,16 @@ class GovernanceStore:
             if not definition:
                 definition = WorkflowDefinition(
                     workflow_definition_id=payload["workflow_definition_id"],
+                    workflow_root_id=payload.get("workflow_root_id")
+                    or payload["workflow_definition_id"],
+                    version=payload.get("version") or "v1",
+                    version_number=int(payload.get("version_number") or 1),
+                    previous_workflow_definition_id=payload.get("previous_workflow_definition_id"),
+                    source_workflow_definition_id=payload.get("source_workflow_definition_id"),
+                    lifecycle_status=payload.get("lifecycle_status") or "DRAFT",
+                    locked_at=payload.get("locked_at"),
+                    locked_by=payload.get("locked_by"),
+                    created_from_deployment_id=payload.get("created_from_deployment_id"),
                     name=payload["name"],
                     description=payload["description"],
                     owner=payload["owner"],
@@ -532,6 +575,15 @@ class GovernanceStore:
                 )
                 db.add(definition)
             else:
+                definition = self._ensure_workflow_lineage(db, definition)
+                if (
+                    definition.locked_at is not None
+                    or definition.lifecycle_status in WORKFLOW_LOCKED_LIFECYCLE_STATUSES
+                ):
+                    raise ValueError(
+                        "Locked workflow definitions cannot be edited in place. "
+                        "Create a new version."
+                    )
                 definition.name = payload["name"]
                 definition.description = payload["description"]
                 definition.owner = payload["owner"]
@@ -550,6 +602,7 @@ class GovernanceStore:
                 self._invalidate_workflow_cert_if_certified(
                     db, payload["workflow_definition_id"], "workflow graph changed"
                 )
+            self._sync_workflow_definition_version(db, definition)
             db.flush()
             cert = db.scalar(
                 select(WorkflowCertification).where(
@@ -558,6 +611,596 @@ class GovernanceStore:
                 )
             )
             return self._workflow_definition_to_dict(definition, cert)
+
+    def create_workflow_definition_version(
+        self,
+        *,
+        source_workflow_definition_id: str,
+        new_workflow_definition_id: str,
+        version: str,
+        change_summary: str,
+        created_by: str,
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            source = db.get(WorkflowDefinition, source_workflow_definition_id)
+            if not source:
+                raise ValueError("Source workflow definition not found")
+            source = self._ensure_workflow_lineage(db, source)
+            if db.get(WorkflowDefinition, new_workflow_definition_id):
+                raise ValueError("New workflow definition id already exists")
+            next_version_number = self._next_workflow_version_number(
+                db, source.workflow_root_id or source.workflow_definition_id
+            )
+            now = utc_now()
+            definition = WorkflowDefinition(
+                workflow_definition_id=new_workflow_definition_id,
+                workflow_root_id=source.workflow_root_id or source.workflow_definition_id,
+                version=version,
+                version_number=next_version_number,
+                previous_workflow_definition_id=source.workflow_definition_id,
+                source_workflow_definition_id=source.workflow_definition_id,
+                lifecycle_status="DRAFT",
+                name=source.name,
+                description=source.description,
+                owner=source.owner,
+                environment=source.environment,
+                domain=source.domain,
+                lead_agent_id=source.lead_agent_id,
+                trigger_type=source.trigger_type,
+                steps=source.steps or [],
+                nodes=source.nodes or [],
+                edges=source.edges or [],
+                policy_bindings=source.policy_bindings or {},
+                review_rules=source.review_rules or {},
+                graph_version_hash=source.graph_version_hash,
+                metadata_json={
+                    **(source.metadata_json or {}),
+                    "version_created_from": source.workflow_definition_id,
+                },
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(definition)
+            self._sync_workflow_definition_version(
+                db,
+                source,
+                change_summary=None,
+                created_by=created_by,
+            )
+            self._sync_workflow_definition_version(
+                db,
+                definition,
+                change_summary=change_summary,
+                created_by=created_by,
+            )
+            db.flush()
+            return self._workflow_definition_to_dict(definition)
+
+    def transition_workflow_lifecycle(
+        self, workflow_definition_id: str, target_status: str, actor: str
+    ) -> dict[str, Any]:
+        target = target_status.upper()
+        with self.session() as db:
+            definition = db.get(WorkflowDefinition, workflow_definition_id)
+            if not definition:
+                raise ValueError("Workflow definition not found")
+            definition = self._ensure_workflow_lineage(db, definition)
+            current = definition.lifecycle_status or "DRAFT"
+            allowed = WORKFLOW_LIFECYCLE_TRANSITIONS.get(current, set())
+            if target not in allowed:
+                raise ValueError(f"Invalid workflow lifecycle transition: {current} -> {target}")
+            definition.lifecycle_status = target
+            if target in WORKFLOW_LOCKED_LIFECYCLE_STATUSES and not definition.locked_at:
+                definition.locked_at = utc_now()
+                definition.locked_by = actor
+            definition.updated_at = utc_now()
+            self._sync_workflow_definition_version(db, definition, created_by=actor)
+            db.flush()
+            return self._workflow_definition_to_dict(definition)
+
+    def list_workflow_definition_versions(self, workflow_root_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            root_definition = db.get(WorkflowDefinition, workflow_root_id)
+            if root_definition:
+                root_definition = self._ensure_workflow_lineage(db, root_definition)
+                workflow_root_id = root_definition.workflow_root_id or workflow_root_id
+            rows = db.scalars(
+                select(WorkflowDefinitionVersion)
+                .where(WorkflowDefinitionVersion.workflow_root_id == workflow_root_id)
+                .order_by(
+                    WorkflowDefinitionVersion.version_number,
+                    WorkflowDefinitionVersion.created_at,
+                )
+            ).all()
+            return [self._workflow_definition_version_to_dict(row) for row in rows]
+
+    def create_workflow_deployment_revision(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            workflow_definition_id = payload["workflow_definition_id"]
+            if not db.get(WorkflowDefinition, workflow_definition_id):
+                raise ValueError("Workflow definition not found")
+            deployment_id = payload.get("deployment_id") or new_id("deploy")
+            if db.get(WorkflowDeploymentRevision, deployment_id):
+                raise ValueError("Workflow deployment revision already exists")
+            row = WorkflowDeploymentRevision(
+                deployment_id=deployment_id,
+                workflow_definition_id=workflow_definition_id,
+                environment=payload["environment"],
+                version=payload["version"],
+                status=payload.get("status") or "PACKAGED",
+                manifest=payload.get("manifest") or {},
+                manifest_hash=payload["manifest_hash"],
+                graph_version_hash=payload.get("graph_version_hash"),
+                agent_config_hashes=payload.get("agent_config_hashes") or {},
+                tool_config_hashes=payload.get("tool_config_hashes") or {},
+                evaluator_config_hashes=payload.get("evaluator_config_hashes") or {},
+                policy_hashes=payload.get("policy_hashes") or {},
+                kb_version_hashes=payload.get("kb_version_hashes") or {},
+                runtime_type=payload.get("runtime_type") or "native",
+                runtime_limits=payload.get("runtime_limits") or {},
+                created_by=payload.get("created_by") or "system",
+            )
+            db.add(row)
+            db.flush()
+            return self._workflow_deployment_revision_to_dict(row)
+
+    def get_workflow_deployment_revision(self, deployment_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(WorkflowDeploymentRevision, deployment_id)
+            return self._workflow_deployment_revision_to_dict(row) if row else None
+
+    def get_active_workflow_deployment(
+        self, workflow_definition_id: str, environment: str
+    ) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.scalar(
+                select(WorkflowDeploymentRevision)
+                .where(
+                    WorkflowDeploymentRevision.workflow_definition_id == workflow_definition_id,
+                    WorkflowDeploymentRevision.environment == environment,
+                    WorkflowDeploymentRevision.status == "ACTIVE",
+                )
+                .order_by(desc(WorkflowDeploymentRevision.activated_at))
+            )
+            return self._workflow_deployment_revision_to_dict(row) if row else None
+
+    def activate_workflow_deployment(self, deployment_id: str) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.get(WorkflowDeploymentRevision, deployment_id)
+            if not row:
+                raise ValueError("Workflow deployment revision not found")
+            if row.status == "RETIRED":
+                raise ValueError("Retired workflow deployment revisions cannot be activated")
+            now = utc_now()
+            active_rows = db.scalars(
+                select(WorkflowDeploymentRevision).where(
+                    WorkflowDeploymentRevision.workflow_definition_id == row.workflow_definition_id,
+                    WorkflowDeploymentRevision.environment == row.environment,
+                    WorkflowDeploymentRevision.status == "ACTIVE",
+                    WorkflowDeploymentRevision.deployment_id != row.deployment_id,
+                )
+            ).all()
+            for active_row in active_rows:
+                active_row.status = "RETIRED"
+                active_row.retired_at = now
+            row.status = "ACTIVE"
+            row.activated_at = row.activated_at or now
+            row.retired_at = None
+            db.flush()
+            return self._workflow_deployment_revision_to_dict(row)
+
+    def retire_workflow_deployment(self, deployment_id: str) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.get(WorkflowDeploymentRevision, deployment_id)
+            if not row:
+                raise ValueError("Workflow deployment revision not found")
+            row.status = "RETIRED"
+            row.retired_at = row.retired_at or utc_now()
+            db.flush()
+            return self._workflow_deployment_revision_to_dict(row)
+
+    def create_workflow_generated_artifact(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            row = WorkflowGeneratedArtifact(
+                artifact_id=payload.get("artifact_id") or new_id("artifact"),
+                deployment_id=payload["deployment_id"],
+                workflow_definition_id=payload["workflow_definition_id"],
+                artifact_type=payload["artifact_type"],
+                artifact_name=payload["artifact_name"],
+                content=payload.get("content"),
+                content_hash=payload["content_hash"],
+                storage_uri=payload.get("storage_uri"),
+                status=payload.get("status") or "GENERATED",
+            )
+            db.add(row)
+            db.flush()
+            return self._workflow_generated_artifact_to_dict(row)
+
+    def list_workflow_generated_artifacts(self, deployment_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(WorkflowGeneratedArtifact)
+                .where(WorkflowGeneratedArtifact.deployment_id == deployment_id)
+                .order_by(WorkflowGeneratedArtifact.created_at)
+            ).all()
+            return [self._workflow_generated_artifact_to_dict(row) for row in rows]
+
+    def create_deployment_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            row = DeploymentJob(
+                job_id=payload.get("job_id") or new_id("job"),
+                deployment_id=payload["deployment_id"],
+                environment=payload["environment"],
+                backend=payload["backend"],
+                status=payload.get("status") or "PENDING",
+                requested_by=payload.get("requested_by") or "system",
+                image_ref=payload.get("image_ref"),
+                worker_pool=payload.get("worker_pool"),
+                logs=payload.get("logs") or [],
+                metadata_json=payload.get("metadata") or {},
+                started_at=payload.get("started_at") or utc_now(),
+                completed_at=payload.get("completed_at"),
+                error=payload.get("error"),
+            )
+            db.add(row)
+            db.flush()
+            return self._deployment_job_to_dict(row)
+
+    def update_deployment_job(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.get(DeploymentJob, job_id)
+            if not row:
+                raise ValueError("Deployment job not found")
+            if "status" in payload:
+                row.status = payload["status"]
+                if row.status in {"RUNNING", "FAILED", "CANCELLED"} and not row.completed_at:
+                    row.completed_at = utc_now()
+            if "image_ref" in payload:
+                row.image_ref = payload["image_ref"]
+            if "worker_pool" in payload:
+                row.worker_pool = payload["worker_pool"]
+            if "logs" in payload:
+                row.logs = payload["logs"] or []
+            if "metadata" in payload:
+                row.metadata_json = payload["metadata"] or {}
+            if "error" in payload:
+                row.error = payload["error"]
+            db.flush()
+            return self._deployment_job_to_dict(row)
+
+    def get_deployment_job(self, job_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(DeploymentJob, job_id)
+            return self._deployment_job_to_dict(row) if row else None
+
+    def list_deployment_jobs(self, deployment_id: str) -> list[dict[str, Any]]:
+        with self.session() as db:
+            rows = db.scalars(
+                select(DeploymentJob)
+                .where(DeploymentJob.deployment_id == deployment_id)
+                .order_by(desc(DeploymentJob.created_at))
+            ).all()
+            return [self._deployment_job_to_dict(row) for row in rows]
+
+    def create_workflow_runtime_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            deployment_id = payload["deployment_id"]
+            deployment = db.get(WorkflowDeploymentRevision, deployment_id)
+            if not deployment:
+                raise ValueError("Workflow deployment revision not found")
+            idempotency_key = payload.get("idempotency_key")
+            if idempotency_key:
+                existing = db.scalar(
+                    select(WorkflowRuntimeRun).where(
+                        WorkflowRuntimeRun.deployment_id == deployment_id,
+                        WorkflowRuntimeRun.idempotency_key == idempotency_key,
+                    )
+                )
+                if existing:
+                    return self._workflow_runtime_run_to_dict(existing)
+            row = WorkflowRuntimeRun(
+                run_id=payload.get("run_id") or new_id("run"),
+                deployment_id=deployment_id,
+                workflow_definition_id=payload.get("workflow_definition_id")
+                or deployment.workflow_definition_id,
+                workflow_id=payload.get("workflow_id") or new_id("wf"),
+                environment=payload.get("environment") or deployment.environment,
+                status=payload.get("status") or "PENDING",
+                decision=payload.get("decision"),
+                idempotency_key=idempotency_key,
+                input_payload=payload.get("input_payload") or {},
+                output_payload=payload.get("output_payload") or {},
+                runtime_type=payload.get("runtime_type") or deployment.runtime_type,
+                started_at=payload.get("started_at"),
+                completed_at=payload.get("completed_at"),
+                error=payload.get("error"),
+            )
+            db.add(row)
+            db.flush()
+            return self._workflow_runtime_run_to_dict(row)
+
+    def get_workflow_runtime_run(self, run_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(WorkflowRuntimeRun, run_id)
+            return self._workflow_runtime_run_to_dict(row) if row else None
+
+    def list_workflow_runtime_runs(
+        self,
+        *,
+        environment: str | list[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            stmt = (
+                select(WorkflowRuntimeRun)
+                .order_by(desc(WorkflowRuntimeRun.created_at))
+                .limit(limit)
+            )
+            if isinstance(environment, list):
+                stmt = stmt.where(WorkflowRuntimeRun.environment.in_(environment))
+            elif environment and environment != "all":
+                stmt = stmt.where(WorkflowRuntimeRun.environment == environment)
+            return [self._workflow_runtime_run_to_dict(row) for row in db.scalars(stmt).all()]
+
+    def get_runtime_run_by_idempotency_key(
+        self, deployment_id: str, idempotency_key: str
+    ) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.scalar(
+                select(WorkflowRuntimeRun)
+                .where(
+                    WorkflowRuntimeRun.deployment_id == deployment_id,
+                    WorkflowRuntimeRun.idempotency_key == idempotency_key,
+                )
+                .order_by(desc(WorkflowRuntimeRun.created_at))
+            )
+            return self._workflow_runtime_run_to_dict(row) if row else None
+
+    def claim_next_queued_runtime_run(self) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.scalar(
+                select(WorkflowRuntimeRun)
+                .where(WorkflowRuntimeRun.status == "QUEUED")
+                .order_by(WorkflowRuntimeRun.created_at)
+                .with_for_update(skip_locked=True)
+            )
+            if not row:
+                return None
+            row.status = "RUNNING"
+            row.started_at = row.started_at or utc_now()
+            row.updated_at = utc_now()
+            db.flush()
+            return self._workflow_runtime_run_to_dict(row)
+
+    def update_workflow_runtime_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.get(WorkflowRuntimeRun, run_id)
+            if not row:
+                raise ValueError("Workflow runtime run not found")
+            if "status" in payload:
+                row.status = payload["status"]
+                if row.status == "RUNNING" and not row.started_at:
+                    row.started_at = utc_now()
+                if (
+                    row.status in {"COMPLETED", "FAILED", "BLOCKED", "REVIEW", "CANCELLED"}
+                    and not row.completed_at
+                ):
+                    row.completed_at = utc_now()
+            if "decision" in payload:
+                row.decision = payload["decision"]
+            if "workflow_id" in payload:
+                row.workflow_id = payload["workflow_id"]
+            if "input_payload" in payload:
+                row.input_payload = payload["input_payload"] or {}
+            if "output_payload" in payload:
+                row.output_payload = payload["output_payload"] or {}
+            if "error" in payload:
+                row.error = payload["error"]
+            if "started_at" in payload:
+                row.started_at = payload["started_at"]
+            if "completed_at" in payload:
+                row.completed_at = payload["completed_at"]
+            row.updated_at = utc_now()
+            db.flush()
+            return self._workflow_runtime_run_to_dict(row)
+
+    def add_runtime_outbox_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            if not db.get(WorkflowRuntimeRun, payload["run_id"]):
+                raise ValueError("Workflow runtime run not found")
+            row = RuntimeEventOutbox(
+                outbox_id=payload.get("outbox_id") or new_id("outbox"),
+                run_id=payload["run_id"],
+                workflow_id=payload.get("workflow_id"),
+                session_id=payload.get("session_id"),
+                event_type=payload["event_type"],
+                payload=payload.get("payload") or {},
+                status=payload.get("status") or "PENDING",
+                published_at=payload.get("published_at"),
+                publish_attempts=int(payload.get("publish_attempts") or 0),
+            )
+            db.add(row)
+            db.flush()
+            return self._runtime_event_outbox_to_dict(row)
+
+    def list_runtime_outbox_events(
+        self,
+        *,
+        run_id: str,
+        after_outbox_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            query = (
+                select(RuntimeEventOutbox)
+                .where(RuntimeEventOutbox.run_id == run_id)
+                .order_by(RuntimeEventOutbox.created_at, RuntimeEventOutbox.outbox_id)
+                .limit(limit)
+            )
+            rows = db.scalars(query).all()
+            if after_outbox_id:
+                for index, row in enumerate(rows):
+                    if row.outbox_id == after_outbox_id:
+                        rows = rows[index + 1 :]
+                        break
+            return [self._runtime_event_outbox_to_dict(row) for row in rows]
+
+    def update_runtime_outbox_event(
+        self, outbox_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.get(RuntimeEventOutbox, outbox_id)
+            if not row:
+                raise ValueError("Runtime outbox event not found")
+            if "status" in payload:
+                row.status = payload["status"]
+            if "published_at" in payload:
+                row.published_at = payload["published_at"]
+            if "payload" in payload:
+                row.payload = payload["payload"] or {}
+            db.flush()
+            return self._runtime_event_outbox_to_dict(row)
+
+    def increment_runtime_outbox_attempt(
+        self,
+        outbox_id: str,
+        *,
+        status: str,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        with self.session() as db:
+            row = db.get(RuntimeEventOutbox, outbox_id)
+            if not row:
+                raise ValueError("Runtime outbox event not found")
+            row.publish_attempts = (row.publish_attempts or 0) + 1
+            row.status = status
+            if error:
+                row.payload = {**(row.payload or {}), "publish_error": error}
+            db.flush()
+            return self._runtime_event_outbox_to_dict(row)
+
+    def list_service_connectors(
+        self, environment: str | list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            stmt = select(ServiceConnector).order_by(ServiceConnector.name)
+            if isinstance(environment, list):
+                stmt = stmt.where(ServiceConnector.environment.in_(environment))
+            elif environment and environment != "all":
+                stmt = stmt.where(ServiceConnector.environment == environment)
+            return [self._service_connector_to_dict(row) for row in db.scalars(stmt).all()]
+
+    def get_service_connector(self, connector_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(ServiceConnector, connector_id)
+            return self._service_connector_to_dict(row) if row else None
+
+    def upsert_service_connector(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = validate_connector_record(payload)
+        with self.session() as db:
+            row = db.get(ServiceConnector, normalized["connector_id"])
+            if not row:
+                row = ServiceConnector(
+                    connector_id=normalized["connector_id"],
+                    name=normalized["name"],
+                    connector_type=normalized["connector_type"],
+                    environment=normalized["environment"],
+                    config=normalized.get("config") or {},
+                    status=normalized.get("status") or "ACTIVE",
+                    owner=normalized["owner"],
+                )
+                db.add(row)
+            else:
+                row.name = normalized["name"]
+                row.connector_type = normalized["connector_type"]
+                row.environment = normalized["environment"]
+                row.config = normalized.get("config") or {}
+                row.status = normalized.get("status") or "ACTIVE"
+                row.owner = normalized["owner"]
+                row.updated_at = utc_now()
+            db.flush()
+            return self._service_connector_to_dict(row)
+
+    def list_scenario_suites(
+        self, environment: str | list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        with self.session() as db:
+            stmt = select(ScenarioSuite).order_by(ScenarioSuite.name)
+            if isinstance(environment, list):
+                stmt = stmt.where(ScenarioSuite.environment.in_(environment))
+            elif environment and environment != "all":
+                stmt = stmt.where(ScenarioSuite.environment == environment)
+            return [self._scenario_suite_to_dict(row) for row in db.scalars(stmt).all()]
+
+    def get_scenario_suite(self, suite_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(ScenarioSuite, suite_id)
+            return self._scenario_suite_to_dict(row) if row else None
+
+    def upsert_scenario_suite(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            suite_id = payload.get("suite_id") or new_id("suite")
+            row = db.get(ScenarioSuite, suite_id)
+            if not row:
+                row = ScenarioSuite(
+                    suite_id=suite_id,
+                    name=payload.get("name") or payload.get("display_name") or suite_id,
+                    description=payload.get("description") or "",
+                    workflow_definition_id=payload["workflow_definition_id"],
+                    environment=payload["environment"],
+                    scenarios=payload.get("scenarios") or payload.get("cases") or [],
+                    created_by=payload.get("created_by") or "system",
+                )
+                db.add(row)
+            else:
+                row.name = payload.get("name") or payload.get("display_name") or row.name
+                row.description = payload.get("description") or ""
+                row.workflow_definition_id = payload["workflow_definition_id"]
+                row.environment = payload["environment"]
+                row.scenarios = payload.get("scenarios") or payload.get("cases") or []
+                row.updated_at = utc_now()
+            db.flush()
+            return self._scenario_suite_to_dict(row)
+
+    def create_scenario_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session() as db:
+            row = ScenarioRun(
+                scenario_run_id=payload.get("scenario_run_id") or new_id("scenrun"),
+                suite_id=payload["suite_id"],
+                target_id=payload.get("target_id"),
+                deployment_id=payload["deployment_id"],
+                environment=payload["environment"],
+                status=payload.get("status") or "PENDING",
+                overall_result=payload.get("overall_result"),
+                case_total=int(payload.get("case_total") or 0),
+                case_passed=int(payload.get("case_passed") or 0),
+                evidence=payload.get("evidence") or {},
+                results=payload.get("results") or payload.get("evidence") or {},
+                started_at=payload.get("started_at"),
+                completed_at=payload.get("completed_at") or utc_now(),
+                error=payload.get("error"),
+            )
+            db.add(row)
+            db.flush()
+            return self._scenario_run_to_dict(row)
+
+    def get_scenario_run(self, scenario_run_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(ScenarioRun, scenario_run_id)
+            return self._scenario_run_to_dict(row) if row else None
+
+    def latest_passing_scenario_run(self, deployment_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.scalar(
+                select(ScenarioRun)
+                .where(
+                    ScenarioRun.deployment_id == deployment_id,
+                    ScenarioRun.status == "COMPLETED",
+                    ScenarioRun.overall_result == "PASS",
+                )
+                .order_by(desc(ScenarioRun.completed_at), desc(ScenarioRun.created_at))
+            )
+            return self._scenario_run_to_dict(row) if row else None
 
     def list_guardrail_policies(
         self, environment: str | list[str] | None = None
@@ -1553,15 +2196,30 @@ class GovernanceStore:
             )
             return self._agent_identity_to_dict(identity, cert)
 
-    def ensure_agent_session(self, session_id: str, agent_id: str, user_query: str) -> None:
+    def ensure_agent_session(
+        self,
+        session_id: str,
+        agent_id: str,
+        user_query: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        session_metadata = with_trace_context(metadata)
         with self.session() as db:
             if not db.get(AgentIdentity, agent_id):
                 raise ValueError(f"Agent '{agent_id}' not found")
             existing = db.get(AgentSession, session_id)
             if existing:
+                existing.metadata_json = {**(existing.metadata_json or {}), **session_metadata}
                 existing.updated_at = utc_now()
                 return
-            db.add(AgentSession(session_id=session_id, agent_id=agent_id, user_query=user_query))
+            db.add(
+                AgentSession(
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    user_query=user_query,
+                    metadata_json=session_metadata,
+                )
+            )
 
     def update_session_status(self, session_id: str, status: str) -> None:
         with self.session() as db:
@@ -1590,7 +2248,7 @@ class GovernanceStore:
                     user_goal=user_goal,
                     lead_agent_id=lead_agent_id,
                     status="RUNNING",
-                    metadata_json=metadata or {},
+                    metadata_json=with_trace_context(metadata),
                 )
             )
         return workflow_id
@@ -1633,7 +2291,7 @@ class GovernanceStore:
                 role=role,
                 parent_session_id=parent_session_id,
                 sequence=sequence,
-                metadata_json=metadata or {},
+                metadata_json=with_trace_context(metadata),
             )
             db.add(link)
             db.flush()
@@ -1656,7 +2314,7 @@ class GovernanceStore:
             workflow.decision = decision
             workflow.summary = summary
             if metadata is not None:
-                workflow.metadata_json = metadata
+                workflow.metadata_json = with_trace_context(metadata)
             workflow.updated_at = utc_now()
 
     def add_workflow_event(
@@ -1686,7 +2344,7 @@ class GovernanceStore:
                 event_type=event_type,
                 label=label,
                 status=status,
-                payload=payload or {},
+                payload=with_trace_context(payload),
             )
             db.add(event)
             db.flush()
@@ -1699,6 +2357,7 @@ class GovernanceStore:
         agent_id: str,
         tool_name: str,
         tool_args: dict[str, Any],
+        idempotency_key: str | None = None,
         decision: str | None = None,
         result_summary: dict[str, Any] | None = None,
     ) -> str:
@@ -1711,11 +2370,34 @@ class GovernanceStore:
                     agent_id=agent_id,
                     tool_name=tool_name,
                     tool_args=tool_args,
+                    idempotency_key=idempotency_key,
                     decision=decision,
                     result_summary=result_summary or {},
                 )
             )
         return tool_call_id
+
+    def get_tool_call_by_idempotency_key(
+        self, agent_id: str, tool_name: str, idempotency_key: str
+    ) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.scalar(
+                select(ToolCall)
+                .where(
+                    ToolCall.agent_id == agent_id,
+                    ToolCall.tool_name == tool_name,
+                    ToolCall.idempotency_key == idempotency_key,
+                )
+                .order_by(desc(ToolCall.created_at))
+            )
+            return self._tool_call_to_dict(row) if row else None
+
+    def record_tool_idempotency_key(self, tool_call_id: str, idempotency_key: str) -> None:
+        with self.session() as db:
+            row = db.get(ToolCall, tool_call_id)
+            if not row:
+                raise ValueError("Tool call not found")
+            row.idempotency_key = idempotency_key
 
     def add_policy_decision(
         self,
@@ -1774,7 +2456,7 @@ class GovernanceStore:
                     risk_score=risk_score,
                     policy_id=policy_id,
                     stage=stage,
-                    metadata_json=metadata or {},
+                    metadata_json=with_trace_context(metadata),
                 )
             )
         return event_id
@@ -1790,6 +2472,7 @@ class GovernanceStore:
         risk_score: int,
         risk_types: list[str],
         reason: str,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         review_id = new_id("rev")
         with self.session() as db:
@@ -1804,6 +2487,7 @@ class GovernanceStore:
                     risk_score=risk_score,
                     risk_types=risk_types,
                     reason=reason,
+                    metadata_json=with_trace_context(metadata),
                 )
             )
         return review_id
@@ -1912,12 +2596,43 @@ class GovernanceStore:
                         "risk_types": row.risk_types,
                         "reason": row.reason,
                         "status": row.status,
+                        "metadata": row.metadata_json or {},
                         "reviewer_note": row.reviewer_note,
                         "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
                         "created_at": row.created_at.isoformat(),
                     }
                 )
             return reviews
+
+    def get_review_item(self, review_id: str) -> dict[str, Any] | None:
+        with self.session() as db:
+            row = db.get(ReviewQueueItem, review_id)
+            if not row:
+                return None
+            identity = db.get(AgentIdentity, row.agent_id)
+            workflow_link = db.scalar(
+                select(WorkflowSessionLink)
+                .where(WorkflowSessionLink.session_id == row.session_id)
+                .limit(1)
+            )
+            return {
+                "review_id": row.review_id,
+                "session_id": row.session_id,
+                "workflow_id": workflow_link.workflow_id if workflow_link else None,
+                "agent_id": row.agent_id,
+                "environment": identity.environment if identity else None,
+                "tool_name": row.tool_name,
+                "tool_args": row.tool_args,
+                "user_query": row.user_query,
+                "risk_score": row.risk_score,
+                "risk_types": row.risk_types,
+                "reason": row.reason,
+                "status": row.status,
+                "metadata": row.metadata_json or {},
+                "reviewer_note": row.reviewer_note,
+                "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+                "created_at": row.created_at.isoformat(),
+            }
 
     def resolve_review_item(self, review_id: str, status: str, reviewer_note: str | None) -> bool:
         with self.session() as db:
@@ -1960,6 +2675,7 @@ class GovernanceStore:
                         else None,
                         "user_query": row.user_query,
                         "status": row.status,
+                        "metadata": row.metadata_json or {},
                         "created_at": row.created_at.isoformat(),
                         "updated_at": row.updated_at.isoformat(),
                     }
@@ -2054,6 +2770,7 @@ class GovernanceStore:
                         "session": {
                             "user_query": session.user_query if session else "",
                             "status": session.status if session else "UNKNOWN",
+                            "metadata": session.metadata_json if session else {},
                             "created_at": session.created_at.isoformat() if session else None,
                             "updated_at": session.updated_at.isoformat() if session else None,
                         },
@@ -2087,6 +2804,71 @@ class GovernanceStore:
             ).all()
             return [self._workflow_event_to_dict(row) for row in rows]
 
+    def _ensure_workflow_lineage(
+        self, db: Session, definition: WorkflowDefinition
+    ) -> WorkflowDefinition:
+        if not definition.workflow_root_id:
+            definition.workflow_root_id = definition.workflow_definition_id
+        if not definition.version:
+            definition.version = "v1"
+        if not definition.version_number:
+            definition.version_number = 1
+        if not definition.lifecycle_status:
+            definition.lifecycle_status = "DRAFT"
+        self._sync_workflow_definition_version(db, definition)
+        return definition
+
+    def _next_workflow_version_number(self, db: Session, workflow_root_id: str) -> int:
+        max_version = db.scalar(
+            select(func.max(WorkflowDefinition.version_number)).where(
+                WorkflowDefinition.workflow_root_id == workflow_root_id
+            )
+        )
+        return int(max_version or 1) + 1
+
+    def _sync_workflow_definition_version(
+        self,
+        db: Session,
+        definition: WorkflowDefinition,
+        *,
+        change_summary: str | None = None,
+        created_by: str | None = None,
+    ) -> WorkflowDefinitionVersion:
+        workflow_root_id = definition.workflow_root_id or definition.workflow_definition_id
+        row = db.scalar(
+            select(WorkflowDefinitionVersion).where(
+                WorkflowDefinitionVersion.workflow_definition_id
+                == definition.workflow_definition_id
+            )
+        )
+        if not row:
+            row = WorkflowDefinitionVersion(
+                version_id=new_id("wfver"),
+                workflow_root_id=workflow_root_id,
+                workflow_definition_id=definition.workflow_definition_id,
+                previous_workflow_definition_id=definition.previous_workflow_definition_id,
+                source_workflow_definition_id=definition.source_workflow_definition_id,
+                version=definition.version or "v1",
+                version_number=definition.version_number or 1,
+                lifecycle_status=definition.lifecycle_status or "DRAFT",
+                change_summary=change_summary or "",
+                created_by=created_by or "system",
+            )
+            db.add(row)
+            return row
+        row.workflow_root_id = workflow_root_id
+        row.previous_workflow_definition_id = definition.previous_workflow_definition_id
+        row.source_workflow_definition_id = definition.source_workflow_definition_id
+        row.version = definition.version or row.version
+        row.version_number = definition.version_number or row.version_number
+        row.lifecycle_status = definition.lifecycle_status or "DRAFT"
+        if change_summary is not None:
+            row.change_summary = change_summary
+        if created_by:
+            row.created_by = created_by
+        row.updated_at = utc_now()
+        return row
+
     @staticmethod
     def _agent_identity_to_dict(
         identity: AgentIdentity | None, cert: AgentCertification | None = None
@@ -2116,6 +2898,15 @@ class GovernanceStore:
             return {}
         return {
             "workflow_definition_id": definition.workflow_definition_id,
+            "workflow_root_id": definition.workflow_root_id or definition.workflow_definition_id,
+            "version": definition.version or "v1",
+            "version_number": definition.version_number or 1,
+            "previous_workflow_definition_id": definition.previous_workflow_definition_id,
+            "source_workflow_definition_id": definition.source_workflow_definition_id,
+            "lifecycle_status": definition.lifecycle_status or "DRAFT",
+            "locked_at": definition.locked_at.isoformat() if definition.locked_at else None,
+            "locked_by": definition.locked_by,
+            "created_from_deployment_id": definition.created_from_deployment_id,
             "name": definition.name,
             "description": definition.description,
             "owner": definition.owner,
@@ -2135,6 +2926,184 @@ class GovernanceStore:
             else None,
             "created_at": definition.created_at.isoformat(),
             "updated_at": definition.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _workflow_definition_version_to_dict(row: WorkflowDefinitionVersion) -> dict[str, Any]:
+        return {
+            "version_id": row.version_id,
+            "workflow_root_id": row.workflow_root_id,
+            "workflow_definition_id": row.workflow_definition_id,
+            "previous_workflow_definition_id": row.previous_workflow_definition_id,
+            "source_workflow_definition_id": row.source_workflow_definition_id,
+            "version": row.version,
+            "version_number": row.version_number,
+            "lifecycle_status": row.lifecycle_status,
+            "change_summary": row.change_summary,
+            "created_by": row.created_by,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _workflow_deployment_revision_to_dict(
+        row: WorkflowDeploymentRevision,
+    ) -> dict[str, Any]:
+        return {
+            "deployment_id": row.deployment_id,
+            "workflow_definition_id": row.workflow_definition_id,
+            "environment": row.environment,
+            "version": row.version,
+            "status": row.status,
+            "manifest": row.manifest or {},
+            "manifest_hash": row.manifest_hash,
+            "graph_version_hash": row.graph_version_hash,
+            "agent_config_hashes": row.agent_config_hashes or {},
+            "tool_config_hashes": row.tool_config_hashes or {},
+            "evaluator_config_hashes": row.evaluator_config_hashes or {},
+            "policy_hashes": row.policy_hashes or {},
+            "kb_version_hashes": row.kb_version_hashes or {},
+            "runtime_type": row.runtime_type,
+            "runtime_limits": row.runtime_limits or {},
+            "created_by": row.created_by,
+            "created_at": row.created_at.isoformat(),
+            "activated_at": row.activated_at.isoformat() if row.activated_at else None,
+            "retired_at": row.retired_at.isoformat() if row.retired_at else None,
+        }
+
+    @staticmethod
+    def _workflow_generated_artifact_to_dict(
+        row: WorkflowGeneratedArtifact,
+    ) -> dict[str, Any]:
+        return {
+            "artifact_id": row.artifact_id,
+            "deployment_id": row.deployment_id,
+            "workflow_definition_id": row.workflow_definition_id,
+            "artifact_type": row.artifact_type,
+            "artifact_name": row.artifact_name,
+            "content": row.content,
+            "content_hash": row.content_hash,
+            "storage_uri": row.storage_uri,
+            "status": row.status,
+            "created_at": row.created_at.isoformat(),
+        }
+
+    @staticmethod
+    def _deployment_job_to_dict(row: DeploymentJob) -> dict[str, Any]:
+        return {
+            "job_id": row.job_id,
+            "deployment_id": row.deployment_id,
+            "environment": row.environment,
+            "backend": row.backend,
+            "status": row.status,
+            "requested_by": row.requested_by,
+            "image_ref": row.image_ref,
+            "worker_pool": row.worker_pool,
+            "logs": row.logs or [],
+            "metadata": row.metadata_json or {},
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            "error": row.error,
+            "created_at": row.created_at.isoformat(),
+        }
+
+    @staticmethod
+    def _workflow_runtime_run_to_dict(row: WorkflowRuntimeRun) -> dict[str, Any]:
+        return {
+            "run_id": row.run_id,
+            "deployment_id": row.deployment_id,
+            "workflow_definition_id": row.workflow_definition_id,
+            "workflow_id": row.workflow_id,
+            "environment": row.environment,
+            "status": row.status,
+            "decision": row.decision,
+            "idempotency_key": row.idempotency_key,
+            "input_payload": row.input_payload or {},
+            "output_payload": row.output_payload or {},
+            "runtime_type": row.runtime_type,
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            "error": row.error,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _runtime_event_outbox_to_dict(row: RuntimeEventOutbox) -> dict[str, Any]:
+        return {
+            "outbox_id": row.outbox_id,
+            "run_id": row.run_id,
+            "workflow_id": row.workflow_id,
+            "session_id": row.session_id,
+            "event_type": row.event_type,
+            "payload": row.payload or {},
+            "status": row.status,
+            "created_at": row.created_at.isoformat(),
+            "published_at": row.published_at.isoformat() if row.published_at else None,
+            "publish_attempts": row.publish_attempts,
+        }
+
+    @staticmethod
+    def _service_connector_to_dict(row: ServiceConnector) -> dict[str, Any]:
+        return {
+            "connector_id": row.connector_id,
+            "name": row.name,
+            "connector_type": row.connector_type,
+            "environment": row.environment,
+            "config": row.config or {},
+            "status": row.status,
+            "owner": row.owner,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _scenario_suite_to_dict(row: ScenarioSuite) -> dict[str, Any]:
+        return {
+            "suite_id": row.suite_id,
+            "name": row.name,
+            "display_name": row.name,
+            "description": row.description,
+            "workflow_definition_id": row.workflow_definition_id,
+            "environment": row.environment,
+            "scenarios": row.scenarios or [],
+            "created_by": row.created_by,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _scenario_run_to_dict(row: ScenarioRun) -> dict[str, Any]:
+        return {
+            "scenario_run_id": row.scenario_run_id,
+            "suite_id": row.suite_id,
+            "target_id": row.target_id,
+            "deployment_id": row.deployment_id,
+            "environment": row.environment,
+            "status": row.status,
+            "overall_result": row.overall_result,
+            "case_total": row.case_total,
+            "case_passed": row.case_passed,
+            "evidence": row.evidence or {},
+            "results": row.results or {},
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            "error": row.error,
+            "created_at": row.created_at.isoformat(),
+        }
+
+    @staticmethod
+    def _tool_call_to_dict(row: ToolCall) -> dict[str, Any]:
+        return {
+            "tool_call_id": row.tool_call_id,
+            "session_id": row.session_id,
+            "agent_id": row.agent_id,
+            "tool_name": row.tool_name,
+            "tool_args": row.tool_args or {},
+            "idempotency_key": row.idempotency_key,
+            "decision": row.decision,
+            "result_summary": row.result_summary or {},
+            "created_at": row.created_at.isoformat(),
         }
 
     @staticmethod

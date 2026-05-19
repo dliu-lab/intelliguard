@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intelliguard-workflow-runner
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: intelliguard-workflow-runner
+  template:
+    metadata:
+      labels:
+        app: intelliguard-workflow-runner
+        role: workflow-runner
+    spec:
+      containers:
+        - name: workflow-runner
+          image: ghcr.io/example/intelliguard-api:latest
+          command: ["python", "-m", "agent_governance.runtime.worker"]
+          ports:
+            - containerPort: 8010
+          envFrom:
+            - configMapRef:
+                name: intelliguard-runtime-config
+            - secretRef:
+                name: intelliguard-runtime-secrets
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi

@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intelliguard-evaluator-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: intelliguard-evaluator-worker
+  template:
+    metadata:
+      labels:
+        app: intelliguard-evaluator-worker
+        role: evaluator-worker
+    spec:
+      containers:
+        - name: evaluator-worker
+          image: ghcr.io/example/intelliguard-api:latest
+          command: ["python", "-m", "agent_governance.runtime.evaluator_worker"]
+          envFrom:
+            - configMapRef:
+                name: intelliguard-runtime-config
+            - secretRef:
+                name: intelliguard-runtime-secrets
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi

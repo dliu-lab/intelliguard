@@ -140,6 +140,15 @@ class WorkflowDefinition(Base):
     __tablename__ = "workflow_definitions"
 
     workflow_definition_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    workflow_root_id: Mapped[str | None] = mapped_column(String(120))
+    version: Mapped[str] = mapped_column(String(40), default="v1")
+    version_number: Mapped[int] = mapped_column(Integer, default=1)
+    previous_workflow_definition_id: Mapped[str | None] = mapped_column(String(120))
+    source_workflow_definition_id: Mapped[str | None] = mapped_column(String(120))
+    lifecycle_status: Mapped[str] = mapped_column(String(32), default="DRAFT")
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    locked_by: Mapped[str | None] = mapped_column(String(160))
+    created_from_deployment_id: Mapped[str | None] = mapped_column(String(120))
     name: Mapped[str] = mapped_column(String(180), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     owner: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -156,6 +165,176 @@ class WorkflowDefinition(Base):
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class WorkflowDefinitionVersion(Base):
+    __tablename__ = "workflow_definition_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_root_id",
+            "version_number",
+            name="uq_workflow_definition_versions_root_number",
+        ),
+        UniqueConstraint(
+            "workflow_definition_id",
+            name="uq_workflow_definition_versions_definition",
+        ),
+    )
+
+    version_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workflow_root_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    workflow_definition_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    previous_workflow_definition_id: Mapped[str | None] = mapped_column(String(120))
+    source_workflow_definition_id: Mapped[str | None] = mapped_column(String(120))
+    version: Mapped[str] = mapped_column(String(40), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    lifecycle_status: Mapped[str] = mapped_column(String(32), default="DRAFT")
+    change_summary: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(160), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class WorkflowDeploymentRevision(Base):
+    __tablename__ = "workflow_deployment_revisions"
+
+    deployment_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    workflow_definition_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="PACKAGED")
+    manifest: Mapped[dict] = mapped_column(JSONB, default=dict)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    graph_version_hash: Mapped[str | None] = mapped_column(String(64))
+    agent_config_hashes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    tool_config_hashes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    evaluator_config_hashes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    policy_hashes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    kb_version_hashes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    runtime_type: Mapped[str] = mapped_column(String(40), default="native")
+    runtime_limits: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_by: Mapped[str] = mapped_column(String(160), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkflowGeneratedArtifact(Base):
+    __tablename__ = "workflow_generated_artifacts"
+
+    artifact_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    deployment_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    workflow_definition_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    artifact_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    artifact_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_uri: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="GENERATED")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class DeploymentJob(Base):
+    __tablename__ = "deployment_jobs"
+
+    job_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    deployment_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    backend: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="PENDING", index=True)
+    requested_by: Mapped[str] = mapped_column(String(160), default="system")
+    image_ref: Mapped[str | None] = mapped_column(Text)
+    worker_pool: Mapped[str | None] = mapped_column(String(120))
+    logs: Mapped[list] = mapped_column(JSONB, default=list)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class WorkflowRuntimeRun(Base):
+    __tablename__ = "workflow_runtime_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    deployment_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    workflow_definition_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    workflow_id: Mapped[str | None] = mapped_column(String(64))
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING")
+    decision: Mapped[str | None] = mapped_column(String(32))
+    idempotency_key: Mapped[str | None] = mapped_column(String(160))
+    input_payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    output_payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    runtime_type: Mapped[str] = mapped_column(String(40), default="native")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class RuntimeEventOutbox(Base):
+    __tablename__ = "runtime_event_outbox"
+
+    outbox_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    workflow_id: Mapped[str | None] = mapped_column(String(64))
+    session_id: Mapped[str | None] = mapped_column(String(64))
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    publish_attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ServiceConnector(Base):
+    __tablename__ = "service_connectors"
+
+    connector_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    connector_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
+    owner: Mapped[str] = mapped_column(String(160), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ScenarioSuite(Base):
+    __tablename__ = "scenario_suites"
+
+    suite_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    workflow_definition_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    scenarios: Mapped[list] = mapped_column(JSONB, default=list)
+    created_by: Mapped[str] = mapped_column(String(160), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ScenarioRun(Base):
+    __tablename__ = "scenario_runs"
+
+    scenario_run_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    suite_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(120))
+    deployment_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING")
+    overall_result: Mapped[str | None] = mapped_column(String(32))
+    case_total: Mapped[int] = mapped_column(Integer, default=0)
+    case_passed: Mapped[int] = mapped_column(Integer, default=0)
+    evidence: Mapped[dict] = mapped_column(JSONB, default=dict)
+    results: Mapped[dict] = mapped_column(JSONB, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class WorkflowSessionLink(Base):
@@ -184,6 +363,7 @@ class AgentSession(Base):
     agent_id: Mapped[str] = mapped_column(String(120), nullable=False)
     user_query: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="RUNNING")
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -196,6 +376,7 @@ class ToolCall(Base):
     agent_id: Mapped[str] = mapped_column(String(120), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(120), nullable=False)
     tool_args: Mapped[dict] = mapped_column(JSONB, default=dict)
+    idempotency_key: Mapped[str | None] = mapped_column(String(160))
     decision: Mapped[str | None] = mapped_column(String(24))
     result_summary: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -246,6 +427,7 @@ class ReviewQueueItem(Base):
     risk_types: Mapped[list] = mapped_column(JSONB, default=list)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="PENDING")
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     reviewer_note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

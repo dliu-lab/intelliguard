@@ -189,6 +189,19 @@ function numberValue(record: ApiRecord | undefined | null, keys: string[], fallb
   return Number.isFinite(value) ? value : fallback;
 }
 
+function formatFileSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function sourceConfigFor(record: ApiRecord | undefined | null) {
   return readRecord(record, "source_config") || {};
 }
@@ -1268,28 +1281,70 @@ export function KnowledgeBasesWorkspace({
                 </span>
               </div>
               <div className="mt-4 grid gap-2">
-                {builderFiles.length ? (
-                  builderFiles.map((file, index) => (
-                    <div key={`${file.name}-${file.size}-${file.lastModified}-${index}`} className="flex items-center justify-between gap-3 rounded-xl border border-line bg-ink/50 px-3 py-2 text-sm">
-                      <span className="min-w-0">
-                        <span className="block truncate font-semibold text-textPrimary">{file.name}</span>
-                        <span className="text-xs text-textSecondary">{Math.max(1, Math.round(file.size / 1024))} KB</span>
+                {formMode === "edit" ? (
+                  <div className="grid gap-2 rounded-xl border border-line bg-ink/45 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-textPrimary">Already attached files</p>
+                      <span className="rounded-full border border-line bg-white/[0.04] px-2.5 py-1 text-[11px] font-semibold text-textSecondary">
+                        {detailLoading ? "loading" : formatCount(selectedDocuments.length, "file")}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => removeBuilderFile(index)}
-                        className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-line bg-white/[0.04] text-textPrimary transition hover:border-rose-300/45 hover:bg-rose-300/10"
-                        aria-label={`Remove ${file.name}`}
-                        title="Remove file"
-                      >
-                        <X size={15} aria-hidden="true" />
-                      </button>
                     </div>
-                  ))
+                    {detailLoading ? (
+                      <ComponentRow title="Loading attached files" detail="Reading the persisted KB document manifest." />
+                    ) : selectedDocuments.length ? (
+                      selectedDocuments.map((document) => {
+                        const checksum = readText(document, ["checksum"]) || "";
+                        return (
+                          <ComponentRow
+                            key={readText(document, ["document_id"]) || readText(document, ["file_name"])}
+                            title={readText(document, ["file_name"]) || "Knowledge document"}
+                            detail={
+                              joinParts([
+                                readText(document, ["content_type"]),
+                                formatFileSize(numberValue(document, ["size_bytes"])),
+                                checksum ? `sha256 ${checksum.slice(0, 10)}` : "",
+                                readText(document, ["last_error"]),
+                              ]) || "Persisted as a KB source document."
+                            }
+                            meta={readText(document, ["status"]) || "uploaded"}
+                          />
+                        );
+                      })
+                    ) : (
+                      <ComponentRow
+                        title="No files attached yet"
+                        detail="Attach files below and save the draft version to persist them."
+                      />
+                    )}
+                  </div>
+                ) : null}
+                {builderFiles.length ? (
+                  <div className="grid gap-2">
+                    {formMode === "edit" ? (
+                      <p className="text-sm font-semibold text-textPrimary">New files for this draft version</p>
+                    ) : null}
+                    {builderFiles.map((file, index) => (
+                      <div key={`${file.name}-${file.size}-${file.lastModified}-${index}`} className="flex items-center justify-between gap-3 rounded-xl border border-line bg-ink/50 px-3 py-2 text-sm">
+                        <span className="min-w-0">
+                          <span className="block truncate font-semibold text-textPrimary">{file.name}</span>
+                          <span className="text-xs text-textSecondary">{formatFileSize(file.size) || "Selected file"}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeBuilderFile(index)}
+                          className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-line bg-white/[0.04] text-textPrimary transition hover:border-rose-300/45 hover:bg-rose-300/10"
+                          aria-label={`Remove ${file.name}`}
+                          title="Remove file"
+                        >
+                          <X size={15} aria-hidden="true" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 ) : (
                   <ComponentRow
-                    title="No files selected"
-                    detail={formMode === "edit" ? "Attach files only when this new version needs additional sources." : "Attach at least one file to create the KB."}
+                    title={formMode === "edit" ? "No new files selected" : "No files selected"}
+                    detail={formMode === "edit" ? "Existing files remain attached. Select files only when this draft version needs additional sources." : "Attach at least one file to create the KB."}
                   />
                 )}
               </div>

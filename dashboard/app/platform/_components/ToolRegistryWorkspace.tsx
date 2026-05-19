@@ -564,7 +564,7 @@ export function ToolRegistryWorkspace({ data, onRefresh }: ToolRegistryWorkspace
             </label>
           </div>
 
-          <div className="mt-4 grid gap-3">
+          <div className="mt-4 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
             {pagedTools.length ? (
               pagedTools.map((tool) => {
                 const toolId = readText(tool, ["tool_id"]) || "";
@@ -574,65 +574,40 @@ export function ToolRegistryWorkspace({ data, onRefresh }: ToolRegistryWorkspace
                 const restricted = hasRestrictedUse(tool);
 
                 return (
-                  <article key={toolId || readText(tool, ["tool_name"])} className="rounded-2xl border border-line bg-white/[0.035] p-4">
-                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+                  <article
+                    key={toolId || readText(tool, ["tool_name"])}
+                    className="rounded-2xl border border-line bg-white/[0.035] p-4 transition hover:border-accent/35"
+                  >
+                    <div className="flex items-start justify-between gap-3">
                       <button
                         type="button"
                         onClick={() => openToolModal(toolId, "evaluation")}
-                        className="min-w-0 text-left"
+                        className="min-w-0 flex-1 text-left"
+                        aria-label={`Open ${readText(tool, ["display_name", "tool_name"]) || "tool"} evaluation`}
                       >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h4 className="truncate text-lg font-semibold text-textPrimary">
-                            {readText(tool, ["display_name", "tool_name"]) || "Unnamed tool"}
-                          </h4>
-                          <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${statusClasses(status)}`}>
-                            {toolStatusLabel(status)}
+                        <div className="flex items-start gap-3">
+                          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-cyan-300/25 bg-cyan-300/10 text-cyan-100">
+                            <Wrench size={17} aria-hidden="true" />
                           </span>
-                          {restricted ? (
-                            <span className="rounded-full border border-amber-300/45 bg-amber-300/12 px-2.5 py-1 text-[11px] font-semibold text-amber-100">
-                              RESTRICTED
+                          <span className="min-w-0">
+                            <strong className="block truncate text-textPrimary">
+                              {readText(tool, ["display_name", "tool_name"]) || "Unnamed tool"}
+                            </strong>
+                            <span className="block truncate text-xs text-textSecondary">
+                              {readText(tool, ["tool_name", "tool_id"]) || "tool"}
                             </span>
-                          ) : null}
+                          </span>
                         </div>
-                        <p className="mt-1 line-clamp-1 text-sm leading-6 text-textSecondary">
+                        <p className="mt-4 line-clamp-2 text-sm leading-6 text-textSecondary">
                           {readText(tool, ["description"]) || "Tool contract registered in IntelliGuard."}
                         </p>
-                        <div className="mt-3 flex flex-wrap gap-2 text-xs text-textSecondary">
-                          <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
-                            {toolDomain(tool)}
-                          </span>
-                          <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
-                            {readText(tool, ["side_effect_level"]) || "unknown"}
-                          </span>
-                          <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
-                            {readText(tool, ["owner"]) || "Unassigned"}
-                          </span>
-                          <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
-                            config {shortHash(readText(tool, ["config_hash"]))}
-                          </span>
-                          {readText(tool, ["artifact_digest"]) ? (
-                            <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
-                              artifact {shortHash(readText(tool, ["artifact_digest"]))}
-                            </span>
-                          ) : null}
-                          {readyAt ? (
-                            <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
-                              ready {readyAt}
-                            </span>
-                          ) : null}
-                          {failureReason ? (
-                            <span className="rounded-full border border-rose-300/35 bg-rose-300/10 px-2.5 py-1 text-rose-100">
-                              {failureReason}
-                            </span>
-                          ) : null}
-                        </div>
                       </button>
-                      <div className="relative flex justify-end">
+                      <div className="relative shrink-0">
                         <button
                           type="button"
                           disabled={!toolId}
                           onClick={() => setActionMenuToolId((value) => (value === toolId ? null : toolId))}
-                          className="grid h-10 w-10 place-items-center rounded-xl border border-line bg-white/[0.04] text-textPrimary transition hover:border-accent/45 hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-45"
+                          className="grid h-8 w-8 place-items-center rounded-xl border border-line bg-ink/60 text-textSecondary transition hover:border-accent/45 hover:text-textPrimary disabled:cursor-not-allowed disabled:opacity-45"
                           aria-expanded={actionMenuToolId === toolId}
                           aria-haspopup="menu"
                           aria-label={`Tool actions for ${readText(tool, ["display_name", "tool_name"]) || "tool"}`}
@@ -642,7 +617,7 @@ export function ToolRegistryWorkspace({ data, onRefresh }: ToolRegistryWorkspace
                         </button>
                         {actionMenuToolId === toolId ? (
                           <div
-                            className="absolute right-0 top-12 z-20 w-44 overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl"
+                            className="absolute right-0 top-10 z-20 w-44 overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl"
                             role="menu"
                           >
                             <button
@@ -666,6 +641,45 @@ export function ToolRegistryWorkspace({ data, onRefresh }: ToolRegistryWorkspace
                           </div>
                         ) : null}
                       </div>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-textSecondary">
+                      <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${statusClasses(status)}`}>
+                        {toolStatusLabel(status)}
+                      </span>
+                      {restricted ? (
+                        <span className="rounded-full border border-amber-300/45 bg-amber-300/12 px-2.5 py-1 text-[11px] font-semibold text-amber-100">
+                          RESTRICTED
+                        </span>
+                      ) : null}
+                      <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
+                        {toolDomain(tool)}
+                      </span>
+                      <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
+                        {readText(tool, ["side_effect_level"]) || "unknown"}
+                      </span>
+                      <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
+                        {readText(tool, ["owner"]) || "Unassigned"}
+                      </span>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-textSecondary">
+                      <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
+                        config {shortHash(readText(tool, ["config_hash"]))}
+                      </span>
+                      {readText(tool, ["artifact_digest"]) ? (
+                        <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
+                          artifact {shortHash(readText(tool, ["artifact_digest"]))}
+                        </span>
+                      ) : null}
+                      {readyAt ? (
+                        <span className="rounded-full border border-line bg-ink/55 px-2.5 py-1">
+                          ready {readyAt}
+                        </span>
+                      ) : null}
+                      {failureReason ? (
+                        <span className="rounded-full border border-rose-300/35 bg-rose-300/10 px-2.5 py-1 text-rose-100">
+                          {failureReason}
+                        </span>
+                      ) : null}
                     </div>
                   </article>
                 );

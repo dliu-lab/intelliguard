@@ -421,6 +421,8 @@ def test_runtime_schema_patches_existing_knowledge_tables(monkeypatch) -> None:
 
     engine = FakeEngine()
     monkeypatch.setattr(runtime_db, "inspect", lambda _engine: FakeInspector())
+    for table in runtime_db.RUNTIME_SCHEMA_TABLES:
+        monkeypatch.setattr(table, "create", lambda engine, checkfirst=True: None)
     monkeypatch.setattr(
         KnowledgeSource.__table__,
         "create",
@@ -527,18 +529,11 @@ def test_runtime_schema_creates_all_missing_knowledge_tables_in_order(monkeypatc
 
     engine = FakeEngine()
     monkeypatch.setattr(runtime_db, "inspect", lambda _engine: FakeInspector())
-    for table, table_name in (
-        (KnowledgeBase.__table__, "knowledge_bases"),
-        (KnowledgeSource.__table__, "knowledge_sources"),
-        (KnowledgeIndexVersion.__table__, "knowledge_index_versions"),
-        (KnowledgeBaseVersion.__table__, "knowledge_base_versions"),
-        (KnowledgeDocument.__table__, "knowledge_documents"),
-        (KnowledgeChunk.__table__, "knowledge_chunks"),
-    ):
+    for table in runtime_db.RUNTIME_SCHEMA_TABLES:
         monkeypatch.setattr(
             table,
             "create",
-            lambda engine, checkfirst=True, table_name=table_name: (
+            lambda engine, checkfirst=True, table_name=table.name: (
                 engine.connection.statements.append(f"CREATE TABLE {table_name}")
             ),
         )

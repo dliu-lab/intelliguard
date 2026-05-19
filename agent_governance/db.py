@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
@@ -11,6 +12,7 @@ from agent_governance.models import (
     Base,
     Customer,
     CustomerTransaction,
+    DeploymentJob,
     EvaluatorTemplate,
     GuardrailPolicy,
     KnowledgeBase,
@@ -20,7 +22,15 @@ from agent_governance.models import (
     KnowledgeIndexVersion,
     KnowledgeSource,
     SupportCase,
+    RuntimeEventOutbox,
+    ScenarioRun,
+    ScenarioSuite,
+    ServiceConnector,
+    WorkflowDeploymentRevision,
     WorkflowDefinition,
+    WorkflowDefinitionVersion,
+    WorkflowGeneratedArtifact,
+    WorkflowRuntimeRun,
 )
 from agent_governance.policy import load_policy
 from agent_governance.settings import DEFAULT_DATABASE_URL
@@ -35,6 +45,25 @@ def build_session_factory(database_url: str = DEFAULT_DATABASE_URL) -> sessionma
     return sessionmaker(bind=build_engine(database_url), expire_on_commit=False)
 
 
+RUNTIME_SCHEMA_TABLES = (
+    KnowledgeBase.__table__,
+    KnowledgeSource.__table__,
+    KnowledgeIndexVersion.__table__,
+    KnowledgeBaseVersion.__table__,
+    KnowledgeDocument.__table__,
+    KnowledgeChunk.__table__,
+    WorkflowDefinitionVersion.__table__,
+    WorkflowDeploymentRevision.__table__,
+    WorkflowGeneratedArtifact.__table__,
+    DeploymentJob.__table__,
+    WorkflowRuntimeRun.__table__,
+    RuntimeEventOutbox.__table__,
+    ServiceConnector.__table__,
+    ScenarioSuite.__table__,
+    ScenarioRun.__table__,
+)
+
+
 def ensure_vector_extension(engine) -> None:
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -43,22 +72,32 @@ def ensure_vector_extension(engine) -> None:
 def init_db(database_url: str = DEFAULT_DATABASE_URL) -> None:
     engine = build_engine(database_url)
     ensure_vector_extension(engine)
+    if _migrations_required():
+        _require_alembic_migrations(engine)
+        ensure_runtime_schema(engine)
+        return
     Base.metadata.create_all(engine)
     ensure_runtime_schema(engine)
+
+
+def _migrations_required() -> bool:
+    return os.getenv("DB_MIGRATIONS_REQUIRED", "false").lower() in {"1", "true", "yes"}
+
+
+def _require_alembic_migrations(engine) -> None:
+    inspector = inspect(engine)
+    if "alembic_version" not in set(inspector.get_table_names()):
+        raise RuntimeError(
+            "Alembic migrations are required before startup. Run `alembic upgrade head` "
+            "or unset DB_MIGRATIONS_REQUIRED for local development."
+        )
 
 
 def ensure_runtime_schema(engine) -> None:
     ensure_vector_extension(engine)
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
-    for table in (
-        KnowledgeBase.__table__,
-        KnowledgeSource.__table__,
-        KnowledgeIndexVersion.__table__,
-        KnowledgeBaseVersion.__table__,
-        KnowledgeDocument.__table__,
-        KnowledgeChunk.__table__,
-    ):
+    for table in RUNTIME_SCHEMA_TABLES:
         if table.name not in table_names:
             table.create(engine, checkfirst=True)
     if "users" in table_names:
@@ -75,9 +114,109 @@ def ensure_runtime_schema(engine) -> None:
                 )
             if "stage" not in cols:
                 connection.execute(text("ALTER TABLE audit_events ADD COLUMN stage VARCHAR(40)"))
+    if "agent_sessions" in table_names:
+        cols = {c["name"] for c in inspector.get_columns("agent_sessions")}
+        if "metadata" not in cols:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE agent_sessions ADD COLUMN metadata JSONB NOT NULL DEFAULT '{}'::jsonb"
+                    )
+                )
+    if "review_queue" in table_names:
+        cols = {c["name"] for c in inspector.get_columns("review_queue")}
+        if "metadata" not in cols:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE review_queue ADD COLUMN metadata JSONB NOT NULL DEFAULT '{}'::jsonb"
+                    )
+                )
+    if "tool_calls" in table_names:
+        cols = {c["name"] for c in inspector.get_columns("tool_calls")}
+        with engine.begin() as connection:
+            if "idempotency_key" not in cols:
+                connection.execute(
+                    text("ALTER TABLE tool_calls ADD COLUMN idempotency_key VARCHAR(160)")
+                )
+            connection.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_tool_calls_idempotency
+                    ON tool_calls (agent_id, tool_name, idempotency_key)
+                    WHERE idempotency_key IS NOT NULL
+                    """
+                )
+            )
     if "workflow_definitions" in table_names:
         cols = {c["name"] for c in inspector.get_columns("workflow_definitions")}
         with engine.begin() as connection:
+            if "workflow_root_id" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions ADD COLUMN workflow_root_id VARCHAR(120)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "UPDATE workflow_definitions "
+                        "SET workflow_root_id = workflow_definition_id "
+                        "WHERE workflow_root_id IS NULL"
+                    )
+                )
+            if "version" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions "
+                        "ADD COLUMN version VARCHAR(40) NOT NULL DEFAULT 'v1'"
+                    )
+                )
+            if "version_number" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions "
+                        "ADD COLUMN version_number INTEGER NOT NULL DEFAULT 1"
+                    )
+                )
+            if "previous_workflow_definition_id" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions "
+                        "ADD COLUMN previous_workflow_definition_id VARCHAR(120)"
+                    )
+                )
+            if "source_workflow_definition_id" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions "
+                        "ADD COLUMN source_workflow_definition_id VARCHAR(120)"
+                    )
+                )
+            if "lifecycle_status" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions "
+                        "ADD COLUMN lifecycle_status VARCHAR(32) NOT NULL DEFAULT 'DRAFT'"
+                    )
+                )
+            if "locked_at" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions "
+                        "ADD COLUMN locked_at TIMESTAMP WITH TIME ZONE"
+                    )
+                )
+            if "locked_by" not in cols:
+                connection.execute(
+                    text("ALTER TABLE workflow_definitions ADD COLUMN locked_by VARCHAR(160)")
+                )
+            if "created_from_deployment_id" not in cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE workflow_definitions "
+                        "ADD COLUMN created_from_deployment_id VARCHAR(120)"
+                    )
+                )
             if "domain" not in cols:
                 connection.execute(
                     text(
@@ -114,6 +253,77 @@ def ensure_runtime_schema(engine) -> None:
                         "ALTER TABLE workflow_definitions ADD COLUMN graph_version_hash VARCHAR(64)"
                     )
                 )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO workflow_definition_versions (
+                        version_id,
+                        workflow_root_id,
+                        workflow_definition_id,
+                        previous_workflow_definition_id,
+                        source_workflow_definition_id,
+                        version,
+                        version_number,
+                        lifecycle_status,
+                        change_summary,
+                        created_by,
+                        created_at,
+                        updated_at
+                    )
+                    SELECT
+                        'wfver_' || substring(md5(workflow_definition_id) for 16),
+                        COALESCE(workflow_root_id, workflow_definition_id),
+                        workflow_definition_id,
+                        previous_workflow_definition_id,
+                        source_workflow_definition_id,
+                        COALESCE(version, 'v1'),
+                        COALESCE(version_number, 1),
+                        COALESCE(lifecycle_status, 'DRAFT'),
+                        '',
+                        'system',
+                        COALESCE(created_at, now()),
+                        COALESCE(updated_at, now())
+                    FROM workflow_definitions
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM workflow_definition_versions
+                        WHERE workflow_definition_versions.workflow_definition_id =
+                            workflow_definitions.workflow_definition_id
+                    )
+                    """
+                )
+            )
+    if "scenario_runs" in table_names:
+        cols = {c["name"] for c in inspector.get_columns("scenario_runs")}
+        with engine.begin() as connection:
+            if "target_id" not in cols:
+                connection.execute(
+                    text("ALTER TABLE scenario_runs ADD COLUMN target_id VARCHAR(120)")
+                )
+            if "overall_result" not in cols:
+                connection.execute(
+                    text("ALTER TABLE scenario_runs ADD COLUMN overall_result VARCHAR(32)")
+                )
+            if "case_total" not in cols:
+                connection.execute(
+                    text("ALTER TABLE scenario_runs ADD COLUMN case_total INTEGER DEFAULT 0")
+                )
+            if "case_passed" not in cols:
+                connection.execute(
+                    text("ALTER TABLE scenario_runs ADD COLUMN case_passed INTEGER DEFAULT 0")
+                )
+            if "evidence" not in cols:
+                connection.execute(
+                    text("ALTER TABLE scenario_runs ADD COLUMN evidence JSONB DEFAULT '{}'::jsonb")
+                )
+            connection.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_scenario_runs_deployment_result
+                    ON scenario_runs (deployment_id, status, overall_result)
+                    """
+                )
+            )
     if "user_environment_access" in table_names:
         with engine.begin() as connection:
             connection.execute(
@@ -123,6 +333,16 @@ def ensure_runtime_schema(engine) -> None:
                     SET permissions = permissions || '["workflow:create"]'::jsonb
                     WHERE permissions ? 'agent:create'
                       AND NOT permissions ? 'workflow:create'
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE user_environment_access
+                    SET permissions = permissions || '["workflow:deploy"]'::jsonb
+                    WHERE permissions ? 'workflow:create'
+                      AND NOT permissions ? 'workflow:deploy'
                     """
                 )
             )

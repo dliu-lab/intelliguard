@@ -2,20 +2,22 @@
 
 import type { CSSProperties, ChangeEvent, FormEvent, KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GitBranch, ListTree, Plus, UploadCloud, X, ZoomIn, ZoomOut } from "lucide-react";
-import { createWorkflowDefinition, getSession, type ApiRecord, type PlatformData } from "@/lib/api";
+import { FileJson, GitBranch, ListTree, PencilLine, Plus, Route, UploadCloud, X, ZoomIn, ZoomOut } from "lucide-react";
+import { createWorkflowDefinition, getSession, runMultiAgentWorkflow, type ApiRecord, type PlatformData } from "@/lib/api";
 import { ComponentRow } from "./shared";
 import {
   formatCount,
   formatTimestamp,
   isErrorMessage,
   joinParts,
+  readNestedText,
   readText,
   validateKebabCase,
   validateLowerToken,
   validateSnakeCase,
   workflowTemplateJson,
 } from "./utils";
+import { WorkflowDeploymentPanel } from "./WorkflowDeploymentPanel";
 
 type WorkflowStepDraft = {
   step_id: string;
@@ -62,6 +64,22 @@ type WorkflowConnection = {
 
 type PortSide = "in" | "out";
 type LinkActionResult = "cancelled" | "created" | "duplicate" | "invalid" | "linking";
+type SavedWorkflowRow = {
+  definition: ApiRecord;
+  definitionId: string;
+  domain: string;
+  edges: ApiRecord[];
+  environment: string;
+  isLatestVersion: boolean;
+  linkedRun?: ApiRecord;
+  linkedRunDetail?: ApiRecord;
+  linkedRunId: string;
+  nodes: ApiRecord[];
+  status: string;
+  version: string;
+  versionNumber: number;
+  versionRootId: string;
+};
 
 const LEAD_NODE_ID = "lead";
 const CANVAS_HEIGHT = 720;
@@ -111,6 +129,22 @@ function connectionId(from: string, to: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asRecords(value: unknown): ApiRecord[] {
+  return Array.isArray(value) ? (value.filter((item) => isRecord(item)) as ApiRecord[]) : [];
+}
+
+function objectValue(record: ApiRecord | undefined, key: string): ApiRecord {
+  const value = record?.[key];
+  return isRecord(value) ? (value as ApiRecord) : {};
+}
+
+function compactJson(value: unknown) {
+  if (!value || (typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length)) {
+    return "No captured detail.";
+  }
+  return JSON.stringify(value, null, 2);
 }
 
 function workflowMetadata(draft: WorkflowDraft) {
@@ -248,6 +282,8 @@ function cleanWorkflowDraft(
   agentTypesById: Record<string, string>,
 ): ApiRecord {
   const visualConnections = sanitizeConnections(draft, connections);
+  const metadata = workflowMetadata(draft);
+  const versionNumber = metadataVersionNumber(metadata);
   const leadDelegations = visualConnections
     .filter((connection) => connection.from === LEAD_NODE_ID)
     .map((connection) => connection.to);
@@ -292,12 +328,15 @@ function cleanWorkflowDraft(
     nodes,
     edges,
     metadata: {
-      ...(draft.metadata || {}),
-      domain: draft.domain || draft.metadata?.domain || "general",
+      ...metadata,
+      domain: draft.domain || metadata.domain || "general",
       execution_mode: leadDelegations.length > 1 ? "multi_agent_fan_out" : "multi_agent_graph",
       lead_delegations: leadDelegations,
       visual_connections: visualConnections,
       node_positions: nodePositions,
+      workflow_root_id: readText(metadata, ["workflow_root_id", "root_workflow_definition_id"]) || draft.workflow_definition_id,
+      workflow_version: readText(metadata, ["workflow_version", "version"]) || `v${versionNumber}`,
+      workflow_version_number: versionNumber,
     },
     steps: draft.steps.map(({ tool_args_json: toolArgsJson, ...step }) => ({
       ...step,
@@ -340,6 +379,214 @@ function certificationStatus(record: ApiRecord | undefined) {
   }
 
   return readText(certification as ApiRecord, ["status"]) || "DRAFT";
+}
+
+function workflowDefinitionStatus(definition: ApiRecord) {
+  return readText(definition, ["certification_status"]) || certificationStatus(definition);
+}
+
+function workflowDefinitionIdForRecord(definition: ApiRecord) {
+  return readText(definition, ["workflow_definition_id", "id"]) || "";
+}
+
+function workflowDefinitionDomain(definition: ApiRecord) {
+  return readText(definition, ["domain"]) || readNestedText(definition, ["metadata", "domain"]) || "general";
+}
+
+function metadataVersionNumber(metadata: ApiRecord) {
+  const explicitVersion = Number(metadata.workflow_version_number || metadata.version_number);
+  if (Number.isFinite(explicitVersion) && explicitVersion > 0) {
+    return Math.floor(explicitVersion);
+  }
+
+  const label = readText(metadata, ["workflow_version", "version"]) || "";
+  const match = label.match(/\d+/);
+  const parsedVersion = match ? Number(match[0]) : 1;
+  return Number.isFinite(parsedVersion) && parsedVersion > 0 ? Math.floor(parsedVersion) : 1;
+}
+
+function workflowVersionNumber(definition: ApiRecord) {
+  return metadataVersionNumber(objectValue(definition, "metadata"));
+}
+
+function workflowVersionLabel(definition: ApiRecord) {
+  const metadata = objectValue(definition, "metadata");
+  return readText(metadata, ["workflow_version", "version"]) || `v${workflowVersionNumber(definition)}`;
+}
+
+function workflowVersionRootId(definition: ApiRecord) {
+  const metadata = objectValue(definition, "metadata");
+  return (
+    readText(metadata, ["workflow_root_id", "root_workflow_definition_id"])
+    || workflowDefinitionIdForRecord(definition)
+  );
+}
+
+function workflowDefinitionNodes(definition: ApiRecord) {
+  const nodes = asRecords(definition.nodes);
+  if (nodes.length) {
+    return nodes;
+  }
+
+  const steps = asRecords(definition.steps);
+  if (!steps.length) {
+    return [];
+  }
+
+  return [
+    {
+      agent_id: readText(definition, ["lead_agent_id"]) || "",
+      node_id: LEAD_NODE_ID,
+      node_type: "lead_agent",
+    },
+    ...steps.map((step) => ({
+      ...step,
+      node_id: readText(step, ["step_id", "node_id"]) || "",
+    })),
+  ];
+}
+
+function workflowDefinitionEdges(definition: ApiRecord) {
+  return asRecords(definition.edges);
+}
+
+function isLeadWorkflowNode(node: ApiRecord) {
+  return readText(node, ["node_id", "step_id"]) === LEAD_NODE_ID || readText(node, ["node_type"]) === "lead_agent";
+}
+
+function arrayStrings(value: unknown) {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : undefined;
+}
+
+function workflowStepDraftFromRecord(record: ApiRecord, index: number): WorkflowStepDraft {
+  const stepId = readText(record, ["step_id", "node_id"]) || `step_${index + 1}`;
+  const toolArgs = record.tool_args === undefined ? {} : record.tool_args;
+  const allowedTools = arrayStrings(record.allowed_tools);
+  const toolName = readText(record, ["tool_name"]) || allowedTools?.[0] || undefined;
+
+  return {
+    step_id: stepId,
+    label: readText(record, ["label", "name", "task"]) || stepId,
+    role: readText(record, ["role"]) || `task_agent:${stepId}`,
+    agent_id: readText(record, ["agent_id"]) || "",
+    node_type: normalizeAgentType(readText(record, ["node_type"])) || undefined,
+    activation_policy: readText(record, ["activation_policy"]) || "conditional",
+    activation_stage: readText(record, ["activation_stage"]) || "routed",
+    capabilities: arrayStrings(record.capabilities),
+    allowed_tools: allowedTools,
+    data_scope: isRecord(record.data_scope) ? (record.data_scope as Record<string, unknown>) : undefined,
+    side_effect_level: readText(record, ["side_effect_level"]) || undefined,
+    tool_name: toolName,
+    task: readText(record, ["task", "description"]) || undefined,
+    tool_args: toolArgs,
+    tool_args_json: JSON.stringify(toolArgs, null, 2),
+  };
+}
+
+function workflowDraftFromDefinition(definition: ApiRecord, selectedEnvironment: string): WorkflowDraft {
+  const template = toWorkflowDraft(selectedEnvironment);
+  const nodes = workflowDefinitionNodes(definition);
+  const steps = asRecords(definition.steps);
+  const stepSources = steps.length ? steps : nodes.filter((node) => !isLeadWorkflowNode(node));
+  const leadNode = nodes.find(isLeadWorkflowNode);
+  const definitionId = workflowDefinitionIdForRecord(definition) || uniqueWorkflowId("workflow");
+  const environment =
+    readText(definition, ["environment"])
+    || (selectedEnvironment === "all" ? template.environment : selectedEnvironment)
+    || "demo";
+
+  return {
+    workflow_definition_id: definitionId,
+    name: readText(definition, ["name", "display_name"]) || definitionId,
+    description: readText(definition, ["description"]) || "",
+    owner: readText(definition, ["owner"]) || "Unassigned",
+    environment,
+    domain: workflowDefinitionDomain(definition),
+    lead_agent_id: readText(definition, ["lead_agent_id"]) || readText(leadNode || {}, ["agent_id"]) || template.lead_agent_id,
+    trigger_type: readText(definition, ["trigger_type"]) || "manual",
+    steps: stepSources.map(workflowStepDraftFromRecord),
+    edges: workflowDefinitionEdges(definition),
+    metadata: objectValue(definition, "metadata"),
+  };
+}
+
+function nextWorkflowVersionForRow(row: SavedWorkflowRow, rows: SavedWorkflowRow[]) {
+  const existingIds = new Set(rows.map((item) => item.definitionId).filter(Boolean));
+  const relatedRows = rows.filter(
+    (item) => item.versionRootId === row.versionRootId || item.definitionId === row.versionRootId,
+  );
+  let nextVersionNumber = Math.max(row.versionNumber, 1, ...relatedRows.map((item) => item.versionNumber)) + 1;
+  let nextDefinitionId = `${row.versionRootId}-v${nextVersionNumber}`;
+
+  while (existingIds.has(nextDefinitionId)) {
+    nextVersionNumber += 1;
+    nextDefinitionId = `${row.versionRootId}-v${nextVersionNumber}`;
+  }
+
+  return { nextDefinitionId, nextVersionNumber };
+}
+
+function workflowDraftForNewVersion(row: SavedWorkflowRow, rows: SavedWorkflowRow[], selectedEnvironment: string) {
+  const draft = workflowDraftFromDefinition(row.definition, selectedEnvironment);
+  const { nextDefinitionId, nextVersionNumber } = nextWorkflowVersionForRow(row, rows);
+
+  return {
+    ...draft,
+    workflow_definition_id: nextDefinitionId,
+    metadata: {
+      ...(draft.metadata || {}),
+      previous_workflow_definition_id: row.definitionId,
+      source_workflow_definition_id: row.definitionId,
+      workflow_root_id: row.versionRootId,
+      workflow_version: `v${nextVersionNumber}`,
+      workflow_version_number: nextVersionNumber,
+    },
+  };
+}
+
+function defaultWorkflowRunQuery(draft: WorkflowDraft) {
+  return (
+    draft.description?.trim()
+    || draft.name?.trim()
+    || `Run workflow ${draft.workflow_definition_id}.`
+  );
+}
+
+function workflowRunId(workflow: ApiRecord | undefined) {
+  return workflow ? readText(workflow, ["workflow_id", "id", "session_id"]) || "" : "";
+}
+
+function workflowRunDefinitionId(workflow: ApiRecord | undefined, detail?: ApiRecord) {
+  return workflow
+    ? readText(workflow, ["workflow_definition_id"])
+      || readNestedText(workflow, ["metadata", "workflow_definition_id"])
+      || readText(detail || {}, ["workflow_definition_id"])
+      || readNestedText(detail || {}, ["metadata", "workflow_definition_id"])
+      || ""
+    : "";
+}
+
+function workflowRunTimestamp(workflow: ApiRecord | undefined, detail?: ApiRecord) {
+  const value = workflow
+    ? readText(workflow, ["updated_at", "created_at"])
+      || readText(detail || {}, ["updated_at", "created_at"])
+    : undefined;
+  const timestamp = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function workflowStatusTone(status: string) {
+  const value = status.toUpperCase();
+  if (value.includes("CERTIFIED") || value.includes("COMPLETE") || value.includes("ALLOW") || value.includes("APPROVED")) {
+    return "border-accent/35 bg-accent/10 text-accent";
+  }
+  if (value.includes("REVIEW") || value.includes("PENDING")) {
+    return "border-amber-300/45 bg-amber-300/15 text-textPrimary";
+  }
+  if (value.includes("FAIL") || value.includes("BLOCK") || value.includes("DENIED")) {
+    return "border-rose-300/45 bg-rose-300/15 text-textPrimary";
+  }
+  return "border-line bg-white/[0.04] text-textSecondary";
 }
 
 function lookupDisplayName(records: ApiRecord[], idKey: string, id: string | undefined) {
@@ -444,13 +691,17 @@ function validateWorkflowDraft(draft: WorkflowDraft) {
 export function WorkflowBuilderWorkspace({
   data,
   onRefresh,
+  onWorkflowTraceSelect,
   selectedEnvironment,
 }: {
   data: PlatformData;
   onRefresh: () => void;
+  onWorkflowTraceSelect: (workflowIdOrSessionId: string) => void;
   selectedEnvironment: string;
 }) {
   const [designerOpen, setDesignerOpen] = useState(false);
+  const [selectedSavedWorkflowId, setSelectedSavedWorkflowId] = useState("");
+  const [editingWorkflowSourceId, setEditingWorkflowSourceId] = useState("");
   const [draft, setDraft] = useState<WorkflowDraft>(() => toWorkflowDraft(selectedEnvironment));
   const [selectedStepId, setSelectedStepId] = useState(() => draft.steps[0]?.step_id || "");
   const [nodePositions, setNodePositions] = useState<Record<string, CanvasNodePosition>>({});
@@ -458,6 +709,8 @@ export function WorkflowBuilderWorkspace({
   const [connectionsTouched, setConnectionsTouched] = useState(false);
   const [linkingNodeId, setLinkingNodeId] = useState("");
   const [canvasZoom, setCanvasZoom] = useState(1);
+  const [runAfterSaveQuery, setRunAfterSaveQuery] = useState(() => defaultWorkflowRunQuery(draft));
+  const [savingAction, setSavingAction] = useState<"" | "save" | "save_run">("");
   const [message, setMessage] = useState("");
 
   const agentOptions = useMemo(
@@ -545,6 +798,59 @@ export function WorkflowBuilderWorkspace({
   );
   const leadAgentLabel =
     agentOptions.find((agent) => agent.id === draft.lead_agent_id)?.label || draft.lead_agent_id || "Lead agent";
+  const savedWorkflowRows = useMemo<SavedWorkflowRow[]>(() => {
+    const rows = data.workflowDefinitions.map((definition) => {
+      const definitionId = workflowDefinitionIdForRecord(definition);
+      const linkedRuns = data.workflows
+        .map((workflow) => {
+          const workflowId = workflowRunId(workflow);
+          const detail = data.workflowDetails.find((item) => readText(item, ["workflow_id"]) === workflowId);
+          return {
+            detail,
+            workflow,
+          };
+        })
+        .filter(({ detail, workflow }) => Boolean(definitionId && workflowRunDefinitionId(workflow, detail) === definitionId))
+        .sort((left, right) => workflowRunTimestamp(right.workflow, right.detail) - workflowRunTimestamp(left.workflow, left.detail));
+      const linkedRun = linkedRuns[0]?.workflow;
+      const linkedRunDetail = linkedRuns[0]?.detail;
+
+      return {
+        definition,
+        definitionId,
+        domain: workflowDefinitionDomain(definition),
+        edges: workflowDefinitionEdges(definition),
+        environment: readText(definition, ["environment"]) || selectedEnvironment,
+        isLatestVersion: false,
+        linkedRun,
+        linkedRunDetail,
+        linkedRunId: workflowRunId(linkedRun),
+        nodes: workflowDefinitionNodes(definition),
+        status: workflowDefinitionStatus(definition),
+        version: workflowVersionLabel(definition),
+        versionNumber: workflowVersionNumber(definition),
+        versionRootId: workflowVersionRootId(definition),
+      };
+    });
+
+    const latestVersionByRoot = rows.reduce<Record<string, number>>((next, row) => {
+      next[row.versionRootId] = Math.max(next[row.versionRootId] || 0, row.versionNumber);
+      return next;
+    }, {});
+
+    return rows.map((row) => ({
+      ...row,
+      isLatestVersion: row.versionNumber === latestVersionByRoot[row.versionRootId],
+    }));
+  }, [data.workflowDefinitions, data.workflowDetails, data.workflows, selectedEnvironment]);
+  const selectedSavedWorkflow = savedWorkflowRows.find((row) => row.definitionId === selectedSavedWorkflowId);
+
+  useEffect(() => {
+    if (selectedSavedWorkflowId && !selectedSavedWorkflow) {
+      setSelectedSavedWorkflowId("");
+    }
+  }, [selectedSavedWorkflow, selectedSavedWorkflowId]);
+
   useEffect(() => {
     if (designerOpen) {
       setMessage("");
@@ -559,12 +865,15 @@ export function WorkflowBuilderWorkspace({
 
   function resetTemplate(clearMessage = true) {
     const nextDraft = toWorkflowDraft(selectedEnvironment);
+    setEditingWorkflowSourceId("");
     setConnectionsTouched(false);
     setDraft(nextDraft);
     setNodePositions(defaultNodePositions(nextDraft));
     setConnections(defaultConnections(nextDraft));
     setLinkingNodeId("");
     setSelectedStepId(nextDraft.steps[0]?.step_id || "");
+    setCanvasZoom(1);
+    setRunAfterSaveQuery(defaultWorkflowRunQuery(nextDraft));
     if (clearMessage) {
       setMessage("");
     }
@@ -706,12 +1015,15 @@ export function WorkflowBuilderWorkspace({
         })),
       };
 
+      setEditingWorkflowSourceId("");
       setDraft(nextDraft);
       setNodePositions(defaultNodePositions(nextDraft));
       setConnections(defaultConnections(nextDraft));
       setConnectionsTouched(false);
       setLinkingNodeId("");
       setSelectedStepId(nextDraft.steps[0]?.step_id || "");
+      setCanvasZoom(1);
+      setRunAfterSaveQuery(defaultWorkflowRunQuery(nextDraft));
       setMessage("Workflow JSON loaded.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Unable to read workflow JSON.");
@@ -771,20 +1083,49 @@ export function WorkflowBuilderWorkspace({
     setLinkingNodeId("");
   }
 
+  function editSavedWorkflow(row: SavedWorkflowRow) {
+    const nextDraft = workflowDraftForNewVersion(row, savedWorkflowRows, selectedEnvironment);
+    setEditingWorkflowSourceId(row.definitionId);
+    setDraft(nextDraft);
+    setNodePositions(defaultNodePositions(nextDraft));
+    setConnections(defaultConnections(nextDraft));
+    setConnectionsTouched(false);
+    setLinkingNodeId("");
+    setSelectedStepId(nextDraft.steps[0]?.step_id || "");
+    setCanvasZoom(1);
+    setRunAfterSaveQuery(defaultWorkflowRunQuery(nextDraft));
+    setSelectedSavedWorkflowId("");
+    setDesignerOpen(true);
+    setMessage("");
+  }
+
+  function openSavedWorkflowTrace(row: SavedWorkflowRow) {
+    if (row.linkedRunId) {
+      onWorkflowTraceSelect(row.linkedRunId);
+    }
+  }
+
   async function submitWorkflowDefinition(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
+    const action = submitter?.value === "save_run" ? "save_run" : "save";
     setMessage("");
 
     const session = getSession();
     if (!session?.token) {
-      setMessage("Session expired. Login again before creating workflow definitions.");
+      setMessage("Session expired. Login again before saving workflow definitions.");
       return;
     }
 
     try {
+      setSavingAction(action);
       const validationError = validateWorkflowDraft(draft);
       if (validationError) {
         setMessage(validationError);
+        return;
+      }
+      if (savedWorkflowRows.some((row) => row.definitionId === draft.workflow_definition_id)) {
+        setMessage("Workflow ID already exists. Edit an existing workflow from Details to save a new version.");
         return;
       }
 
@@ -795,13 +1136,40 @@ export function WorkflowBuilderWorkspace({
       }
 
       const payload = cleanWorkflowDraft(draft, nodePositions, connections, agentTypesById);
-      await createWorkflowDefinition(session.token, payload);
-      setMessage("Workflow definition created.");
+      const savedDefinition = await createWorkflowDefinition(session.token, payload);
+
+      if (action === "save_run") {
+        try {
+          const run = await runMultiAgentWorkflow(session.token, {
+            query: runAfterSaveQuery.trim() || defaultWorkflowRunQuery(draft),
+            workflow_definition_id: readText(savedDefinition, ["workflow_definition_id"]) || draft.workflow_definition_id,
+          });
+          const runId = workflowRunId(run) || readText(savedDefinition, ["workflow_definition_id"]) || draft.workflow_definition_id;
+          setMessage("Workflow version saved and run started.");
+          setDesignerOpen(false);
+          resetTemplate(false);
+          await onRefresh();
+          onWorkflowTraceSelect(runId);
+          return;
+        } catch (error) {
+          setMessage(
+            `Workflow version saved, but the run failed: ${
+              error instanceof Error ? error.message : "Unable to run workflow."
+            }`,
+          );
+          await onRefresh();
+          return;
+        }
+      }
+
+      setMessage(editingWorkflowSourceId ? "Workflow version saved." : "Workflow definition saved.");
       setDesignerOpen(false);
       resetTemplate(false);
       await onRefresh();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to create workflow definition.");
+      setMessage(error instanceof Error ? error.message : "Unable to save workflow definition.");
+    } finally {
+      setSavingAction("");
     }
   }
 
@@ -819,19 +1187,123 @@ export function WorkflowBuilderWorkspace({
         </div>
       ) : null}
 
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={() => {
-            setDesignerOpen(true);
-            setMessage("");
-          }}
-          className="inline-flex items-center justify-center gap-2 rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90 focus:outline-none focus:ring-2 focus:ring-accent/40"
-        >
-          <ListTree size={17} aria-hidden="true" />
-          Workflow Designer
-        </button>
-      </div>
+      <section className="rounded-3xl border border-line bg-white/[0.035] p-5">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Created workflows</span>
+            <h3 className="mt-2 text-2xl font-semibold tracking-[-0.02em] text-textPrimary">
+              Saved workflow definitions
+            </h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-textSecondary">
+              These are the workflow designs already saved in the control plane. Open a definition for details or trace its latest agentic run.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              resetTemplate();
+              setDesignerOpen(true);
+              setMessage("");
+            }}
+            className="inline-flex items-center justify-center gap-2 rounded-full bg-accent px-5 py-3 text-sm font-semibold text-ink transition hover:bg-accent/90 focus:outline-none focus:ring-2 focus:ring-accent/40"
+          >
+            <ListTree size={17} aria-hidden="true" />
+            Workflow Designer
+          </button>
+        </div>
+
+        <div className="mt-5 grid gap-3">
+          {savedWorkflowRows.length ? (
+            savedWorkflowRows.map((row) => {
+              const linkedStatus = row.linkedRun
+                ? readText(row.linkedRun, ["status", "decision"]) || readText(row.linkedRunDetail || {}, ["status", "decision"]) || "RECORDED"
+                : "NOT RUN";
+              return (
+                <article
+                  key={row.definitionId || String(row.definition.name || row.definition.workflow_definition_id || "workflow")}
+                  className="rounded-2xl border border-line bg-ink/45 p-4"
+                >
+                  <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${workflowStatusTone(row.status)}`}>
+                          {row.status}
+                        </span>
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${workflowStatusTone(linkedStatus)}`}>
+                          {linkedStatus}
+                        </span>
+                        <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-textSecondary">
+                          {row.version}
+                        </span>
+                        {row.isLatestVersion ? (
+                          <span className="rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-accent">
+                            latest
+                          </span>
+                        ) : null}
+                      </div>
+                      <h4 className="mt-3 truncate text-xl font-semibold text-textPrimary">
+                        {readText(row.definition, ["name", "display_name", "workflow_definition_id"]) || "Workflow definition"}
+                      </h4>
+                      <p className="mt-2 text-sm leading-6 text-textSecondary">
+                        {readText(row.definition, ["description"]) || "Saved workflow definition."}
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs text-textSecondary">
+                        <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{row.definitionId || "workflow"}</span>
+                        <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">root {row.versionRootId}</span>
+                        <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{row.environment}</span>
+                        <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{row.domain}</span>
+                        <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">
+                          {formatCount(row.nodes.length, "node")}
+                        </span>
+                        <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">
+                          {formatCount(row.edges.length, "edge")}
+                        </span>
+                        {row.linkedRunId ? (
+                          <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">
+                            latest run {row.linkedRunId}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 lg:justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSavedWorkflowId(row.definitionId)}
+                        className="inline-flex min-h-10 items-center gap-2 rounded-full border border-line bg-white/[0.04] px-4 text-sm font-semibold text-textPrimary transition hover:border-accent/35 hover:bg-accent/10"
+                      >
+                        <FileJson size={16} aria-hidden="true" />
+                        Details
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!row.linkedRunId}
+                        onClick={() => openSavedWorkflowTrace(row)}
+                        className="inline-flex min-h-10 items-center gap-2 rounded-full border border-accent/30 bg-accent/10 px-4 text-sm font-semibold text-accent transition hover:border-accent/50 hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Route size={16} aria-hidden="true" />
+                        Trace
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })
+          ) : (
+            <ComponentRow title="No saved workflows" detail="Create a workflow definition to save it into the control plane." />
+          )}
+        </div>
+      </section>
+
+      {selectedSavedWorkflow ? (
+        <SavedWorkflowDetailModal
+          onClose={() => setSelectedSavedWorkflowId("")}
+          onEdit={() => editSavedWorkflow(selectedSavedWorkflow)}
+          onRefresh={onRefresh}
+          onRunStarted={onWorkflowTraceSelect}
+          onTrace={() => openSavedWorkflowTrace(selectedSavedWorkflow)}
+          row={selectedSavedWorkflow}
+        />
+      ) : null}
 
       {designerOpen ? (
         <div className="fixed inset-0 z-[80] grid place-items-center bg-black/60 p-4 backdrop-blur-md" role="dialog" aria-modal="true">
@@ -846,7 +1318,14 @@ export function WorkflowBuilderWorkspace({
             <div className="flex flex-wrap items-start justify-between gap-4 border-b border-line p-5">
               <div>
                 <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Workflow designer</span>
-                <h3 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Agent workflow designer</h3>
+                <h3 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">
+                  {editingWorkflowSourceId ? "Edit workflow version" : "Agent workflow designer"}
+                </h3>
+                {editingWorkflowSourceId ? (
+                  <p className="mt-2 text-sm text-textSecondary">
+                    {editingWorkflowSourceId} -&gt; {draft.workflow_definition_id}
+                  </p>
+                ) : null}
               </div>
               <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={() => resetTemplate()} className="designer-action">
@@ -861,8 +1340,23 @@ export function WorkflowBuilderWorkspace({
                   Upload JSON
                   <input className="sr-only" type="file" accept="application/json,.json" onChange={uploadWorkflowJson} />
                 </label>
-                <button type="submit" className="rounded-full bg-accent px-5 py-2 text-sm font-semibold text-ink transition hover:bg-accent/90">
-                  Create Workflow
+                <button
+                  type="submit"
+                  name="workflow-action"
+                  value="save"
+                  disabled={Boolean(savingAction)}
+                  className="rounded-full bg-accent px-5 py-2 text-sm font-semibold text-ink transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingAction === "save" ? "Saving" : "Save"}
+                </button>
+                <button
+                  type="submit"
+                  name="workflow-action"
+                  value="save_run"
+                  disabled={Boolean(savingAction)}
+                  className="rounded-full border border-accent/35 bg-accent/10 px-5 py-2 text-sm font-semibold text-accent transition hover:border-accent/55 hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingAction === "save_run" ? "Saving & running" : "Save & Run"}
                 </button>
                 <button
                   type="button"
@@ -910,6 +1404,16 @@ export function WorkflowBuilderWorkspace({
                         </option>
                       ))}
                   </select>
+                </BuilderField>
+              </div>
+
+              <div className="mt-3">
+                <BuilderField label="Save & Run Prompt">
+                  <input
+                    value={runAfterSaveQuery}
+                    onChange={(event) => setRunAfterSaveQuery(event.target.value)}
+                    className="field-input"
+                  />
                 </BuilderField>
               </div>
 
@@ -1034,6 +1538,304 @@ function BuilderField({ children, label }: { children: ReactNode; label: string 
       {label}
       {children}
     </label>
+  );
+}
+
+function SavedWorkflowDetailModal({
+  onClose,
+  onEdit,
+  onRefresh,
+  onRunStarted,
+  onTrace,
+  row,
+}: {
+  onClose: () => void;
+  onEdit: () => void;
+  onRefresh: () => void;
+  onRunStarted: (runId: string) => void;
+  onTrace: () => void;
+  row: SavedWorkflowRow;
+}) {
+  const linkedStatus = row.linkedRun
+    ? readText(row.linkedRun, ["status", "decision"]) || readText(row.linkedRunDetail || {}, ["status", "decision"]) || "RECORDED"
+    : "NOT RUN";
+  const metadata = objectValue(row.definition, "metadata");
+  const createdAt = formatTimestamp(readText(row.definition, ["created_at"]));
+  const updatedAt = formatTimestamp(readText(row.definition, ["updated_at"]));
+
+  return (
+    <div className="fixed inset-0 z-[90] grid place-items-center bg-black/65 p-4 backdrop-blur-md" role="dialog" aria-modal="true">
+      <section
+        className="grid max-h-[90vh] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-3xl border border-line bg-panel text-textPrimary shadow-[0_30px_120px_rgba(0,0,0,0.5)]"
+        style={{
+          maxWidth: "min(1180px, calc(100vw - 2rem))",
+          minWidth: "min(680px, calc(100vw - 2rem))",
+          width: "fit-content",
+        }}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-line p-5">
+          <div className="min-w-0">
+            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Saved workflow</span>
+            <h3 className="mt-2 truncate text-3xl font-semibold tracking-[-0.03em]">
+              {readText(row.definition, ["name", "display_name", "workflow_definition_id"]) || "Workflow definition"}
+            </h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-textSecondary">
+              {readText(row.definition, ["description"]) || "Workflow definition detail."}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onEdit}
+              className="inline-flex min-h-10 items-center gap-2 rounded-full border border-line bg-white/[0.04] px-4 text-sm font-semibold text-textPrimary transition hover:border-accent/35 hover:bg-accent/10"
+            >
+              <PencilLine size={16} aria-hidden="true" />
+              Edit Graph
+            </button>
+            <button
+              type="button"
+              disabled={!row.linkedRunId}
+              onClick={onTrace}
+              className="inline-flex min-h-10 items-center gap-2 rounded-full border border-accent/30 bg-accent/10 px-4 text-sm font-semibold text-accent transition hover:border-accent/50 hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Route size={16} aria-hidden="true" />
+              Trace
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="grid h-10 w-10 place-items-center rounded-full border border-line bg-white/[0.04] transition hover:border-accent/40 hover:bg-accent/10"
+              aria-label="Close workflow details"
+            >
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 overflow-auto p-5">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <WorkflowDefinitionDetailField label="Workflow ID" value={row.definitionId || "No ID"} />
+            <WorkflowDefinitionDetailField label="Version" value={`${row.version}${row.isLatestVersion ? " latest" : ""}`} />
+            <WorkflowDefinitionDetailField label="Root workflow" value={row.versionRootId || row.definitionId || "No root"} />
+            <WorkflowDefinitionDetailField label="Previous version" value={readText(metadata, ["previous_workflow_definition_id"]) || "Initial version"} />
+            <WorkflowDefinitionDetailField label="Environment" value={row.environment} />
+            <WorkflowDefinitionDetailField label="Domain" value={row.domain} />
+            <WorkflowDefinitionDetailField label="Lead agent" value={readText(row.definition, ["lead_agent_id"]) || "No lead agent"} />
+            <WorkflowDefinitionDetailField label="Definition status" value={row.status} tone={workflowStatusTone(row.status)} />
+            <WorkflowDefinitionDetailField label="Latest run" value={row.linkedRunId || "No linked runtime run"} />
+            <WorkflowDefinitionDetailField label="Run status" value={linkedStatus} tone={workflowStatusTone(linkedStatus)} />
+            <WorkflowDefinitionDetailField label="Updated" value={updatedAt || createdAt || "No timestamp"} />
+          </div>
+
+          <section className="mt-5 rounded-2xl border border-line bg-white/[0.035] p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
+                <GitBranch size={15} className="text-accent" aria-hidden="true" />
+                Workflow graph
+              </div>
+              <button
+                type="button"
+                onClick={onEdit}
+                className="inline-flex items-center gap-2 rounded-full border border-line bg-ink/70 px-3 py-1 text-xs font-semibold text-textPrimary transition hover:border-accent/35 hover:bg-accent/10"
+              >
+                <PencilLine size={13} aria-hidden="true" />
+                Edit Graph
+              </button>
+            </div>
+            <WorkflowDefinitionGraphPreview row={row} />
+          </section>
+
+          <WorkflowDeploymentPanel
+            graphHash={readText(row.definition, ["graph_version_hash"]) || ""}
+            onRefresh={onRefresh}
+            onRunStarted={onRunStarted}
+            workflowDefinitionId={row.definitionId}
+            workflowName={readText(row.definition, ["name", "display_name"]) || row.definitionId}
+          />
+
+          <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)]">
+            <section className="rounded-2xl border border-line bg-white/[0.035] p-4">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
+                <ListTree size={15} className="text-accent" aria-hidden="true" />
+                Nodes
+              </div>
+              <div className="mt-4 grid gap-3">
+                {row.nodes.length ? (
+                  row.nodes.map((node, index) => {
+                    const nodeId = readText(node, ["node_id", "step_id"]) || `node-${index + 1}`;
+                    return (
+                      <div key={nodeId} className="rounded-2xl border border-line bg-ink/60 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="font-semibold text-textPrimary">{nodeId}</p>
+                          <span className="rounded-full border border-line bg-white/[0.04] px-2.5 py-1 text-xs text-textSecondary">
+                            {readText(node, ["node_type"]) || "task_agent"}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm text-textSecondary">
+                          {joinParts([readText(node, ["label"]), readText(node, ["agent_id"])]) || "No agent bound"}
+                        </p>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <ComponentRow title="No graph nodes" detail="This definition does not expose nodes or steps." />
+                )}
+              </div>
+            </section>
+
+            <section className="grid gap-4">
+              <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
+                  <Route size={15} className="text-accent" aria-hidden="true" />
+                  Edges
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {row.edges.length ? (
+                    row.edges.map((edge, index) => {
+                      const from = readText(edge, ["from_node_id", "from"]) || "source";
+                      const to = readText(edge, ["to_node_id", "to"]) || "target";
+                      return (
+                        <span key={`${from}-${to}-${index}`} className="rounded-full border border-line bg-ink/70 px-3 py-1 text-xs text-textSecondary">
+                          {from} -&gt; {to}
+                        </span>
+                      );
+                    })
+                  ) : (
+                    <span className="text-sm text-textSecondary">No explicit edges recorded.</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
+                  <FileJson size={15} className="text-accent" aria-hidden="true" />
+                  Definition metadata
+                </div>
+                <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-ink/70 p-3 font-mono text-xs leading-5 text-textPrimary">
+                  {compactJson({
+                    metadata,
+                    policy_bindings: objectValue(row.definition, "policy_bindings"),
+                    review_rules: row.definition.review_rules,
+                    trigger_type: readText(row.definition, ["trigger_type"]),
+                  })}
+                </pre>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function WorkflowDefinitionGraphPreview({ row }: { row: SavedWorkflowRow }) {
+  const nodes = row.nodes.length ? row.nodes : workflowDefinitionNodes(row.definition);
+  const edges = row.edges.length
+    ? row.edges
+    : nodes
+        .filter((node) => !isLeadWorkflowNode(node))
+        .map((node) => ({
+          from_node_id: LEAD_NODE_ID,
+          to_node_id: readText(node, ["node_id", "step_id"]) || "",
+        }));
+
+  if (!nodes.length) {
+    return (
+      <div className="mt-4">
+        <ComponentRow title="No graph nodes" detail="This definition does not expose nodes or steps." />
+      </div>
+    );
+  }
+
+  const orderedNodes = [
+    ...nodes.filter(isLeadWorkflowNode),
+    ...nodes.filter((node) => !isLeadWorkflowNode(node)),
+  ];
+  const graphWidth = Math.max(780, 120 + orderedNodes.length * 220);
+  const graphHeight = 260;
+  const positions = new Map(
+    orderedNodes.map((node, index) => {
+      const nodeId = readText(node, ["node_id", "step_id"]) || `node-${index + 1}`;
+      return [
+        nodeId,
+        {
+          x: 95 + index * 220,
+          y: index === 0 ? 112 : index % 2 === 0 ? 56 : 168,
+        },
+      ];
+    }),
+  );
+
+  return (
+    <div className="mt-4 overflow-x-auto rounded-2xl border border-line bg-ink/70 p-4 [background-image:linear-gradient(rgba(255,255,255,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.04)_1px,transparent_1px)] [background-size:28px_28px]">
+      <div className="relative" style={{ height: graphHeight, width: graphWidth }}>
+        <svg className="absolute inset-0 h-full w-full overflow-visible" viewBox={`0 0 ${graphWidth} ${graphHeight}`}>
+          {edges.map((edge, index) => {
+            const from = readText(edge, ["from_node_id", "from"]) || "";
+            const to = readText(edge, ["to_node_id", "to"]) || "";
+            const start = positions.get(from);
+            const end = positions.get(to);
+            if (!start || !end) {
+              return null;
+            }
+            const startX = start.x + 84;
+            const endX = end.x - 84;
+            const curve = Math.max(80, Math.abs(endX - startX) * 0.35);
+            return (
+              <path
+                key={`${from}-${to}-${index}`}
+                d={`M ${startX} ${start.y} C ${startX + curve} ${start.y}, ${endX - curve} ${end.y}, ${endX} ${end.y}`}
+                fill="none"
+                stroke="rgba(100, 116, 139, 0.9)"
+                strokeLinecap="round"
+                strokeWidth="2.4"
+              />
+            );
+          })}
+        </svg>
+        {orderedNodes.map((node, index) => {
+          const nodeId = readText(node, ["node_id", "step_id"]) || `node-${index + 1}`;
+          const position = positions.get(nodeId) || { x: 0, y: 0 };
+          const label = readText(node, ["label", "name", "task"]) || nodeId;
+          const nodeType = readText(node, ["node_type"]) || "task_agent";
+          const isLead = isLeadWorkflowNode(node);
+          return (
+            <div
+              key={nodeId}
+              className={`absolute grid h-24 w-44 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-2xl border bg-panel/95 px-4 py-3 text-center shadow-xl ${
+                isLead ? "border-accent/65 shadow-[inset_5px_0_0_rgb(var(--color-accent))]" : "border-line"
+              }`}
+              style={{ left: position.x, top: position.y }}
+            >
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-textPrimary">{label}</p>
+                <p className="mt-1 truncate text-xs text-textSecondary">{readText(node, ["agent_id"]) || nodeId}</p>
+                <p className="mt-1 truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-accent">{nodeType}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowDefinitionDetailField({
+  label,
+  tone,
+  value,
+}: {
+  label: string;
+  tone?: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">{label}</p>
+      <p className={`mt-2 break-words rounded-full border px-3 py-1 text-sm font-semibold ${tone || "border-transparent text-textPrimary"}`}>
+        {value}
+      </p>
+    </div>
   );
 }
 

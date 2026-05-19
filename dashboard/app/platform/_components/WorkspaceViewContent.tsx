@@ -17,6 +17,7 @@ export function WorkspaceViewContent({
   onComponentSelect,
   onViewSelect,
   onWorkflowAuditSelect,
+  onWorkflowTraceSelect,
   onRefresh,
   selectedEnvironment,
   selectedTraceWorkflowId,
@@ -28,6 +29,7 @@ export function WorkspaceViewContent({
   onComponentSelect: (component: BackendComponentKey) => void;
   onViewSelect: (view: WorkspaceView) => void;
   onWorkflowAuditSelect: (workflowIdOrSessionId: string) => void;
+  onWorkflowTraceSelect: (workflowIdOrSessionId: string) => void;
   onRefresh: () => void;
   selectedEnvironment: string;
   selectedTraceWorkflowId: string;
@@ -65,6 +67,7 @@ export function WorkspaceViewContent({
       <WorkflowBuilderWorkspace
         data={data}
         onRefresh={onRefresh}
+        onWorkflowTraceSelect={onWorkflowTraceSelect}
         selectedEnvironment={selectedEnvironment}
       />
     );
@@ -97,6 +100,7 @@ export function WorkspaceViewContent({
         data={data}
         onAuditEventsSelect={onWorkflowAuditSelect}
         onRefresh={onRefresh}
+        selectedEnvironment={selectedEnvironment}
         selectedWorkflowId={selectedTraceWorkflowId}
       />
     );

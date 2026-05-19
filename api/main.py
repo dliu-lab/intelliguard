@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
+import time
 from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent_governance.customer_agent import run_customer_support_agent
@@ -23,6 +26,12 @@ from agent_governance.policy import load_policy, policy_to_dict
 from agent_governance.runner import GovernedToolRunner
 from agent_governance.settings import DEFAULT_KB_UPLOAD_DIR, load_settings
 from agent_governance.store import GovernanceStore
+from agent_governance.telemetry import (
+    current_trace_id,
+    instrument_fastapi,
+    telemetry_status,
+    trace_kb_operation,
+)
 from agent_governance.tools import build_customer_tool_registry
 from agent_governance.workflow_graph import WorkflowGraphError
 
@@ -71,11 +80,64 @@ def build_runner(agent_id: str) -> GovernedToolRunner:
     )
 
 
+def workflow_manifest_snapshots(workflow: dict[str, Any]) -> dict[str, dict[str, str]]:
+    from agent_governance.runtime.manifest_compiler import build_manifest_snapshots
+
+    workflow_agent_ids = {
+        str(node.get("agent_id"))
+        for node in workflow.get("nodes", [])
+        if isinstance(node, dict) and node.get("agent_id")
+    }
+    agents = [
+        identity
+        for agent_id in sorted(workflow_agent_ids)
+        if (identity := store.find_agent_identity(agent_id))
+    ]
+    kb_assignments = [
+        assignment
+        for agent_id in sorted(workflow_agent_ids)
+        for assignment in store.list_agent_kb_assignments(agent_id)
+    ]
+    kb_versions = [
+        kb["published_version"]
+        for kb in store.list_knowledge_bases(environment=workflow.get("environment"))
+        if kb.get("published_version")
+    ]
+    evaluator_templates = []
+    seen_evaluator_ids: set[str] = set()
+    for agent_id in sorted(workflow_agent_ids):
+        for assignment in store.list_agent_evaluator_assignments(agent_id):
+            evaluator_id = str(assignment.get("evaluator_id") or "")
+            if not evaluator_id or evaluator_id in seen_evaluator_ids:
+                continue
+            template = store.get_evaluator_template(evaluator_id)
+            if not template:
+                continue
+            seen_evaluator_ids.add(evaluator_id)
+            evaluator_templates.append(
+                {
+                    **template,
+                    "assignment_trigger": assignment.get("trigger"),
+                    "assignment_config": assignment.get("config") or {},
+                }
+            )
+    return build_manifest_snapshots(
+        workflow=workflow,
+        agents=agents,
+        tools=store.list_tool_records(environment=workflow.get("environment")),
+        evaluators=evaluator_templates,
+        guardrails=store.list_guardrail_policies(environment=workflow.get("environment")),
+        kb_versions=kb_versions,
+        kb_assignments=kb_assignments,
+    )
+
+
 app = FastAPI(
     title="IntelliGuard API",
     version="0.1.0",
     description="Governance API with agent, tool, workflow, and evaluator registration surfaces.",
 )
+instrument_fastapi(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -103,6 +165,8 @@ class AgentRunRequest(BaseModel):
 class MultiAgentRunRequest(BaseModel):
     query: str
     workflow_definition_id: str | None = None
+    deployment_id: str | None = None
+    idempotency_key: str | None = None
 
 
 class ResolveReviewRequest(BaseModel):
@@ -159,6 +223,59 @@ class WorkflowDefinitionRequest(BaseModel):
     review_rules: dict[str, Any] = Field(default_factory=dict)
     graph_version_hash: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowDefinitionVersionRequest(BaseModel):
+    new_workflow_definition_id: str
+    version: str
+    change_summary: str = ""
+
+
+class WorkflowLifecycleTransitionRequest(BaseModel):
+    target_status: str
+
+
+class WorkflowDeploymentRequest(BaseModel):
+    runtime_type: Literal["native", "langgraph", "strands", "temporal"] = "native"
+    timeout_seconds: int = Field(default=300, gt=0, le=86_400)
+    max_parallel_nodes: int = Field(default=4, gt=0, le=128)
+    max_tool_calls: int = Field(default=30, gt=0, le=10_000)
+    max_llm_calls: int = Field(default=20, gt=0, le=10_000)
+    max_cost_usd: float = Field(default=5.0, ge=0)
+
+
+class ServiceConnectorRequest(BaseModel):
+    connector_id: str
+    name: str
+    connector_type: Literal["http", "mcp"]
+    environment: str
+    owner: str
+    config: dict[str, Any] = Field(default_factory=dict)
+    status: str = "ACTIVE"
+
+
+class ServiceConnectorTestRequest(BaseModel):
+    operation: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScenarioSuiteRequest(BaseModel):
+    suite_id: str | None = None
+    name: str
+    description: str = ""
+    workflow_definition_id: str
+    environment: str = "demo"
+    scenarios: list[dict[str, Any]] = Field(default_factory=list)
+    pass_threshold: float = Field(default=1.0, ge=0, le=1)
+
+
+class ScenarioRunRequest(BaseModel):
+    deployment_id: str
+
+
+class WorkflowDeploymentJobRequest(BaseModel):
+    backend: Literal["local_compose", "kubernetes", "temporal", "external_ci"] = "local_compose"
+    worker_pool: str = "shared-readonly"
 
 
 class LoginRequest(BaseModel):
@@ -346,6 +463,7 @@ class ReviewQueueItemResponse(BaseModel):
     risk_types: list[str]
     reason: str
     status: str
+    metadata: dict[str, Any]
     reviewer_note: str | None
     resolved_at: str | None
     created_at: str
@@ -630,6 +748,11 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/v1/telemetry/status")
+def get_telemetry_status() -> dict[str, Any]:
+    return telemetry_status(default_service_name="agent-governance-api").to_dict()
+
+
 @app.get("/v1/auth/bootstrap-status")
 def bootstrap_status() -> dict[str, Any]:
     requires_initial_admin = not store.has_password_users()
@@ -908,6 +1031,131 @@ def update_tool(
     return tool
 
 
+@app.get("/v1/service-connectors")
+def list_service_connectors(
+    environment: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    return store.list_service_connectors(environment=visible_environment(environment, user))
+
+
+@app.post("/v1/service-connectors")
+def create_service_connector(
+    request: ServiceConnectorRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    require_environment_access(user, request.environment, "tool:create")
+    try:
+        return store.upsert_service_connector(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/v1/service-connectors/{connector_id}")
+def get_service_connector(
+    connector_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    connector = store.get_service_connector(connector_id)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Service connector not found")
+    require_environment_access(user, connector.get("environment"), "read")
+    return connector
+
+
+@app.post("/v1/service-connectors/{connector_id}/test")
+def test_service_connector(
+    connector_id: str,
+    request: ServiceConnectorTestRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    from agent_governance.adapters.http_service import ConnectorPolicyError, HttpServiceConnector
+
+    connector = store.get_service_connector(connector_id)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Service connector not found")
+    require_environment_access(user, connector.get("environment"), "tool:create")
+    if connector.get("connector_type") != "http":
+        raise HTTPException(status_code=400, detail="Only HTTP connector tests are supported")
+    try:
+        result = HttpServiceConnector(connector).execute(request.operation, request.payload)
+    except ConnectorPolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "ok": result.ok,
+        "status_code": result.status_code,
+        "data": result.data,
+        "error": result.error,
+        "metadata": result.metadata,
+    }
+
+
+@app.get("/v1/scenario-suites")
+def list_scenario_suites(
+    environment: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    return store.list_scenario_suites(environment=visible_environment(environment, user))
+
+
+@app.post("/v1/scenario-suites")
+def create_scenario_suite(
+    request: ScenarioSuiteRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    require_environment_access(user, request.environment, "workflow:deploy")
+    payload = request.model_dump()
+    payload["pass_threshold"] = request.pass_threshold
+    return store.upsert_scenario_suite(payload)
+
+
+@app.post("/v1/scenario-suites/{suite_id}/runs")
+def run_scenario_suite(
+    suite_id: str,
+    request: ScenarioRunRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    from agent_governance.runtime.native_runner import NativeRuntimeRunner
+    from agent_governance.runtime.scenario_evaluator import ScenarioSuiteEvaluator
+
+    suite = store.get_scenario_suite(suite_id)
+    if not suite:
+        raise HTTPException(status_code=404, detail="Scenario suite not found")
+    deployment = store.get_workflow_deployment_revision(request.deployment_id)
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Workflow deployment not found")
+    require_environment_access(user, deployment["environment"], "workflow:deploy")
+    if deployment["workflow_definition_id"] != suite["workflow_definition_id"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Scenario suite does not target this workflow deployment.",
+        )
+    runner = NativeRuntimeRunner(
+        database_url=settings.database_url,
+        policy_path=settings.policy_path,
+        tools=registry,
+    )
+    try:
+        return ScenarioSuiteEvaluator(store=store, runner=runner).run_suite(
+            suite=suite,
+            deployment=deployment,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/v1/scenario-runs/{scenario_run_id}")
+def get_scenario_run(
+    scenario_run_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    run = store.get_scenario_run(scenario_run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Scenario run not found")
+    require_environment_access(user, run["environment"], "read")
+    return run
+
+
 @app.get("/v1/tools/{tool_id}")
 def get_tool(tool_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     tool = store.get_tool_record(tool_id)
@@ -1089,8 +1337,265 @@ def create_workflow_definition(
             raise HTTPException(status_code=403, detail=str(exc)) from exc
     try:
         return store.upsert_workflow_definition(request.model_dump())
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     except WorkflowGraphError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/v1/workflow-definitions/{workflow_definition_id}/versions")
+def list_workflow_definition_versions(
+    workflow_definition_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    workflow = store.get_workflow_definition(workflow_definition_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    require_environment_access(user, workflow.get("environment"), "read")
+    return store.list_workflow_definition_versions(
+        workflow.get("workflow_root_id") or workflow_definition_id
+    )
+
+
+@app.post("/v1/workflow-definitions/{workflow_definition_id}/versions")
+def create_workflow_definition_version(
+    workflow_definition_id: str,
+    request: WorkflowDefinitionVersionRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    workflow = store.get_workflow_definition(workflow_definition_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    require_environment_access(user, workflow.get("environment"), "workflow:create")
+    try:
+        return store.create_workflow_definition_version(
+            source_workflow_definition_id=workflow_definition_id,
+            new_workflow_definition_id=request.new_workflow_definition_id,
+            version=request.version,
+            change_summary=request.change_summary,
+            created_by=user["email"],
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/v1/workflow-definitions/{workflow_definition_id}/lifecycle")
+def transition_workflow_lifecycle(
+    workflow_definition_id: str,
+    request: WorkflowLifecycleTransitionRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    workflow = store.get_workflow_definition(workflow_definition_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    require_environment_access(user, workflow.get("environment"), "workflow:create")
+    try:
+        return store.transition_workflow_lifecycle(
+            workflow_definition_id,
+            request.target_status,
+            actor=user["email"],
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/v1/workflow-definitions/{workflow_definition_id}/deployments")
+def create_workflow_deployment(
+    workflow_definition_id: str,
+    request: WorkflowDeploymentRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    from agent_governance.runtime.manifest_compiler import (
+        ManifestCompileError,
+        ManifestCompileOptions,
+        compile_workflow_manifest,
+    )
+
+    workflow = store.get_workflow_definition(workflow_definition_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    require_environment_access(user, workflow.get("environment"), "workflow:deploy")
+    certification = store.get_workflow_certification(workflow_definition_id)
+    if not certification:
+        raise HTTPException(status_code=400, detail="Workflow certification is required")
+
+    deployment_id = f"deploy_{uuid4().hex[:16]}"
+    snapshots = workflow_manifest_snapshots(workflow)
+    try:
+        manifest = compile_workflow_manifest(
+            workflow=workflow,
+            certification=certification,
+            deployment_id=deployment_id,
+            snapshots=snapshots,
+            options=ManifestCompileOptions(
+                runtime_type=request.runtime_type,
+                timeout_seconds=request.timeout_seconds,
+                max_parallel_nodes=request.max_parallel_nodes,
+                max_tool_calls=request.max_tool_calls,
+                max_llm_calls=request.max_llm_calls,
+                max_cost_usd=request.max_cost_usd,
+            ),
+        )
+        revision = store.create_workflow_deployment_revision(
+            {
+                "deployment_id": deployment_id,
+                "workflow_definition_id": workflow_definition_id,
+                "environment": workflow["environment"],
+                "version": workflow.get("version") or "v1",
+                "status": "PACKAGED",
+                "manifest": manifest.model_dump(mode="json"),
+                "manifest_hash": manifest.manifest_hash(),
+                "graph_version_hash": manifest.graph_version_hash,
+                "agent_config_hashes": snapshots.get("agents", {}),
+                "tool_config_hashes": snapshots.get("tools", {}),
+                "evaluator_config_hashes": snapshots.get("evaluators", {}),
+                "policy_hashes": snapshots.get("policies", {}),
+                "kb_version_hashes": snapshots.get("knowledge", {}),
+                "runtime_type": manifest.runtime_type,
+                "runtime_limits": manifest.runtime_limits.model_dump(mode="json"),
+                "created_by": user["email"],
+            }
+        )
+    except (ManifestCompileError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "deployment_id": revision["deployment_id"],
+        "workflow_definition_id": revision["workflow_definition_id"],
+        "status": revision["status"],
+        "runtime_type": revision["runtime_type"],
+        "manifest_hash": revision["manifest_hash"],
+        "graph_version_hash": revision["graph_version_hash"],
+    }
+
+
+@app.post("/v1/workflow-deployments/{deployment_id}/activate")
+def activate_workflow_deployment(
+    deployment_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    from agent_governance.runtime.scenario_evaluator import (
+        assert_production_activation_allowed,
+    )
+
+    deployment = store.get_workflow_deployment_revision(deployment_id)
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Workflow deployment not found")
+    require_environment_access(user, deployment["environment"], "workflow:deploy")
+    try:
+        assert_production_activation_allowed(store=store, deployment=deployment)
+        return store.activate_workflow_deployment(deployment_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/v1/workflow-deployments/{deployment_id}/generate-artifacts")
+def generate_workflow_deployment_artifacts(
+    deployment_id: str,
+    request: WorkflowDeploymentJobRequest | None = None,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    from agent_governance.adk.manifest import RuntimeManifest
+    from agent_governance.runtime.codegen import (
+        generate_runtime_artifacts,
+        persist_runtime_artifacts,
+    )
+
+    deployment = store.get_workflow_deployment_revision(deployment_id)
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Workflow deployment not found")
+    require_environment_access(user, deployment["environment"], "workflow:deploy")
+    request = request or WorkflowDeploymentJobRequest()
+    manifest = RuntimeManifest.model_validate(deployment["manifest"])
+    worker_pool = manifest.metadata.get("worker_pool") or request.worker_pool
+    artifacts = generate_runtime_artifacts(manifest, worker_pool=worker_pool)
+    return persist_runtime_artifacts(
+        store=store,
+        deployment_id=deployment_id,
+        workflow_definition_id=deployment["workflow_definition_id"],
+        artifacts=artifacts,
+    )
+
+
+@app.get("/v1/workflow-deployments/{deployment_id}/artifacts")
+def list_workflow_deployment_artifacts(
+    deployment_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    deployment = store.get_workflow_deployment_revision(deployment_id)
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Workflow deployment not found")
+    require_environment_access(user, deployment["environment"], "read")
+    return store.list_workflow_generated_artifacts(deployment_id)
+
+
+@app.post("/v1/workflow-deployments/{deployment_id}/deploy")
+def deploy_workflow_deployment(
+    deployment_id: str,
+    request: WorkflowDeploymentJobRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    from agent_governance.runtime.deployment_orchestrator import (
+        DeploymentJobRequest,
+        DeploymentOrchestrator,
+        KubernetesDeploymentBackend,
+        LocalComposeDeploymentBackend,
+    )
+
+    deployment = store.get_workflow_deployment_revision(deployment_id)
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Workflow deployment not found")
+    require_environment_access(user, deployment["environment"], "workflow:deploy")
+    artifacts = store.list_workflow_generated_artifacts(deployment_id)
+    if not artifacts:
+        raise HTTPException(status_code=400, detail="Generate runtime artifacts before deploy")
+    orchestrator = DeploymentOrchestrator(
+        store=store,
+        backends={
+            "local_compose": LocalComposeDeploymentBackend(
+                os.getenv("WORKFLOW_RUNNER_HEALTH_URL", "http://localhost:8000/health")
+            ),
+            "kubernetes": KubernetesDeploymentBackend(
+                namespace=os.getenv("K8S_NAMESPACE", "intelliguard")
+            ),
+        },
+    )
+    try:
+        return orchestrator.deploy(
+            DeploymentJobRequest(
+                deployment_id=deployment_id,
+                environment=deployment["environment"],
+                backend=request.backend,
+                requested_by=user["email"],
+                worker_pool=request.worker_pool,
+                artifact_ids=[artifact["artifact_id"] for artifact in artifacts],
+            )
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/v1/deployment-jobs/{job_id}")
+def get_deployment_job(
+    job_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    job = store.get_deployment_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Deployment job not found")
+    require_environment_access(user, job["environment"], "read")
+    return job
+
+
+@app.get("/v1/workflow-deployments/{deployment_id}/jobs")
+def list_workflow_deployment_jobs(
+    deployment_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    deployment = store.get_workflow_deployment_revision(deployment_id)
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Workflow deployment not found")
+    require_environment_access(user, deployment["environment"], "read")
+    return store.list_deployment_jobs(deployment_id)
 
 
 @app.post("/v1/workflow-definitions/{workflow_definition_id}/evaluate")
@@ -1313,12 +1818,50 @@ def multi_agent_run(
         CertificationEnforcementError,
         check_workflow_certification,
     )
+    from agent_governance.runtime.dispatcher import (
+        DuplicateActiveRunError,
+        RuntimeRunDispatcher,
+        StoreBackedRunQueue,
+    )
 
     workflow_definition = None
+    if request.deployment_id:
+        deployment = store.get_workflow_deployment_revision(request.deployment_id)
+        if not deployment:
+            raise HTTPException(status_code=404, detail="Workflow deployment not found")
+        if deployment["status"] not in {"PACKAGED", "ACTIVE"}:
+            raise HTTPException(status_code=400, detail="Workflow deployment is not runnable")
+        require_environment_access(user, deployment["environment"], "workflow:run")
+        try:
+            run = RuntimeRunDispatcher(
+                store=store,
+                queue=StoreBackedRunQueue(store=store),
+            ).submit(
+                deployment_id=deployment["deployment_id"],
+                user_query=request.query,
+                idempotency_key=request.idempotency_key,
+            )
+            return {
+                "run_id": run["run_id"],
+                "deployment_id": deployment["deployment_id"],
+                "workflow_definition_id": deployment["workflow_definition_id"],
+                "workflow_id": run.get("workflow_id"),
+                "decision": run.get("decision"),
+                "status": run["status"],
+                "queued": run["status"] == "QUEUED",
+            }
+        except DuplicateActiveRunError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     if not request.workflow_definition_id:
         raise HTTPException(
             status_code=400,
-            detail="workflow_definition_id is required. Create and select a workflow definition before running.",
+            detail=(
+                "workflow_definition_id or deployment_id is required. Create and select a "
+                "workflow definition before running."
+            ),
         )
     workflow_definition = store.get_workflow_definition(request.workflow_definition_id)
     if not workflow_definition:
@@ -1333,13 +1876,17 @@ def multi_agent_run(
     except CertificationEnforcementError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     try:
-        return run_customer_support_workflow(
+        result = run_customer_support_workflow(
             database_url=settings.database_url,
             policy_path=settings.policy_path,
             tools=registry,
             query=request.query,
             workflow_definition=workflow_definition,
         )
+        trace_id = current_trace_id()
+        if trace_id:
+            result["trace_id"] = trace_id
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1362,6 +1909,74 @@ def workflow_detail(
         raise HTTPException(status_code=404, detail="Workflow not found")
     require_environment_access(user, detail.get("lead_agent", {}).get("environment"), "read")
     return detail
+
+
+@app.get("/v1/runtime-runs/{run_id}")
+def runtime_run_detail(run_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    run = store.get_workflow_runtime_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Runtime run not found")
+    require_environment_access(user, run["environment"], "workflow:run")
+    return run
+
+
+@app.get("/v1/runtime-runs")
+def list_runtime_runs(
+    limit: int = 100,
+    environment: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+) -> list[dict[str, Any]]:
+    return store.list_workflow_runtime_runs(
+        environment=visible_environment(environment, user),
+        limit=limit,
+    )
+
+
+@app.get("/v1/runtime-runs/{run_id}/events")
+def runtime_run_events(
+    run_id: str,
+    after_outbox_id: str | None = None,
+    stream: bool = False,
+    user: dict[str, Any] = Depends(current_user),
+) -> Any:
+    from agent_governance.runtime.event_bus import RuntimeEventBus
+
+    run = store.get_workflow_runtime_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Runtime run not found")
+    require_environment_access(user, run["environment"], "workflow:run")
+    bus = RuntimeEventBus(store=store)
+    if not stream:
+        return {"events": bus.list_since(run_id=run_id, after_outbox_id=after_outbox_id)}
+
+    def event_stream() -> Any:
+        cursor = after_outbox_id
+        for _ in range(120):
+            events = bus.list_since(run_id=run_id, after_outbox_id=cursor)
+            for event in events:
+                cursor = event["outbox_id"]
+                yield f"id: {cursor}\nevent: {event['event_type']}\ndata: {json.dumps(event)}\n\n"
+            current = store.get_workflow_runtime_run(run_id)
+            if current and current["status"] in {"COMPLETED", "FAILED", "BLOCKED", "REVIEW"}:
+                break
+            time.sleep(1)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/v1/runtime-runs/{run_id}/audit-completeness")
+def runtime_run_audit_completeness(
+    run_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    from agent_governance.runtime.audit_completeness import check_runtime_audit_completeness
+
+    run = store.get_workflow_runtime_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Runtime run not found")
+    require_environment_access(user, run["environment"], "read")
+    result = check_runtime_audit_completeness(store, run_id)
+    return {"run_id": run_id, "passed": result.passed, "findings": result.findings}
 
 
 @app.get("/v1/audit-events")
@@ -1404,10 +2019,43 @@ def resolve_review(
         raise HTTPException(
             status_code=400, detail="Reviewer note is required when denying a review"
         )
+    review = store.get_review_item(review_id)
     updated = store.resolve_review_item(review_id, request.status, request.reviewer_note)
     if not updated:
         raise HTTPException(status_code=404, detail="Review item not found")
-    return {"review_id": review_id, "status": request.status}
+    temporal_signal_sent = False
+    runtime_resume: dict[str, Any] = {"applied": False}
+    if review:
+        from agent_governance.runtime.hooks import RuntimeReviewResumeService
+        from agent_governance.temporal.review import signal_review_resolution
+
+        resume_result = RuntimeReviewResumeService(store=store).resolve_review(
+            review=review,
+            status=request.status,
+            reviewer_email=user["email"],
+            reviewer_note=request.reviewer_note,
+        )
+        runtime_resume = {
+            "applied": resume_result.applied,
+            "action": resume_result.action,
+            "run_id": resume_result.run_id,
+            "hook_id": resume_result.hook_id,
+        }
+        try:
+            temporal_signal_sent = signal_review_resolution(
+                review=review,
+                status=request.status,
+                reviewer_email=user["email"],
+                reviewer_note=request.reviewer_note,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "review_id": review_id,
+        "status": request.status,
+        "temporal_signal_sent": temporal_signal_sent,
+        "runtime_resume": runtime_resume,
+    }
 
 
 @app.get("/v1/sessions")
@@ -1729,37 +2377,46 @@ async def create_knowledge_base_with_files(
         )
         documents = []
         for upload in files:
-            data = await upload.read()
-            stored = KnowledgeFileStorage(DEFAULT_KB_UPLOAD_DIR).save_upload(
+            with trace_kb_operation(
+                operation="kb.file.store",
                 kb_id=body.kb_id,
-                file_name=upload.filename or "upload.txt",
-                content_type=upload.content_type or "",
-                data=data,
-            )
-            source = store.upsert_knowledge_source(
-                body.kb_id,
-                {
-                    "source_type": "file",
-                    "display_name": stored.file_name,
-                    "uri": stored.storage_uri,
-                    "content_type": stored.content_type,
-                    "source_config": {"checksum": stored.checksum},
-                    "status": "pending",
+                retrieval_mode=body.retrieval_mode,
+                attributes={
+                    "agentic.file_name": upload.filename or "upload.txt",
+                    "agentic.content_type": upload.content_type or "",
                 },
-            )
-            documents.append(
-                store.create_knowledge_document(
+            ):
+                data = await upload.read()
+                stored = KnowledgeFileStorage(DEFAULT_KB_UPLOAD_DIR).save_upload(
+                    kb_id=body.kb_id,
+                    file_name=upload.filename or "upload.txt",
+                    content_type=upload.content_type or "",
+                    data=data,
+                )
+                source = store.upsert_knowledge_source(
                     body.kb_id,
-                    source["source_id"],
                     {
-                        "file_name": stored.file_name,
+                        "source_type": "file",
+                        "display_name": stored.file_name,
+                        "uri": stored.storage_uri,
                         "content_type": stored.content_type,
-                        "storage_uri": stored.storage_uri,
-                        "size_bytes": stored.size_bytes,
-                        "checksum": stored.checksum,
+                        "source_config": {"checksum": stored.checksum},
+                        "status": "pending",
                     },
                 )
-            )
+                documents.append(
+                    store.create_knowledge_document(
+                        body.kb_id,
+                        source["source_id"],
+                        {
+                            "file_name": stored.file_name,
+                            "content_type": stored.content_type,
+                            "storage_uri": stored.storage_uri,
+                            "size_bytes": stored.size_bytes,
+                            "checksum": stored.checksum,
+                        },
+                    )
+                )
         version = store.create_knowledge_base_version(
             body.kb_id,
             {
@@ -1780,15 +2437,21 @@ async def create_knowledge_base_with_files(
         )
         index = None
         if body.retrieval_mode == "vector" and body.index_after_create and documents:
-            index = KnowledgeIngestionService(
-                store,
-                LlamaIndexKnowledgeIndexer(
-                    embedding_model=body.embedding_model,
-                    chunking_strategy=body.chunking_strategy,
-                    chunk_size=body.chunk_size,
-                    chunk_overlap=body.chunk_overlap,
-                ),
-            ).process_pending_documents(body.kb_id)
+            with trace_kb_operation(
+                operation="kb.index",
+                kb_id=body.kb_id,
+                retrieval_mode=body.retrieval_mode,
+                attributes={"agentic.document_count": len(documents)},
+            ):
+                index = KnowledgeIngestionService(
+                    store,
+                    LlamaIndexKnowledgeIndexer(
+                        embedding_model=body.embedding_model,
+                        chunking_strategy=body.chunking_strategy,
+                        chunk_size=body.chunk_size,
+                        chunk_overlap=body.chunk_overlap,
+                    ),
+                ).process_pending_documents(body.kb_id)
         return {
             "knowledge_base": store.get_knowledge_base(body.kb_id) or kb,
             "documents": documents,
@@ -1937,34 +2600,43 @@ async def upload_knowledge_file(
     reject_vector_image_uploads(retrieval_mode, [file])
     data = await file.read()
     try:
-        stored = KnowledgeFileStorage(DEFAULT_KB_UPLOAD_DIR).save_upload(
+        with trace_kb_operation(
+            operation="kb.file.upload",
             kb_id=kb_id,
-            file_name=file.filename or "upload.txt",
-            content_type=file.content_type or "",
-            data=data,
-        )
-        source = store.upsert_knowledge_source(
-            kb_id,
-            {
-                "source_type": "file",
-                "display_name": stored.file_name,
-                "uri": stored.storage_uri,
-                "content_type": stored.content_type,
-                "source_config": {"checksum": stored.checksum},
-                "status": "pending",
+            retrieval_mode=retrieval_mode,
+            attributes={
+                "agentic.file_name": file.filename or "upload.txt",
+                "agentic.content_type": file.content_type or "",
             },
-        )
-        return store.create_knowledge_document(
-            kb_id,
-            source["source_id"],
-            {
-                "file_name": stored.file_name,
-                "content_type": stored.content_type,
-                "storage_uri": stored.storage_uri,
-                "size_bytes": stored.size_bytes,
-                "checksum": stored.checksum,
-            },
-        )
+        ):
+            stored = KnowledgeFileStorage(DEFAULT_KB_UPLOAD_DIR).save_upload(
+                kb_id=kb_id,
+                file_name=file.filename or "upload.txt",
+                content_type=file.content_type or "",
+                data=data,
+            )
+            source = store.upsert_knowledge_source(
+                kb_id,
+                {
+                    "source_type": "file",
+                    "display_name": stored.file_name,
+                    "uri": stored.storage_uri,
+                    "content_type": stored.content_type,
+                    "source_config": {"checksum": stored.checksum},
+                    "status": "pending",
+                },
+            )
+            return store.create_knowledge_document(
+                kb_id,
+                source["source_id"],
+                {
+                    "file_name": stored.file_name,
+                    "content_type": stored.content_type,
+                    "storage_uri": stored.storage_uri,
+                    "size_bytes": stored.size_bytes,
+                    "checksum": stored.checksum,
+                },
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2001,10 +2673,16 @@ def create_knowledge_sync_status(
             "chunk_size": body.chunk_size or source_config.get("chunk_size"),
             "chunk_overlap": body.chunk_overlap or source_config.get("chunk_overlap"),
         }
-        return KnowledgeIngestionService(
-            store,
-            knowledge_indexer_for_config(index_config),
-        ).process_pending_documents(kb_id, force_reindex=body.force_reindex)
+        with trace_kb_operation(
+            operation="kb.sync",
+            kb_id=kb_id,
+            retrieval_mode=str(source_config.get("retrieval_mode") or "vector"),
+            attributes={"agentic.force_reindex": body.force_reindex},
+        ):
+            return KnowledgeIngestionService(
+                store,
+                knowledge_indexer_for_config(index_config),
+            ).process_pending_documents(kb_id, force_reindex=body.force_reindex)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

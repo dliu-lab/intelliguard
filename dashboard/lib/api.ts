@@ -144,6 +144,20 @@ export type PlatformData = {
   environments: string[];
 };
 
+export type WorkflowDeploymentPayload = {
+  runtime_type?: "native" | "langgraph" | "strands" | "temporal";
+  timeout_seconds?: number;
+  max_parallel_nodes?: number;
+  max_tool_calls?: number;
+  max_llm_calls?: number;
+  max_cost_usd?: number;
+};
+
+export type DeploymentJobPayload = {
+  backend?: "local_compose" | "kubernetes" | "temporal" | "external_ci";
+  worker_pool?: string;
+};
+
 type AgentAssignments = { guardrails: ApiRecord[]; evaluators: ApiRecord[]; knowledge: ApiRecord[] };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -524,6 +538,107 @@ export function evaluateWorkflowDefinition(token: string, workflowDefinitionId: 
   );
 }
 
+export function createWorkflowDeployment(
+  token: string,
+  workflowDefinitionId: string,
+  payload: WorkflowDeploymentPayload = {},
+) {
+  return request<ApiRecord>(
+    `/v1/workflow-definitions/${encodeURIComponent(workflowDefinitionId)}/deployments`,
+    {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function generateWorkflowDeploymentArtifacts(
+  token: string,
+  deploymentId: string,
+  payload: DeploymentJobPayload = {},
+) {
+  return request<ApiRecord[]>(
+    `/v1/workflow-deployments/${encodeURIComponent(deploymentId)}/generate-artifacts`,
+    {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function listWorkflowDeploymentArtifacts(token: string, deploymentId: string) {
+  return request<ApiRecord[]>(`/v1/workflow-deployments/${encodeURIComponent(deploymentId)}/artifacts`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function deployWorkflowDeployment(
+  token: string,
+  deploymentId: string,
+  payload: DeploymentJobPayload = {},
+) {
+  return request<ApiRecord>(`/v1/workflow-deployments/${encodeURIComponent(deploymentId)}/deploy`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function activateWorkflowDeployment(token: string, deploymentId: string) {
+  return request<ApiRecord>(`/v1/workflow-deployments/${encodeURIComponent(deploymentId)}/activate`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export function getDeploymentJob(token: string, jobId: string) {
+  return request<ApiRecord>(`/v1/deployment-jobs/${encodeURIComponent(jobId)}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function listWorkflowDeploymentJobs(token: string, deploymentId: string) {
+  return request<ApiRecord[]>(`/v1/workflow-deployments/${encodeURIComponent(deploymentId)}/jobs`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function runWorkflowDeployment(
+  token: string,
+  payload: { query: string; deployment_id: string; idempotency_key?: string },
+) {
+  return request<ApiRecord>("/v1/multi-agent-runs", {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listRuntimeRuns(token: string, limit = 100, environment = "all") {
+  return request<ApiRecord[]>(withParams("/v1/runtime-runs", { limit, environment }), {
+    headers: authHeaders(token),
+  });
+}
+
+export function getRuntimeRunEvents(token: string, runId: string, afterOutboxId?: string) {
+  return request<{ events: ApiRecord[] }>(
+    withParams(`/v1/runtime-runs/${encodeURIComponent(runId)}/events`, {
+      after_outbox_id: afterOutboxId,
+    }),
+    { headers: authHeaders(token) },
+  );
+}
+
+export function runScenarioSuite(token: string, suiteId: string, deploymentId: string) {
+  return request<ApiRecord>(`/v1/scenario-suites/${encodeURIComponent(suiteId)}/runs`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ deployment_id: deploymentId }),
+  });
+}
+
 export function getAgentCertification(token: string, agentId: string) {
   return request<AgentCertification>(`/v1/agents/${encodeURIComponent(agentId)}/certification`, {
     headers: authHeaders(token),
@@ -570,7 +685,7 @@ export function createWorkflowDefinition(token: string, payload: ApiRecord) {
 
 export function runMultiAgentWorkflow(
   token: string,
-  payload: { query: string; workflow_definition_id: string },
+  payload: { query: string; workflow_definition_id?: string; deployment_id?: string; idempotency_key?: string },
 ) {
   return request<ApiRecord>("/v1/multi-agent-runs", {
     method: "POST",

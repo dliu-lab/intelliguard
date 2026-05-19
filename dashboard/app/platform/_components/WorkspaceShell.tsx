@@ -25,6 +25,7 @@ export function WorkspaceShell({
   onLogout,
   onRefresh,
   onWorkflowAuditSelect,
+  onWorkflowTraceSelect,
   onViewSelect,
   selectedEnvironment,
   selectedTraceWorkflowId,
@@ -40,6 +41,7 @@ export function WorkspaceShell({
   onLogout: () => void;
   onRefresh: () => void;
   onWorkflowAuditSelect: (workflowIdOrSessionId: string) => void;
+  onWorkflowTraceSelect: (workflowIdOrSessionId: string) => void;
   onViewSelect: (view: WorkspaceView) => void;
   selectedEnvironment: string;
   selectedTraceWorkflowId: string;
@@ -190,6 +192,7 @@ export function WorkspaceShell({
             onComponentSelect={onComponentSelect}
             onViewSelect={onViewSelect}
             onWorkflowAuditSelect={onWorkflowAuditSelect}
+            onWorkflowTraceSelect={onWorkflowTraceSelect}
             onRefresh={onRefresh}
             selectedEnvironment={selectedEnvironment}
             selectedTraceWorkflowId={selectedTraceWorkflowId}

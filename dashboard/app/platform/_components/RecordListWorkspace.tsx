@@ -2,9 +2,10 @@
 
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ChevronDown, FileJson, PlayCircle, RotateCw, Search, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, ExternalLink, FileJson, PlayCircle, RotateCw, Search, X, XCircle } from "lucide-react";
 import { getSession, resolveReview, runMultiAgentWorkflow, type ApiRecord, type PlatformData } from "@/lib/api";
 import { ComponentRow, PlatformSurface } from "./shared";
+import { RuntimeRunStatusPanel } from "./RuntimeRunStatusPanel";
 import { formatCount, formatTimestamp, isErrorMessage, joinParts, readNestedText, readText } from "./utils";
 
 function workflowRunId(workflow: ApiRecord) {
@@ -39,6 +40,19 @@ function workflowRunSearchText(workflow: ApiRecord) {
     .toLowerCase();
 }
 
+function workflowRowMatchesSelection(row: WorkflowRunRow, selectedWorkflowId: string) {
+  if (!selectedWorkflowId) {
+    return true;
+  }
+
+  return (
+    recordMatchesWorkflow(row.workflow, selectedWorkflowId)
+    || recordMatchesWorkflow(row.detail, selectedWorkflowId)
+    || asRecords(row.detail.sessions).some((session) => recordMatchesWorkflow(session, selectedWorkflowId))
+    || workflowDefinitionId(row.workflow, row.detail) === selectedWorkflowId
+  );
+}
+
 function workflowDefinitionId(workflow: ApiRecord, detail?: ApiRecord) {
   return (
     readText(workflow, ["workflow_definition_id"])
@@ -49,6 +63,12 @@ function workflowDefinitionId(workflow: ApiRecord, detail?: ApiRecord) {
   );
 }
 
+function workflowUpdatedAtMs(workflow: ApiRecord, detail?: ApiRecord) {
+  const value = readText(workflow, ["updated_at", "created_at"]) || readText(detail || {}, ["updated_at", "created_at"]);
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
 function workflowDomain(workflow: ApiRecord, detail?: ApiRecord) {
   return (
     readText(workflow, ["domain"])
@@ -57,6 +77,26 @@ function workflowDomain(workflow: ApiRecord, detail?: ApiRecord) {
     || readNestedText(detail || {}, ["metadata", "domain"])
     || "general"
   );
+}
+
+function workflowTraceContext(workflow: ApiRecord, detail?: ApiRecord) {
+  const metadata = objectValue(workflow, "metadata");
+  const detailMetadata = objectValue(detail || {}, "metadata");
+  const sessions = asRecords(detail?.sessions);
+  const sessionTrace = sessions
+    .map((session) => objectValue(session, "metadata"))
+    .find((item) => readText(item, ["otel_trace_id"]) || readText(item, ["otel_trace_url"]));
+  const traceId = readText(metadata, ["otel_trace_id"])
+    || readText(detailMetadata, ["otel_trace_id"])
+    || readText(sessionTrace || {}, ["otel_trace_id"])
+    || readText(workflow, ["trace_id"])
+    || readText(detail || {}, ["trace_id"])
+    || "";
+  const traceUrl = readText(metadata, ["otel_trace_url"])
+    || readText(detailMetadata, ["otel_trace_url"])
+    || readText(sessionTrace || {}, ["otel_trace_url"])
+    || "";
+  return { traceId, traceUrl };
 }
 
 function workflowPendingReviews(workflow: ApiRecord, detail: ApiRecord, reviewQueue: ApiRecord[]) {
@@ -108,15 +148,33 @@ const WORKFLOW_RUN_VIEWS: Array<{ id: WorkflowRunView; label: string; detail: st
   ...WORKFLOW_BUCKETS,
 ];
 
+type WorkflowRunRow = {
+  bucket: WorkflowRunBucket;
+  detail: ApiRecord;
+  workflow: ApiRecord;
+};
+
+type WorkflowHistoryGroup = {
+  definitionId: string;
+  domain: string;
+  key: string;
+  latest: WorkflowRunRow;
+  name: string;
+  rows: WorkflowRunRow[];
+  workflowDefinition: ApiRecord | undefined;
+};
+
 export function WorkflowTraceWorkspace({
   data,
   onAuditEventsSelect,
   onRefresh,
+  selectedEnvironment,
   selectedWorkflowId,
 }: {
   data: PlatformData;
   onAuditEventsSelect: (workflowIdOrSessionId: string) => void;
   onRefresh: () => void;
+  selectedEnvironment: string;
   selectedWorkflowId: string;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
@@ -149,12 +207,8 @@ export function WorkflowTraceWorkspace({
     setExpandedWorkflowIds((current) => ({ ...current, [selectedWorkflowId]: true }));
   }, [selectedWorkflowId]);
 
-  const workflowRows = useMemo(() => {
-    const visibleWorkflows = selectedWorkflowId
-      ? data.workflows.filter((workflow) => recordMatchesWorkflow(workflow, selectedWorkflowId))
-      : data.workflows;
-
-    return visibleWorkflows.map((workflow) => {
+  const allWorkflowRows = useMemo<WorkflowRunRow[]>(() => {
+    return data.workflows.map((workflow) => {
       const detail = data.workflowDetails.find((item) => readText(item, ["workflow_id"]) === readText(workflow, ["workflow_id"])) || workflow;
       return {
         bucket: workflowRunBucket(workflow, detail, data.reviewQueue),
@@ -162,7 +216,25 @@ export function WorkflowTraceWorkspace({
         workflow,
       };
     });
-  }, [data.workflowDetails, data.reviewQueue, data.workflows, selectedWorkflowId]);
+  }, [data.workflowDetails, data.reviewQueue, data.workflows]);
+
+  const workflowRows = useMemo(() => {
+    if (!selectedWorkflowId) {
+      return allWorkflowRows;
+    }
+
+    const selectedRow = allWorkflowRows.find((row) => workflowRowMatchesSelection(row, selectedWorkflowId));
+    const selectedDefinitionId = selectedRow ? workflowDefinitionId(selectedRow.workflow, selectedRow.detail) : selectedWorkflowId;
+
+    if (selectedDefinitionId) {
+      const definitionRows = allWorkflowRows.filter((row) => workflowDefinitionId(row.workflow, row.detail) === selectedDefinitionId);
+      if (definitionRows.length) {
+        return definitionRows;
+      }
+    }
+
+    return allWorkflowRows.filter((row) => workflowRowMatchesSelection(row, selectedWorkflowId));
+  }, [allWorkflowRows, selectedWorkflowId]);
 
   const searchedWorkflowRows = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -181,6 +253,49 @@ export function WorkflowTraceWorkspace({
 
     return searchedWorkflowRows.filter((row) => row.bucket === runView);
   }, [runView, searchedWorkflowRows]);
+
+  const visibleWorkflowGroups = useMemo(() => {
+    const groups = new Map<string, WorkflowHistoryGroup>();
+
+    visibleWorkflowRows.forEach((row) => {
+      const definitionId = workflowDefinitionId(row.workflow, row.detail);
+      const workflowId = workflowRunId(row.workflow) || readText(row.detail, ["workflow_id"]) || "workflow";
+      const key = definitionId || workflowId;
+      const workflowDefinition = definitionId
+        ? data.workflowDefinitions.find((definition) => readText(definition, ["workflow_definition_id"]) === definitionId)
+        : undefined;
+      const current = groups.get(key);
+      const name = readText(workflowDefinition || {}, ["name", "display_name", "workflow_definition_id"])
+        || readText(row.workflow, ["name"])
+        || definitionId
+        || "Workflow";
+
+      if (current) {
+        current.rows.push(row);
+        if (workflowUpdatedAtMs(row.workflow, row.detail) > workflowUpdatedAtMs(current.latest.workflow, current.latest.detail)) {
+          current.latest = row;
+        }
+        return;
+      }
+
+      groups.set(key, {
+        definitionId,
+        domain: workflowDomain(row.workflow, row.detail),
+        key,
+        latest: row,
+        name,
+        rows: [row],
+        workflowDefinition,
+      });
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        rows: group.rows.sort((left, right) => workflowUpdatedAtMs(right.workflow, right.detail) - workflowUpdatedAtMs(left.workflow, left.detail)),
+      }))
+      .sort((left, right) => workflowUpdatedAtMs(right.latest.workflow, right.latest.detail) - workflowUpdatedAtMs(left.latest.workflow, left.latest.detail));
+  }, [data.workflowDefinitions, visibleWorkflowRows]);
 
   const workflowRunCounts = useMemo(() => {
     return WORKFLOW_RUN_VIEWS.reduce<Record<WorkflowRunView, number>>(
@@ -303,6 +418,8 @@ export function WorkflowTraceWorkspace({
         </div>
       </PlatformSurface>
 
+      <RuntimeRunStatusPanel environment={selectedEnvironment} selectedRunId={selectedWorkflowId} />
+
       <section className="grid gap-5 xl:grid-cols-[minmax(290px,0.34fr)_minmax(0,1fr)]">
         <PlatformSurface tone="sky">
           <div>
@@ -360,21 +477,26 @@ export function WorkflowTraceWorkspace({
           </div>
 
           <div className="mt-4 grid gap-3">
-            {visibleWorkflowRows.length ? (
-              visibleWorkflowRows.map(({ detail, workflow }) => {
-                const id = workflowRunId(workflow) || readText(detail, ["workflow_id"]);
+            {visibleWorkflowGroups.length ? (
+              visibleWorkflowGroups.map((group) => {
                 return (
-                  <WorkflowTraceGroup
-                    key={id || readText(workflow, ["session_id"])}
+                  <WorkflowHistoryGroupCard
+                    key={group.key}
                     auditEvents={data.auditEvents}
-                    detail={detail}
-                    expanded={Boolean(id && expandedWorkflowIds[id])}
+                    group={group}
+                    onGroupRun={() => {
+                      const fallbackQuery =
+                        readText(group.latest.workflow, ["user_goal"])
+                        || readText(group.latest.detail, ["user_goal"])
+                        || runQuery;
+                      void executeWorkflow(group.definitionId, fallbackQuery);
+                    }}
                     onAuditEventsSelect={onAuditEventsSelect}
-                    onRerun={() => rerunWorkflow(workflow, detail)}
-                    onToggle={() => id && toggleWorkflow(id)}
+                    onRerun={rerunWorkflow}
+                    onToggleRun={(workflowId) => toggleWorkflow(workflowId)}
                     reviewQueue={data.reviewQueue}
-                    running={runningWorkflowDefinitionId === workflowDefinitionId(workflow, detail)}
-                    workflow={workflow}
+                    runningWorkflowDefinitionId={runningWorkflowDefinitionId}
+                    selectedRunIds={expandedWorkflowIds}
                     workflowDefinitions={data.workflowDefinitions}
                   />
                 );
@@ -389,7 +511,7 @@ export function WorkflowTraceWorkspace({
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4 text-sm text-textSecondary">
             <span>
-              Showing {visibleWorkflowRows.length} of {workflowRows.length}
+              Showing {visibleWorkflowRows.length} historical runs across {visibleWorkflowGroups.length} workflow groups
             </span>
             {searchQuery ? <span>Search results filtered by "{searchQuery}"</span> : null}
           </div>
@@ -727,12 +849,14 @@ function runtimeGraphModel({
 function WorkflowRuntimeGraph({
   auditEvents,
   detail,
+  graphViewportMaxWidth,
   reviewItems,
   workflow,
   workflowDefinition,
 }: {
   auditEvents: ApiRecord[];
   detail: ApiRecord;
+  graphViewportMaxWidth?: string;
   reviewItems: ApiRecord[];
   workflow: ApiRecord;
   workflowDefinition: ApiRecord | undefined;
@@ -740,6 +864,12 @@ function WorkflowRuntimeGraph({
   const { edges, nodes } = runtimeGraphModel({ auditEvents, detail, reviewItems, workflow, workflowDefinition });
   const width = Math.max(760, nodes.length * 210);
   const height = 260;
+  const frameStyle = graphViewportMaxWidth
+    ? {
+        maxWidth: "100%",
+        width: `min(${width}px, ${graphViewportMaxWidth})`,
+      }
+    : undefined;
   const positions = new Map(
     nodes.map((node, index) => [
       node.id,
@@ -759,7 +889,7 @@ function WorkflowRuntimeGraph({
   }
 
   return (
-    <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+    <div className="rounded-2xl border border-line bg-white/[0.035] p-4" style={frameStyle}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm font-semibold text-textPrimary">Runtime graph</p>
@@ -773,7 +903,7 @@ function WorkflowRuntimeGraph({
           ))}
         </div>
       </div>
-      <div className="mt-4 overflow-x-auto">
+      <div className="mt-4 max-w-full overflow-x-auto">
         <div className="relative" style={{ width, height }}>
           <svg className="absolute inset-0 h-full w-full" viewBox={`0 0 ${width} ${height}`}>
             {edges.map((edge) => {
@@ -821,10 +951,144 @@ function WorkflowRuntimeGraph({
   );
 }
 
+function WorkflowHistoryGroupCard({
+  auditEvents,
+  group,
+  onAuditEventsSelect,
+  onGroupRun,
+  onRerun,
+  onToggleRun,
+  reviewQueue,
+  runningWorkflowDefinitionId,
+  selectedRunIds,
+  workflowDefinitions,
+}: {
+  auditEvents: ApiRecord[];
+  group: WorkflowHistoryGroup;
+  onAuditEventsSelect: (workflowIdOrSessionId: string) => void;
+  onGroupRun: () => void;
+  onRerun: (workflow: ApiRecord, detail: ApiRecord) => void;
+  onToggleRun: (workflowId: string) => void;
+  reviewQueue: ApiRecord[];
+  runningWorkflowDefinitionId: string;
+  selectedRunIds: Record<string, boolean>;
+  workflowDefinitions: ApiRecord[];
+}) {
+  const latestWorkflowId = workflowRunId(group.latest.workflow) || readText(group.latest.detail, ["workflow_id"]) || "";
+  const latestUpdatedAt = formatTimestamp(
+    readText(group.latest.workflow, ["updated_at", "created_at"]) || readText(group.latest.detail, ["updated_at", "created_at"]),
+  );
+  const counts = WORKFLOW_BUCKETS.reduce<Record<WorkflowRunBucket, number>>(
+    (next, bucket) => {
+      next[bucket.id] = group.rows.filter((row) => row.bucket === bucket.id).length;
+      return next;
+    },
+    {
+      failed: 0,
+      pending_human: 0,
+      running: 0,
+      successful: 0,
+    },
+  );
+  const isRunning = Boolean(group.definitionId && runningWorkflowDefinitionId === group.definitionId);
+  const hasSelectedRun = group.rows.some((row) => {
+    const workflowId = workflowRunId(row.workflow) || readText(row.detail, ["workflow_id"]) || "";
+    return Boolean(workflowId && selectedRunIds[workflowId]);
+  });
+  const [historyOpen, setHistoryOpen] = useState(hasSelectedRun);
+
+  useEffect(() => {
+    if (hasSelectedRun) {
+      setHistoryOpen(true);
+    }
+  }, [hasSelectedRun]);
+
+  return (
+    <article className="glass-card rounded-3xl p-5">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+        <div className="min-w-0">
+          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Workflow history</span>
+          <h3 className="mt-2 truncate text-2xl font-semibold tracking-[-0.02em]">
+            {group.name}
+          </h3>
+          <p className="mt-2 text-sm leading-6 text-textSecondary">
+            Historical runs are grouped under the same workflow definition. Open a run to inspect the full agentic trace.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-textSecondary">
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{group.definitionId || "ad hoc workflow"}</span>
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{group.domain}</span>
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{formatCount(group.rows.length, "historical run")}</span>
+            {latestWorkflowId ? <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">latest {latestWorkflowId}</span> : null}
+            {latestUpdatedAt ? <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">updated {latestUpdatedAt}</span> : null}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 lg:justify-end">
+          {WORKFLOW_BUCKETS.map((bucket) => (
+            <span key={bucket.id} className="rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs text-textSecondary">
+              {bucket.label} {counts[bucket.id]}
+            </span>
+          ))}
+          <button
+            type="button"
+            disabled={!group.definitionId || isRunning}
+            onClick={onGroupRun}
+            className="inline-flex items-center gap-2 rounded-full border border-accent/25 bg-accent/10 px-3 py-1 text-xs font-semibold text-accent transition hover:border-accent/45 hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RotateCw size={13} aria-hidden="true" />
+            {isRunning ? "Running" : "Run workflow"}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-5 rounded-2xl border border-line bg-white/[0.035] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-textPrimary">Historical run traces</p>
+            <p className="mt-1 text-xs text-textSecondary">Each row is a separate execution of this workflow.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((current) => !current)}
+            className="inline-flex items-center gap-2 rounded-full border border-line bg-ink/70 px-3 py-1 text-xs font-semibold text-textPrimary transition hover:border-accent/35 hover:bg-accent/10"
+            aria-expanded={historyOpen}
+          >
+            <ChevronDown size={13} className={`transition ${historyOpen ? "rotate-180" : ""}`} aria-hidden="true" />
+            {historyOpen ? "Collapse" : "Extend"} {formatCount(group.rows.length, "run")}
+          </button>
+        </div>
+        {historyOpen ? (
+          <div className="mt-3 grid gap-2">
+            {group.rows.map((row, index) => {
+              const workflowId = workflowRunId(row.workflow) || readText(row.detail, ["workflow_id"]) || "";
+              return (
+                <WorkflowTraceGroup
+                  key={workflowId || `${group.key}-${index}`}
+                  auditEvents={auditEvents}
+                  detail={row.detail}
+                  expanded={Boolean(workflowId && selectedRunIds[workflowId])}
+                  historyIndex={group.rows.length - index}
+                  onAuditEventsSelect={onAuditEventsSelect}
+                  onRerun={() => onRerun(row.workflow, row.detail)}
+                  onToggle={() => workflowId && onToggleRun(workflowId)}
+                  reviewQueue={reviewQueue}
+                  running={runningWorkflowDefinitionId === workflowDefinitionId(row.workflow, row.detail)}
+                  workflow={row.workflow}
+                  workflowDefinitions={workflowDefinitions}
+                />
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
 function WorkflowTraceGroup({
   auditEvents,
   detail,
   expanded,
+  historyIndex,
   onAuditEventsSelect,
   onRerun,
   onToggle,
@@ -836,6 +1100,7 @@ function WorkflowTraceGroup({
   auditEvents: ApiRecord[];
   detail: ApiRecord;
   expanded: boolean;
+  historyIndex: number;
   onAuditEventsSelect: (workflowIdOrSessionId: string) => void;
   onRerun: () => void;
   onToggle: () => void;
@@ -862,31 +1127,55 @@ function WorkflowTraceGroup({
   );
   const domain = workflowDomain(workflow, detail);
   const metadata = objectValue(workflow, "metadata");
+  const traceContext = workflowTraceContext(workflow, detail);
+  const [detailsOpen, setDetailsOpen] = useState(expanded);
+
+  useEffect(() => {
+    if (expanded) {
+      setDetailsOpen(true);
+    }
+  }, [expanded]);
+
+  function openDetails() {
+    if (!expanded) {
+      onToggle();
+    }
+    setDetailsOpen(true);
+  }
+
+  function closeDetails() {
+    if (expanded) {
+      onToggle();
+    }
+    setDetailsOpen(false);
+  }
 
   return (
-    <article className="glass-card rounded-3xl p-5">
-      <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-start">
-        <div>
-          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Workflow run</span>
-          <h3 className="mt-2 text-2xl font-semibold tracking-[-0.02em]">
-            {readText(workflow, ["name", "workflow_id"]) || "Workflow run"}
-          </h3>
-          <p className="mt-2 text-sm leading-6 text-textSecondary">
+    <article className="rounded-2xl border border-line bg-ink/55 p-4">
+      <div className="grid gap-4 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center">
+        <div className={`grid h-12 w-12 place-items-center rounded-2xl border text-sm font-semibold ${decisionTone(decision, maxRisk)}`}>
+          {historyIndex}
+        </div>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="truncate text-base font-semibold text-textPrimary">
+              {workflowId || readText(workflow, ["name"]) || "Workflow run"}
+            </h4>
+            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] ${decisionTone(decision, maxRisk)}`}>
+              {decision || "RUNNING"}
+            </span>
+            {createdAt ? <span className="text-xs text-textSecondary">{createdAt}</span> : null}
+          </div>
+          <p className="mt-2 line-clamp-2 text-sm leading-6 text-textSecondary">
             {readText(workflow, ["user_goal", "summary"]) || readText(detail, ["user_goal", "summary"]) || "Grouped workflow trace."}
           </p>
-          <div className="mt-3 flex flex-wrap gap-2 text-xs text-textSecondary">
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-textSecondary">
             <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{workflowId || "workflow"}</span>
-            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{definitionId || "no definition"}</span>
-            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{domain}</span>
             <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{readText(workflow, ["lead_agent_id"]) || "lead unknown"}</span>
-            {createdAt ? <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">created {createdAt}</span> : null}
             {updatedAt ? <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">updated {updatedAt}</span> : null}
           </div>
         </div>
         <div className="flex flex-wrap gap-2 lg:justify-end">
-          <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${decisionTone(decision, maxRisk)}`}>
-            {decision || "RUNNING"}
-          </span>
           <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs text-textSecondary">
             {sessions.length || readText(workflow, ["session_count"]) || 0} steps
           </span>
@@ -898,9 +1187,29 @@ function WorkflowTraceGroup({
           >
             {formatCount(workflowAudits.length, "audit event")}
           </button>
-          <span className={`rounded-full border px-3 py-1 text-xs text-textSecondary ${decisionTone(undefined, maxRisk)}`}>
+          <span className={`rounded-full border px-3 py-1 text-xs ${decisionTone(undefined, maxRisk)}`}>
             risk {maxRisk}
           </span>
+          {traceContext.traceUrl ? (
+            <a
+              href={traceContext.traceUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-full border border-sky-300/25 bg-sky-300/10 px-3 py-1 text-xs font-semibold text-sky-100 transition hover:border-sky-300/45 hover:bg-sky-300/15"
+            >
+              <ExternalLink size={13} aria-hidden="true" />
+              Trace
+            </a>
+          ) : (
+            <button
+              type="button"
+              disabled
+              className="inline-flex items-center gap-2 rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs font-semibold text-textSecondary opacity-60"
+            >
+              <ExternalLink size={13} aria-hidden="true" />
+              Trace
+            </button>
+          )}
           <button
             type="button"
             disabled={!definitionId || running}
@@ -908,62 +1217,211 @@ function WorkflowTraceGroup({
             className="inline-flex items-center gap-2 rounded-full border border-accent/25 bg-accent/10 px-3 py-1 text-xs font-semibold text-accent transition hover:border-accent/45 hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RotateCw size={13} aria-hidden="true" />
-            {running ? "Running" : "Run again"}
+            {running ? "Running" : "Run this"}
           </button>
           <button
             type="button"
-            onClick={onToggle}
+            onClick={openDetails}
             className="inline-flex items-center gap-2 rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs font-semibold text-textPrimary transition hover:border-accent/35 hover:bg-accent/10"
-            aria-expanded={expanded}
+            aria-expanded={detailsOpen}
+            aria-haspopup="dialog"
           >
-            <ChevronDown size={13} className={`transition ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />
-            {expanded ? "Hide details" : "Details"}
+            <FileJson size={13} aria-hidden="true" />
+            Details
           </button>
         </div>
       </div>
 
-      {expanded ? (
-        <div className="mt-5 grid gap-4">
-          <WorkflowRuntimeGraph
-            auditEvents={workflowAudits}
-            detail={detail}
-            reviewItems={workflowReviews}
-            workflow={workflow}
-            workflowDefinition={workflowDefinition}
-          />
-
-          <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
-              <FileJson size={15} className="text-accent" aria-hidden="true" />
-              Workflow metadata
-            </div>
-            <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-ink/70 p-3 font-mono text-xs leading-5 text-textPrimary">
-              {compactJson({ workflow_id: workflowId, workflow_definition_id: definitionId, domain, ...metadata })}
-            </pre>
-          </div>
-
-          <div className="grid gap-3">
-            {sessions.length ? (
-              sessions.map((session, index) => (
-                <WorkflowStepTrace
-                  key={readText(session, ["session_id"]) || index}
-                  auditEvents={workflowAudits.filter((event) => readText(event, ["session_id"]) === readText(session, ["session_id"]))}
-                  index={index}
-                  onAuditEventsSelect={onAuditEventsSelect}
-                  reviewItems={workflowReviews.filter((review) => readText(review, ["session_id"]) === readText(session, ["session_id"]))}
-                  session={session}
-                />
-              ))
-            ) : (
-              <ComponentRow
-                title="No step detail available"
-                detail="This run has no linked step sessions yet. New workflow executions will appear here by step."
-              />
-            )}
-          </div>
-        </div>
+      {detailsOpen ? (
+        <WorkflowRunDetailsModal
+          auditEvents={workflowAudits}
+          detail={detail}
+          domain={domain}
+          metadata={metadata}
+          onAuditEventsSelect={onAuditEventsSelect}
+          onClose={closeDetails}
+          onRerun={onRerun}
+          reviewItems={workflowReviews}
+          running={running}
+          sessions={sessions}
+          traceContext={traceContext}
+          workflow={workflow}
+          workflowDefinition={workflowDefinition}
+          workflowDefinitionId={definitionId}
+          workflowId={workflowId}
+        />
       ) : null}
     </article>
+  );
+}
+
+function WorkflowRunDetailsModal({
+  auditEvents,
+  detail,
+  domain,
+  metadata,
+  onAuditEventsSelect,
+  onClose,
+  onRerun,
+  reviewItems,
+  running,
+  sessions,
+  traceContext,
+  workflow,
+  workflowDefinition,
+  workflowDefinitionId,
+  workflowId,
+}: {
+  auditEvents: ApiRecord[];
+  detail: ApiRecord;
+  domain: string;
+  metadata: ApiRecord;
+  onAuditEventsSelect: (workflowIdOrSessionId: string) => void;
+  onClose: () => void;
+  onRerun: () => void;
+  reviewItems: ApiRecord[];
+  running: boolean;
+  sessions: ApiRecord[];
+  traceContext: { traceId: string; traceUrl: string };
+  workflow: ApiRecord;
+  workflowDefinition: ApiRecord | undefined;
+  workflowDefinitionId: string;
+  workflowId: string;
+}) {
+  return (
+    <div className="fixed inset-0 z-[90] grid place-items-center bg-black/65 p-4 backdrop-blur-md" role="dialog" aria-modal="true">
+      <section
+        className="grid max-h-[90vh] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-3xl border border-line bg-panel text-textPrimary shadow-[0_30px_120px_rgba(0,0,0,0.5)]"
+        style={{
+          maxWidth: "min(1400px, calc(100vw - 2rem))",
+          minWidth: "min(760px, calc(100vw - 2rem))",
+          width: "fit-content",
+        }}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-line p-5">
+          <div className="min-w-0">
+            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">Agentic workflow detail</span>
+            <h3 className="mt-2 truncate text-3xl font-semibold tracking-[-0.03em]">
+              {readText(workflow, ["name", "workflow_id"]) || "Workflow run"}
+            </h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-textSecondary">
+              {readText(workflow, ["user_goal", "summary"]) || readText(detail, ["user_goal", "summary"]) || "Grouped workflow trace."}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {traceContext.traceUrl ? (
+              <a
+                href={traceContext.traceUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex min-h-10 items-center gap-2 rounded-full border border-sky-300/25 bg-sky-300/10 px-4 text-sm font-semibold text-sky-100 transition hover:border-sky-300/45 hover:bg-sky-300/15"
+              >
+                <ExternalLink size={16} aria-hidden="true" />
+                Trace
+              </a>
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="inline-flex min-h-10 items-center gap-2 rounded-full border border-line bg-white/[0.04] px-4 text-sm font-semibold text-textSecondary opacity-60"
+              >
+                <ExternalLink size={16} aria-hidden="true" />
+                Trace
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={!workflowDefinitionId || running}
+              onClick={onRerun}
+              className="inline-flex min-h-10 items-center gap-2 rounded-full border border-accent/30 bg-accent/10 px-4 text-sm font-semibold text-accent transition hover:border-accent/50 hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RotateCw size={16} aria-hidden="true" />
+              {running ? "Running" : "Run workflow"}
+            </button>
+            <button
+              type="button"
+              disabled={!workflowId}
+              onClick={() => onAuditEventsSelect(workflowId)}
+              className="inline-flex min-h-10 items-center gap-2 rounded-full border border-fuchsia-300/25 bg-fuchsia-300/10 px-4 text-sm font-semibold text-fuchsia-100 transition hover:border-fuchsia-300/45 hover:bg-fuchsia-300/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {formatCount(auditEvents.length, "audit event")}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="grid h-10 w-10 place-items-center rounded-full border border-line bg-white/[0.04] transition hover:border-accent/40 hover:bg-accent/10"
+              aria-label="Close workflow details"
+            >
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 overflow-auto p-5">
+          <div className="mb-4 flex flex-wrap gap-2 text-xs text-textSecondary">
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{workflowId || "workflow"}</span>
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{workflowDefinitionId || "no definition"}</span>
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">{domain}</span>
+            {traceContext.traceId ? (
+              <span className="max-w-full truncate rounded-full border border-sky-300/20 bg-sky-300/10 px-3 py-1 text-sky-100">
+                trace {traceContext.traceId}
+              </span>
+            ) : null}
+            <span className="rounded-full border border-line bg-white/[0.04] px-3 py-1">
+              {formatCount(sessions.length, "step")}
+            </span>
+          </div>
+
+          <div className="grid gap-4">
+            <WorkflowRuntimeGraph
+              auditEvents={auditEvents}
+              detail={detail}
+              graphViewportMaxWidth="calc(100vw - 5rem)"
+              reviewItems={reviewItems}
+              workflow={workflow}
+              workflowDefinition={workflowDefinition}
+            />
+
+            <div className="rounded-2xl border border-line bg-white/[0.035] p-4">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-textSecondary">
+                <FileJson size={15} className="text-accent" aria-hidden="true" />
+                Workflow metadata
+              </div>
+              <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-ink/70 p-3 font-mono text-xs leading-5 text-textPrimary">
+                {compactJson({
+                  workflow_id: workflowId,
+                  workflow_definition_id: workflowDefinitionId,
+                  domain,
+                  otel_trace_id: traceContext.traceId || undefined,
+                  otel_trace_url: traceContext.traceUrl || undefined,
+                  ...metadata,
+                })}
+              </pre>
+            </div>
+
+            <div className="grid gap-3">
+              {sessions.length ? (
+                sessions.map((session, index) => (
+                  <WorkflowStepTrace
+                    key={readText(session, ["session_id"]) || index}
+                    auditEvents={auditEvents.filter((event) => readText(event, ["session_id"]) === readText(session, ["session_id"]))}
+                    index={index}
+                    onAuditEventsSelect={onAuditEventsSelect}
+                    reviewItems={reviewItems.filter((review) => readText(review, ["session_id"]) === readText(session, ["session_id"]))}
+                    session={session}
+                  />
+                ))
+              ) : (
+                <ComponentRow
+                  title="No step detail available"
+                  detail="This run has no linked step sessions yet. New workflow executions will appear here by step."
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 

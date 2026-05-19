@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intelliguard-temporal-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: intelliguard-temporal-worker
+  template:
+    metadata:
+      labels:
+        app: intelliguard-temporal-worker
+        role: temporal-worker
+    spec:
+      containers:
+        - name: temporal-worker
+          image: ghcr.io/example/intelliguard-api:latest
+          command: ["python", "-m", "agent_governance.temporal.worker"]
+          envFrom:
+            - configMapRef:
+                name: intelliguard-runtime-config
+            - secretRef:
+                name: intelliguard-runtime-secrets
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
