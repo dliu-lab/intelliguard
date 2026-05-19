@@ -1059,7 +1059,7 @@ Use the local coding skills as implementation standards for all future IntelliGu
 Python backend standards:
 
 - Keep FastAPI entry points thin. API handlers should validate auth/access, call service/runtime modules, and return typed responses.
-- Move new governance behavior into focused modules instead of growing `api/main.py` or large mixed-purpose files.
+- Move new governance behavior into focused modules instead of growing `intelliguard/api/main.py` or large mixed-purpose files.
 - Prefer feature/domain modules for policy, audit, review, workflow, gateway, and tool governance behavior.
 - Use Pydantic V2 request/response models for API boundaries and config schemas.
 - Avoid passing unstructured raw dictionaries between new modules when the shape is known.

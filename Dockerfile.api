@@ -5,7 +5,6 @@ ARG UV_EXTRAS=""
 
 COPY pyproject.toml uv.lock README.md ./
 COPY intelliguard ./intelliguard
-COPY api ./api
 COPY examples ./examples
 COPY mockups ./mockups
 COPY policies ./policies
@@ -17,4 +16,4 @@ RUN pip install --no-cache-dir uv \
 
 EXPOSE 8000
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "intelliguard.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

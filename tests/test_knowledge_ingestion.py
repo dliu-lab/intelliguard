@@ -20,7 +20,8 @@ from llama_index.core.node_parser import (
 )
 from starlette.datastructures import Headers, UploadFile
 
-import api.main as api_main
+import intelliguard.api.main as api_main
+from intelliguard.api import services as api_services
 
 from intelliguard.knowledge import KnowledgeRetrievalService
 from intelliguard.knowledge_indexing import (
@@ -501,7 +502,7 @@ def test_retrieval_service_uses_latest_ready_index_only(store: GovernanceStore) 
 
 
 def test_worker_process_once_invokes_ingestion(monkeypatch: pytest.MonkeyPatch) -> None:
-    import intelliguard.knowledge_worker as knowledge_worker
+    import intelliguard.workers.knowledge as knowledge_worker
 
     calls: list[str] = []
     captured_kwargs: dict[str, object] = {}
@@ -717,7 +718,7 @@ def test_create_vector_kb_with_index_after_create_invokes_ingestion(
     monkeypatch.setattr(api_main, "store", store)
     monkeypatch.setattr(api_main, "DEFAULT_KB_UPLOAD_DIR", str(tmp_path))
     monkeypatch.setattr(api_main, "KnowledgeIngestionService", FakeIngestionService)
-    monkeypatch.setattr(api_main, "LlamaIndexKnowledgeIndexer", lambda **_kwargs: object())
+    monkeypatch.setattr(api_services, "LlamaIndexKnowledgeIndexer", lambda **_kwargs: object())
     metadata = {
         "kb_id": "claims-vector-ingest-kb",
         "display_name": "Claims Vector Ingest KB",
@@ -758,7 +759,7 @@ def test_create_vector_kb_uses_selected_chunking_settings_for_indexer(
     monkeypatch.setattr(api_main, "store", store)
     monkeypatch.setattr(api_main, "DEFAULT_KB_UPLOAD_DIR", str(tmp_path))
     monkeypatch.setattr(api_main, "KnowledgeIngestionService", FakeIngestionService)
-    monkeypatch.setattr(api_main, "LlamaIndexKnowledgeIndexer", FakeIndexer)
+    monkeypatch.setattr(api_services, "LlamaIndexKnowledgeIndexer", FakeIndexer)
     metadata = {
         "kb_id": "claims-vector-custom-chunk-kb",
         "display_name": "Claims Vector Custom Chunk KB",

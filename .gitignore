@@ -16,6 +16,7 @@ node_modules/
 dashboard/dist/
 dashboard/.next/
 dashboard/out/
+docs/superpowers/
 
 .env
 .DS_Store

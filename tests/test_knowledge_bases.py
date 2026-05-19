@@ -14,9 +14,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from starlette.datastructures import Headers, UploadFile
 
 import intelliguard.db as runtime_db
-import api.main as api_main
-from api.main import (
+import intelliguard.api.main as api_main
+from intelliguard.api import services as api_services
+from intelliguard.api.schemas import (
     AgentKBAssignmentRequest,
+    KBQueryRequest,
     KnowledgeBaseRequest,
     KnowledgeBaseVersionRequest,
     KnowledgeSourceRequest,
@@ -1869,7 +1871,7 @@ def test_sync_knowledge_base_uses_selected_chunking_strategy_for_indexer(
 
     monkeypatch.setattr(api_main, "store", store)
     monkeypatch.setattr(api_main, "KnowledgeIngestionService", FakeIngestionService)
-    monkeypatch.setattr(api_main, "LlamaIndexKnowledgeIndexer", FakeIndexer)
+    monkeypatch.setattr(api_services, "LlamaIndexKnowledgeIndexer", FakeIndexer)
     store.upsert_knowledge_base(
         {
             "kb_id": "claims-sync-strategy-kb",
@@ -2082,7 +2084,7 @@ def test_query_knowledge_base_uses_retrieval_service(
     monkeypatch.setattr(api_main, "OllamaEmbeddingProvider", FakeEmbeddingProvider)
     results = api_main.query_knowledge_base(
         "claims-query-kb",
-        api_main.KBQueryRequest(query="review", top_k=3, score_threshold=0.42),
+        KBQueryRequest(query="review", top_k=3, score_threshold=0.42),
         _super_admin_user(),
     )
 
@@ -2144,7 +2146,7 @@ def test_query_knowledge_base_does_not_apply_default_score_threshold(
 
     results = api_main.query_knowledge_base(
         "claims-threshold-query-kb",
-        api_main.KBQueryRequest(query="what this is", top_k=3),
+        KBQueryRequest(query="what this is", top_k=3),
         _super_admin_user(),
     )
 

@@ -11,7 +11,7 @@ from intelliguard.runtime.dispatcher import (
     RuntimeRunDispatcher,
     StoreBackedRunQueue,
 )
-from intelliguard.runtime.worker import RuntimeWorker
+from intelliguard.workers.runtime import RuntimeWorker
 from intelliguard.temporal.starter import TemporalStartResult
 
 

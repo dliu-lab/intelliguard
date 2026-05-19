@@ -46,7 +46,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: ["python", "-m", "intelliguard.knowledge_worker"]
+    command: ["python", "-m", "intelliguard.workers.knowledge"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       OLLAMA_BASE_URL: http://host.docker.internal:11434
@@ -68,7 +68,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: ["python", "-m", "intelliguard.runtime.worker"]
+    command: ["python", "-m", "intelliguard.workers.runtime"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       POLICY_PATH: policies/policy.yaml
@@ -97,7 +97,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: ["python", "-m", "intelliguard.runtime.evaluator_worker"]
+    command: ["python", "-m", "intelliguard.workers.evaluator"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       POLICY_PATH: policies/policy.yaml
@@ -116,7 +116,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: ["python", "-m", "intelliguard.runtime.event_worker"]
+    command: ["python", "-m", "intelliguard.workers.event"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       AUTO_INIT_DB: "true"

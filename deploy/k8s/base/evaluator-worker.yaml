@@ -16,7 +16,7 @@ spec:
       containers:
         - name: evaluator-worker
           image: ghcr.io/example/intelliguard-api:latest
-          command: ["python", "-m", "intelliguard.runtime.evaluator_worker"]
+          command: ["python", "-m", "intelliguard.workers.evaluator"]
           envFrom:
             - configMapRef:
                 name: intelliguard-runtime-config

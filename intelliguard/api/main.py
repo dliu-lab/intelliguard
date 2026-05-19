@@ -6,17 +6,19 @@ import time
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 
+from intelliguard.api import access_policy
+from intelliguard.api import dependencies as api_dependencies
+from intelliguard.api import schemas as api_schemas
+from intelliguard.api import services as api_services
 from intelliguard.customer_agent import run_customer_support_agent
 from intelliguard.db import init_db
 from intelliguard.knowledge import KnowledgeRetrievalService, RetrievedDoc as RetrievedDoc
 from intelliguard.knowledge_indexing import (
     KnowledgeIngestionService,
-    LlamaIndexKnowledgeIndexer,
     OllamaEmbeddingProvider,
 )
 from intelliguard.knowledge_storage import KnowledgeFileStorage, is_image_file
@@ -39,10 +41,6 @@ from intelliguard.workflow_graph import WorkflowGraphError
 settings = load_settings()
 registry = build_customer_tool_registry()
 store = GovernanceStore(settings.database_url)
-KB_CHUNKING_STRATEGY_PATTERN = (
-    "^(sentence|token|markdown|json|html|code|semantic|hierarchical|"
-    "semantic_sections|fixed_size|qa_pairs|procedure_steps)$"
-)
 
 
 def reject_vector_image_uploads(retrieval_mode: str, files: list[UploadFile]) -> None:
@@ -55,80 +53,12 @@ def reject_vector_image_uploads(retrieval_mode: str, files: list[UploadFile]) ->
         )
 
 
-def config_int(value: Any, fallback: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return fallback
-
-
-def knowledge_indexer_for_config(source_config: dict[str, Any]) -> LlamaIndexKnowledgeIndexer:
-    return LlamaIndexKnowledgeIndexer(
-        embedding_model=str(source_config.get("embedding_model") or "nomic-embed-text"),
-        chunking_strategy=str(source_config.get("chunking_strategy") or "semantic"),
-        chunk_size=config_int(source_config.get("chunk_size"), 512),
-        chunk_overlap=config_int(source_config.get("chunk_overlap"), 80),
-    )
-
-
 def build_runner(agent_id: str) -> GovernedToolRunner:
-    return GovernedToolRunner(
+    return api_services.build_runner(
         agent_id=agent_id,
         database_url=settings.database_url,
         policy_path=settings.policy_path,
         tools=registry,
-    )
-
-
-def workflow_manifest_snapshots(workflow: dict[str, Any]) -> dict[str, dict[str, str]]:
-    from intelliguard.runtime.manifest_compiler import build_manifest_snapshots
-
-    workflow_agent_ids = {
-        str(node.get("agent_id"))
-        for node in workflow.get("nodes", [])
-        if isinstance(node, dict) and node.get("agent_id")
-    }
-    agents = [
-        identity
-        for agent_id in sorted(workflow_agent_ids)
-        if (identity := store.find_agent_identity(agent_id))
-    ]
-    kb_assignments = [
-        assignment
-        for agent_id in sorted(workflow_agent_ids)
-        for assignment in store.list_agent_kb_assignments(agent_id)
-    ]
-    kb_versions = [
-        kb["published_version"]
-        for kb in store.list_knowledge_bases(environment=workflow.get("environment"))
-        if kb.get("published_version")
-    ]
-    evaluator_templates = []
-    seen_evaluator_ids: set[str] = set()
-    for agent_id in sorted(workflow_agent_ids):
-        for assignment in store.list_agent_evaluator_assignments(agent_id):
-            evaluator_id = str(assignment.get("evaluator_id") or "")
-            if not evaluator_id or evaluator_id in seen_evaluator_ids:
-                continue
-            template = store.get_evaluator_template(evaluator_id)
-            if not template:
-                continue
-            seen_evaluator_ids.add(evaluator_id)
-            evaluator_templates.append(
-                {
-                    **template,
-                    "assignment_trigger": assignment.get("trigger"),
-                    "assignment_config": assignment.get("config") or {},
-                }
-            )
-    return build_manifest_snapshots(
-        workflow=workflow,
-        agents=agents,
-        tools=store.list_tool_records(environment=workflow.get("environment")),
-        evaluators=evaluator_templates,
-        guardrails=store.list_guardrail_policies(environment=workflow.get("environment")),
-        kb_versions=kb_versions,
-        kb_assignments=kb_assignments,
     )
 
 
@@ -148,590 +78,33 @@ app.add_middleware(
 )
 
 
-class ToolCallRequest(BaseModel):
-    agent_id: str = "customer-support-agent"
-    session_id: str = Field(default_factory=lambda: f"sess_{uuid4().hex[:12]}")
-    user_query: str
-    tool_name: str
-    tool_args: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentRunRequest(BaseModel):
-    query: str
-    agent_id: str = "customer-support-agent"
-    session_id: str | None = None
-
-
-class MultiAgentRunRequest(BaseModel):
-    query: str
-    workflow_definition_id: str | None = None
-    deployment_id: str | None = None
-    idempotency_key: str | None = None
-
-
-class ResolveReviewRequest(BaseModel):
-    status: str = Field(pattern="^(APPROVED|DENIED)$")
-    reviewer_note: str | None = None
-
-
-class AgentToolGrantRequest(BaseModel):
-    tool_name: str
-
-
-class AgentCreateRequest(BaseModel):
-    agent_id: str
-    display_name: str
-    agent_type: str = "task_agent"
-    owner: str = "Unassigned"
-    environment: str = "demo"
-    purpose: str
-    permissions: dict[str, Any] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class ToolCreateRequest(BaseModel):
-    tool_name: str
-    display_name: str | None = None
-    domain: str | None = None
-    category: str = "custom"
-    description: str = ""
-    side_effect_level: str = "read_only"
-    access_model: str | None = None
-    environment: str = "demo"
-    owner: str = "Unassigned"
-    input_schema: dict[str, Any] = Field(default_factory=dict)
-    output_schema: dict[str, Any] = Field(default_factory=dict)
-    permissions: dict[str, Any] = Field(default_factory=dict)
-    allowed_actions: list[str] = Field(default_factory=list)
-    artifact_digest: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class WorkflowDefinitionRequest(BaseModel):
-    workflow_definition_id: str
-    name: str
-    description: str = ""
-    owner: str = "Unassigned"
-    environment: str = "demo"
-    domain: str = "general"
-    lead_agent_id: str
-    trigger_type: str = "manual"
-    steps: list[dict[str, Any]] = Field(default_factory=list)
-    nodes: list[dict[str, Any]] = Field(default_factory=list)
-    edges: list[dict[str, Any]] = Field(default_factory=list)
-    policy_bindings: dict[str, Any] = Field(default_factory=dict)
-    review_rules: dict[str, Any] = Field(default_factory=dict)
-    graph_version_hash: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class WorkflowDefinitionVersionRequest(BaseModel):
-    new_workflow_definition_id: str
-    version: str
-    change_summary: str = ""
-
-
-class WorkflowLifecycleTransitionRequest(BaseModel):
-    target_status: str
-
-
-class WorkflowDeploymentRequest(BaseModel):
-    runtime_type: Literal["native", "langgraph", "strands", "temporal"] = "native"
-    timeout_seconds: int = Field(default=300, gt=0, le=86_400)
-    max_parallel_nodes: int = Field(default=4, gt=0, le=128)
-    max_tool_calls: int = Field(default=30, gt=0, le=10_000)
-    max_llm_calls: int = Field(default=20, gt=0, le=10_000)
-    max_cost_usd: float = Field(default=5.0, ge=0)
-
-
-class ServiceConnectorRequest(BaseModel):
-    connector_id: str
-    name: str
-    connector_type: Literal["http", "mcp"]
-    environment: str
-    owner: str
-    config: dict[str, Any] = Field(default_factory=dict)
-    status: str = "ACTIVE"
-
-
-class ServiceConnectorTestRequest(BaseModel):
-    operation: str
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class ScenarioSuiteRequest(BaseModel):
-    suite_id: str | None = None
-    name: str
-    description: str = ""
-    workflow_definition_id: str
-    environment: str = "demo"
-    scenarios: list[dict[str, Any]] = Field(default_factory=list)
-    pass_threshold: float = Field(default=1.0, ge=0, le=1)
-
-
-class ScenarioRunRequest(BaseModel):
-    deployment_id: str
-
-
-class WorkflowDeploymentJobRequest(BaseModel):
-    backend: Literal["local_compose", "kubernetes", "temporal", "external_ci"] = "local_compose"
-    worker_pool: str = "shared-readonly"
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-    role: str | None = None
-
-
-class RegisterRequest(BaseModel):
-    email: str
-    password: str = Field(min_length=8)
-    display_name: str
-    role: str = "Agent Developer"
-
-
-class UserEnvironmentGrant(BaseModel):
-    environment: str
-    permissions: list[str] = Field(default_factory=lambda: ["read"])
-
-
-class UserCreateRequest(BaseModel):
-    email: str
-    password: str = Field(min_length=8)
-    display_name: str
-    role: str = "Agent Developer"
-    is_super_admin: bool = False
-    environment_access: list[UserEnvironmentGrant] = Field(default_factory=list)
-
-
-class GuardrailPolicyRequest(BaseModel):
-    policy_id: str
-    display_name: str
-    description: str = ""
-    environment: str = "demo"
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentGuardrailAssignmentRequest(BaseModel):
-    policy_id: str
-    mode: str = Field(pattern="^(enforce|review_only|disabled)$")
-    threshold_overrides: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentGuardrailAssignmentUpdateRequest(BaseModel):
-    mode: str = Field(pattern="^(enforce|review_only|disabled)$")
-    threshold_overrides: dict[str, Any] = Field(default_factory=dict)
-
-
-class EvaluatorTemplateRequest(BaseModel):
-    evaluator_id: str
-    display_name: str
-    evaluator_type: str
-    scope: str = Field(pattern="^(agent|workflow)$")
-    description: str = ""
-    default_config: dict[str, Any] = Field(default_factory=dict)
-    llm_enabled: bool = False
-
-
-class AgentEvaluatorAssignmentRequest(BaseModel):
-    evaluator_id: str
-    trigger: str = Field(pattern="^(after_run|after_workflow|manual)$")
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class KnowledgeBaseRequest(BaseModel):
-    kb_id: str = Field(min_length=1)
-    display_name: str = Field(min_length=1)
-    description: str = ""
-    source_type: str = Field(pattern="^(vector_store|url|file)$", min_length=1)
-    source_config: dict[str, Any] = Field(default_factory=dict)
-    environment: str = Field(default="demo", min_length=1)
-    owner: str = "Unassigned"
-    domain: str = ""
-    sensitivity: str = "internal"
-    embedding_model: str = "local/default"
-
-
-class KnowledgeBaseCreateWithFilesMetadata(BaseModel):
-    kb_id: str = Field(min_length=1)
-    display_name: str = Field(min_length=1)
-    description: str = ""
-    owner: str = "Unassigned"
-    domain: str = ""
-    environment: str = Field(default="demo", min_length=1)
-    sensitivity: str = "internal"
-    retrieval_mode: str = Field(pattern="^(file|vector)$", default="file")
-    kb_scope: str = Field(pattern="^(domain|agent|shared)$", default="domain")
-    scope_ref: str = ""
-    linked_agent_id: str = ""
-    version: str = Field(pattern=r"^v\d+\.\d+\.\d+$", default="v0.1.0")
-    notes: str = ""
-    vector_backend: str = "pgvector"
-    embedding_model: str = "nomic-embed-text"
-    chunking_strategy: str = Field(
-        pattern=KB_CHUNKING_STRATEGY_PATTERN,
-        default="semantic",
-    )
-    chunk_size: int = Field(default=512, ge=128, le=8192)
-    chunk_overlap: int = Field(default=80, ge=0, le=2048)
-    index_after_create: bool = False
-
-
-class KnowledgeBaseVersionRequest(BaseModel):
-    version: str = Field(pattern=r"^v\d+\.\d+\.\d+$")
-    status: str = Field(pattern="^(draft|indexed|published|archived|failed)$", default="draft")
-    notes: str = ""
-    profile: dict[str, Any] = Field(default_factory=dict)
-    file_manifest: list[dict[str, Any]] | None = None
-    retrieval_mode: str = Field(pattern="^(file|vector)$", default="file")
-    kb_scope: str = Field(pattern="^(domain|agent|shared)$", default="domain")
-    scope_ref: str = ""
-    vector_backend: str = "pgvector"
-    embedding_model: str = "local/default"
-    chunking_strategy: str = Field(
-        pattern=KB_CHUNKING_STRATEGY_PATTERN,
-        default="semantic",
-    )
-    chunk_size: int = Field(default=512, ge=128, le=8192)
-    chunk_overlap: int = Field(default=80, ge=0, le=2048)
-    index_version_id: str | None = None
-
-
-class KnowledgeSourceRequest(BaseModel):
-    source_id: str | None = None
-    source_type: str = Field(pattern="^(vector_store|url|file)$", min_length=1)
-    display_name: str = Field(min_length=1)
-    uri: str = ""
-    content_type: str = ""
-    source_config: dict[str, Any] = Field(default_factory=dict)
-
-
-class KnowledgeSyncRequest(BaseModel):
-    embedding_model: str | None = None
-    vector_backend: str | None = None
-    chunk_size: int | None = Field(default=None, ge=128, le=8192)
-    chunk_overlap: int | None = Field(default=None, ge=0, le=2048)
-    force_reindex: bool = True
-
-
-class AgentKBAssignmentRequest(BaseModel):
-    kb_id: str
-    access_mode: str = Field(pattern="^(read|read_write)$", default="read")
-    retrieval_mode: str = Field(pattern="^(semantic|keyword|hybrid)$", default="hybrid")
-    top_k: int = Field(default=5, ge=1, le=50)
-    score_threshold: float | None = Field(default=None, ge=0, le=1)
-    citation_required: bool = True
-    freshness_days: int | None = Field(default=None, ge=1, le=3650)
-    metadata_filters: dict[str, Any] = Field(default_factory=dict)
-
-
-class KBQueryRequest(BaseModel):
-    query: str
-    top_k: int = Field(default=5, ge=1, le=50)
-    score_threshold: float | None = Field(default=None, ge=0, le=1)
-
-
-class AuditEventResponse(BaseModel):
-    event_id: str
-    session_id: str
-    workflow_id: str | None
-    agent_id: str
-    environment: str | None
-    risk_type: str
-    decision: str
-    reason: str
-    tool_name: str | None
-    risk_score: int
-    policy_id: str | None
-    stage: str | None
-    policy_snapshot_hash: str | None
-    metadata: dict[str, Any]
-    created_at: str
-
-
-class ReviewQueueItemResponse(BaseModel):
-    review_id: str
-    session_id: str
-    workflow_id: str | None
-    agent_id: str
-    environment: str | None
-    tool_name: str
-    tool_args: dict[str, Any]
-    user_query: str
-    risk_score: int
-    risk_types: list[str]
-    reason: str
-    status: str
-    metadata: dict[str, Any]
-    reviewer_note: str | None
-    resolved_at: str | None
-    created_at: str
-
-
-def bearer_token(authorization: str | None = Header(default=None, alias="Authorization")) -> str:
-    scheme, _, token = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return token
+bearer_token = api_dependencies.bearer_token
+require_super_admin = api_dependencies.require_super_admin
+visible_environment = api_dependencies.visible_environment
 
 
 def current_user(token: str = Depends(bearer_token)) -> dict[str, Any]:
-    user = store.user_context_for_token(token)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return user
-
-
-def require_super_admin(user: dict[str, Any]) -> None:
-    if not user.get("is_super_admin"):
-        raise HTTPException(status_code=403, detail="Super admin access required")
-
-
-def visible_environment(environment: str | None, user: dict[str, Any]) -> str | list[str] | None:
-    if user["is_super_admin"]:
-        return None if environment in (None, "all") else environment
-    allowed = user["allowed_environments"]
-    if not allowed:
-        raise HTTPException(
-            status_code=403, detail="No environment access has been assigned to this user"
-        )
-    if environment in (None, "all"):
-        return allowed
-    if environment not in allowed:
-        raise HTTPException(
-            status_code=403, detail=f"Role {user['role']} cannot access {environment}"
-        )
-    return environment
+    return api_dependencies.current_user_for_token(token, store)
 
 
 def require_environment_access(
     user: dict[str, Any], environment: str | None, permission: str = "read"
 ) -> None:
-    if user["is_super_admin"]:
-        return
-    if not environment or not store.user_has_permission(user, environment, permission):
-        raise HTTPException(
-            status_code=403,
-            detail=f"Role {user['role']} cannot perform {permission} in {environment or 'this environment'}",
-        )
+    api_dependencies.require_environment_access(user, environment, store, permission)
 
 
 def require_agent_identity_for_access(
     agent_id: str, user: dict[str, Any], permission: str = "read"
 ) -> dict[str, Any]:
-    identity = store.find_agent_identity(agent_id)
-    if not identity:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    require_environment_access(user, identity.get("environment"), permission)
-    return identity
-
-
-def _record_metadata(record: dict[str, Any]) -> dict[str, Any]:
-    metadata = record.get("metadata")
-    return metadata if isinstance(metadata, dict) else {}
-
-
-def _normalized_scope(value: object) -> str:
-    return str(value or "").strip()
-
-
-def _normalized_scope_key(value: object) -> str:
-    return _normalized_scope(value).casefold()
-
-
-def _agent_domain(agent: dict[str, Any]) -> str:
-    metadata = _record_metadata(agent)
-    permissions = agent.get("permissions") if isinstance(agent.get("permissions"), dict) else {}
-    scopes = permissions.get("scopes") if isinstance(permissions.get("scopes"), dict) else {}
-    return _normalized_scope(
-        metadata.get("domain") or metadata.get("data_domain") or scopes.get("domain")
-    )
-
-
-def _resource_domain(record: dict[str, Any]) -> str:
-    metadata = _record_metadata(record)
-    return _normalized_scope(
-        record.get("domain") or metadata.get("domain") or metadata.get("data_domain")
-    )
-
-
-def _ensure_same_agent_environment(
-    agent: dict[str, Any],
-    record: dict[str, Any],
-    *,
-    resource_type: str,
-    resource_label: str,
-) -> None:
-    agent_environment = _normalized_scope(agent.get("environment"))
-    record_environment = _normalized_scope(record.get("environment"))
-    if agent_environment and record_environment and agent_environment != record_environment:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"{resource_type} {resource_label} belongs to environment {record_environment} "
-                f"and cannot be attached to agent environment {agent_environment}."
-            ),
-        )
-
-
-def _ensure_same_agent_domain(
-    agent: dict[str, Any],
-    resource_domain: str,
-    *,
-    resource_type: str,
-    resource_label: str,
-) -> None:
-    agent_domain = _agent_domain(agent)
-    agent_key = _normalized_scope_key(agent_domain)
-    resource_key = _normalized_scope_key(resource_domain)
-    unscoped = {"", "all", "general", "shared"}
-    if agent_key in unscoped or resource_key in unscoped or agent_key == resource_key:
-        return
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            f"{resource_type} {resource_label} belongs to domain {resource_domain} "
-            f"and cannot be attached to agent domain {agent_domain}."
-        ),
-    )
-
-
-def _knowledge_base_scope(kb: dict[str, Any]) -> tuple[str, str]:
-    source_config = kb.get("source_config") if isinstance(kb.get("source_config"), dict) else {}
-    scope = _normalized_scope(source_config.get("kb_scope") or "domain")
-    scope_ref = _normalized_scope(
-        source_config.get("scope_ref") or source_config.get("linked_agent_id") or kb.get("domain")
-    )
-
-    try:
-        versions = store.list_knowledge_base_versions(str(kb["kb_id"]))
-    except ValueError:
-        versions = []
-    published_version = next(
-        (version for version in versions if version.get("status") == "published"), None
-    )
-    active_version = published_version or versions[0] if versions else None
-    if active_version:
-        scope = _normalized_scope(active_version.get("kb_scope") or scope)
-        scope_ref = _normalized_scope(active_version.get("scope_ref") or scope_ref)
-    return scope, scope_ref
+    return api_dependencies.require_agent_identity_for_access(agent_id, user, store, permission)
 
 
 def _ensure_tool_attachable_to_agent(agent: dict[str, Any], tool: dict[str, Any]) -> None:
-    tool_label = _normalized_scope(tool.get("tool_name") or tool.get("display_name") or "tool")
-    _ensure_same_agent_environment(
-        agent,
-        tool,
-        resource_type="Tool",
-        resource_label=tool_label,
-    )
-    _ensure_same_agent_domain(
-        agent,
-        _resource_domain(tool),
-        resource_type="Tool",
-        resource_label=tool_label,
-    )
+    access_policy.ensure_tool_attachable_to_agent(agent, tool)
 
 
 def _ensure_kb_attachable_to_agent(agent: dict[str, Any], kb: dict[str, Any]) -> None:
-    kb_label = _normalized_scope(kb.get("kb_id") or kb.get("display_name") or "knowledge base")
-    _ensure_same_agent_environment(
-        agent,
-        kb,
-        resource_type="Knowledge base",
-        resource_label=kb_label,
-    )
-    scope, scope_ref = _knowledge_base_scope(kb)
-    scope_key = _normalized_scope_key(scope)
-    if scope_key == "shared":
-        return
-    if scope_key == "agent":
-        agent_id = _normalized_scope(agent.get("agent_id"))
-        if not scope_ref or scope_ref == agent_id:
-            return
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Knowledge base {kb_label} is scoped to agent {scope_ref} "
-                f"and cannot be attached to agent {agent_id}."
-            ),
-        )
-
-    _ensure_same_agent_domain(
-        agent,
-        scope_ref or _resource_domain(kb),
-        resource_type="Knowledge base",
-        resource_label=kb_label,
-    )
-
-
-def _tool_payload(request: ToolCreateRequest) -> dict[str, Any]:
-    payload = request.model_dump()
-    access_model = payload.pop("access_model", None)
-    domain = payload.pop("domain", None)
-    metadata = dict(payload.get("metadata") or {})
-    if domain and "domain" not in metadata:
-        metadata["domain"] = domain
-    payload["metadata"] = metadata
-    permissions = dict(payload.get("permissions") or {})
-    if access_model and "access_model" not in permissions:
-        permissions["access_model"] = access_model
-    if permissions and "requires_grant" not in permissions:
-        permissions["requires_grant"] = permissions.get("access_model") != "public"
-    payload["permissions"] = permissions or {"requires_grant": True}
-    return payload
-
-
-def _sync_configured_tools_into_runtime() -> None:
-    for tool in store.list_tool_records():
-        tool_name = str(tool.get("tool_name") or "")
-        if tool_name and tool_name not in registry.names():
-            registry.register_configured_tool(tool)
-
-
-def _agent_assignments_for_evaluation(agent: dict[str, Any]) -> dict[str, Any]:
-    agent_id = str(agent["agent_id"])
-    agent_tools = (agent.get("permissions") or {}).get("tools") or []
-    tool_records = [
-        tool
-        for tool_name in agent_tools
-        if (tool := store.get_tool_record_by_name(str(tool_name))) is not None
-    ]
-    return {
-        "evaluators": store.list_agent_evaluator_assignments(agent_id),
-        "guardrails": store.list_agent_guardrail_assignments(agent_id),
-        "knowledge": store.list_agent_kb_assignments(agent_id),
-        "tools": tool_records,
-    }
-
-
-def _workflow_assignments_for_evaluation(workflow: dict[str, Any]) -> dict[str, Any]:
-    agent_ids = {
-        str(workflow.get("lead_agent_id") or ""),
-        *[
-            str(node.get("agent_id") or "")
-            for node in workflow.get("nodes", [])
-            if isinstance(node, dict) and node.get("agent_id")
-        ],
-        *[
-            str(step.get("agent_id") or "")
-            for step in workflow.get("steps", [])
-            if isinstance(step, dict) and step.get("agent_id")
-        ],
-    }
-    agents = [
-        agent
-        for agent_id in sorted(agent_ids)
-        if agent_id and (agent := store.find_agent_identity(agent_id)) is not None
-    ]
-    return {
-        "agents": agents,
-        "agent_certifications": {
-            agent["agent_id"]: store.get_agent_certification(str(agent["agent_id"]))
-            for agent in agents
-        },
-    }
+    access_policy.ensure_kb_attachable_to_agent(agent, kb, store)
 
 
 @app.on_event("startup")
@@ -740,7 +113,7 @@ def startup() -> None:
         init_db(settings.database_url)
     if settings.seed_demo_data:
         store.seed_demo_data()
-    _sync_configured_tools_into_runtime()
+    api_services.sync_configured_tools_into_runtime(store, registry)
 
 
 @app.get("/health")
@@ -770,7 +143,7 @@ def bootstrap_status() -> dict[str, Any]:
 
 
 @app.post("/v1/auth/register")
-def register(request: RegisterRequest) -> dict[str, Any]:
+def register(request: api_schemas.RegisterRequest) -> dict[str, Any]:
     try:
         user = store.register_user(
             email=request.email,
@@ -785,7 +158,7 @@ def register(request: RegisterRequest) -> dict[str, Any]:
 
 
 @app.post("/v1/auth/login")
-def login(request: LoginRequest) -> dict[str, Any]:
+def login(request: api_schemas.LoginRequest) -> dict[str, Any]:
     try:
         user, token = store.authenticate_user(email=request.email, password=request.password)
     except ValueError as exc:
@@ -810,7 +183,7 @@ def users(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
 
 @app.post("/v1/users")
 def create_user(
-    request: UserCreateRequest, user: dict[str, Any] = Depends(current_user)
+    request: api_schemas.UserCreateRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     require_super_admin(user)
     try:
@@ -873,7 +246,7 @@ def agent_identity(agent_id: str, user: dict[str, Any] = Depends(current_user)) 
 
 @app.post("/v1/agents")
 def create_agent(
-    request: AgentCreateRequest, user: dict[str, Any] = Depends(current_user)
+    request: api_schemas.AgentCreateRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     require_environment_access(user, request.environment, "agent:create")
     return store.upsert_agent_identity(request.model_dump())
@@ -907,7 +280,7 @@ def evaluate_agent(agent_id: str, user: dict[str, Any] = Depends(current_user)) 
         raise HTTPException(status_code=404, detail="Agent not found")
     require_environment_access(user, agent.get("environment"), "agent:create")
 
-    assignments = _agent_assignments_for_evaluation(agent)
+    assignments = api_services.agent_assignments_for_evaluation(agent, store)
     config_hash = compute_agent_config_hash(agent, assignments)
     cert = store.get_agent_certification(agent_id) or store.create_agent_certification(
         agent_id, config_hash
@@ -999,11 +372,11 @@ def list_agent_evaluation_runs(
 
 @app.post("/v1/tools")
 def create_tool(
-    request: ToolCreateRequest, user: dict[str, Any] = Depends(current_user)
+    request: api_schemas.ToolCreateRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     require_environment_access(user, request.environment, "tool:create")
     try:
-        tool = store.create_tool_record(_tool_payload(request))
+        tool = store.create_tool_record(api_services.tool_payload(request))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if request.tool_name not in registry.names():
@@ -1014,7 +387,7 @@ def create_tool(
 @app.put("/v1/tools/{tool_id}")
 def update_tool(
     tool_id: str,
-    request: ToolCreateRequest,
+    request: api_schemas.ToolCreateRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     existing = store.get_tool_record(tool_id)
@@ -1023,7 +396,7 @@ def update_tool(
     require_environment_access(user, existing.get("environment"), "tool:create")
     require_environment_access(user, request.environment, "tool:create")
     try:
-        tool = store.upsert_tool_record({"tool_id": tool_id, **_tool_payload(request)})
+        tool = store.upsert_tool_record({"tool_id": tool_id, **api_services.tool_payload(request)})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if request.tool_name not in registry.names():
@@ -1041,7 +414,7 @@ def list_service_connectors(
 
 @app.post("/v1/service-connectors")
 def create_service_connector(
-    request: ServiceConnectorRequest,
+    request: api_schemas.ServiceConnectorRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     require_environment_access(user, request.environment, "tool:create")
@@ -1066,7 +439,7 @@ def get_service_connector(
 @app.post("/v1/service-connectors/{connector_id}/test")
 def test_service_connector(
     connector_id: str,
-    request: ServiceConnectorTestRequest,
+    request: api_schemas.ServiceConnectorTestRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     from intelliguard.adapters.http_service import ConnectorPolicyError, HttpServiceConnector
@@ -1100,7 +473,7 @@ def list_scenario_suites(
 
 @app.post("/v1/scenario-suites")
 def create_scenario_suite(
-    request: ScenarioSuiteRequest,
+    request: api_schemas.ScenarioSuiteRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     require_environment_access(user, request.environment, "workflow:deploy")
@@ -1112,7 +485,7 @@ def create_scenario_suite(
 @app.post("/v1/scenario-suites/{suite_id}/runs")
 def run_scenario_suite(
     suite_id: str,
-    request: ScenarioRunRequest,
+    request: api_schemas.ScenarioRunRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     from intelliguard.runtime.native_runner import NativeRuntimeRunner
@@ -1306,7 +679,7 @@ def workflow_definitions(
 
 @app.post("/v1/workflow-definitions")
 def create_workflow_definition(
-    request: WorkflowDefinitionRequest,
+    request: api_schemas.WorkflowDefinitionRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     from intelliguard.evaluation.enforcement import (
@@ -1360,7 +733,7 @@ def list_workflow_definition_versions(
 @app.post("/v1/workflow-definitions/{workflow_definition_id}/versions")
 def create_workflow_definition_version(
     workflow_definition_id: str,
-    request: WorkflowDefinitionVersionRequest,
+    request: api_schemas.WorkflowDefinitionVersionRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     workflow = store.get_workflow_definition(workflow_definition_id)
@@ -1382,7 +755,7 @@ def create_workflow_definition_version(
 @app.post("/v1/workflow-definitions/{workflow_definition_id}/lifecycle")
 def transition_workflow_lifecycle(
     workflow_definition_id: str,
-    request: WorkflowLifecycleTransitionRequest,
+    request: api_schemas.WorkflowLifecycleTransitionRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     workflow = store.get_workflow_definition(workflow_definition_id)
@@ -1402,7 +775,7 @@ def transition_workflow_lifecycle(
 @app.post("/v1/workflow-definitions/{workflow_definition_id}/deployments")
 def create_workflow_deployment(
     workflow_definition_id: str,
-    request: WorkflowDeploymentRequest,
+    request: api_schemas.WorkflowDeploymentRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     from intelliguard.runtime.manifest_compiler import (
@@ -1420,7 +793,7 @@ def create_workflow_deployment(
         raise HTTPException(status_code=400, detail="Workflow certification is required")
 
     deployment_id = f"deploy_{uuid4().hex[:16]}"
-    snapshots = workflow_manifest_snapshots(workflow)
+    snapshots = api_services.workflow_manifest_snapshots(workflow, store)
     try:
         manifest = compile_workflow_manifest(
             workflow=workflow,
@@ -1491,7 +864,7 @@ def activate_workflow_deployment(
 @app.post("/v1/workflow-deployments/{deployment_id}/generate-artifacts")
 def generate_workflow_deployment_artifacts(
     deployment_id: str,
-    request: WorkflowDeploymentJobRequest | None = None,
+    request: api_schemas.WorkflowDeploymentJobRequest | None = None,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
     from intelliguard.adk.manifest import RuntimeManifest
@@ -1504,7 +877,7 @@ def generate_workflow_deployment_artifacts(
     if not deployment:
         raise HTTPException(status_code=404, detail="Workflow deployment not found")
     require_environment_access(user, deployment["environment"], "workflow:deploy")
-    request = request or WorkflowDeploymentJobRequest()
+    request = request or api_schemas.WorkflowDeploymentJobRequest()
     manifest = RuntimeManifest.model_validate(deployment["manifest"])
     worker_pool = manifest.metadata.get("worker_pool") or request.worker_pool
     artifacts = generate_runtime_artifacts(manifest, worker_pool=worker_pool)
@@ -1531,7 +904,7 @@ def list_workflow_deployment_artifacts(
 @app.post("/v1/workflow-deployments/{deployment_id}/deploy")
 def deploy_workflow_deployment(
     deployment_id: str,
-    request: WorkflowDeploymentJobRequest,
+    request: api_schemas.WorkflowDeploymentJobRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     from intelliguard.runtime.deployment_orchestrator import (
@@ -1645,7 +1018,7 @@ def evaluate_workflow_definition(
 
     started_at = monotonic()
     criterion_results = run_workflow_evaluators(
-        workflow, _workflow_assignments_for_evaluation(workflow)
+        workflow, api_services.workflow_assignments_for_evaluation(workflow, store)
     )
     duration_ms = int((monotonic() - started_at) * 1000)
     result_records = [
@@ -1715,7 +1088,9 @@ def list_workflow_evaluation_runs(
 
 @app.post("/v1/agents/{agent_id}/tool-grants")
 def grant_agent_tool(
-    agent_id: str, request: AgentToolGrantRequest, user: dict[str, Any] = Depends(current_user)
+    agent_id: str,
+    request: api_schemas.AgentToolGrantRequest,
+    user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     from intelliguard.evaluation.enforcement import (
         CertificationEnforcementError,
@@ -1753,7 +1128,7 @@ def revoke_agent_tool(
 
 @app.post("/v1/evaluate-tool-call")
 def evaluate_tool_call(
-    request: ToolCallRequest, user: dict[str, Any] = Depends(current_user)
+    request: api_schemas.ToolCallRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     require_agent_identity_for_access(request.agent_id, user, "agent:run")
     runner = build_runner(request.agent_id)
@@ -1776,7 +1151,7 @@ def evaluate_tool_call(
 
 @app.post("/v1/governed-tool-call")
 def governed_tool_call(
-    request: ToolCallRequest, user: dict[str, Any] = Depends(current_user)
+    request: api_schemas.ToolCallRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     require_agent_identity_for_access(request.agent_id, user, "agent:run")
     runner = build_runner(request.agent_id)
@@ -1801,7 +1176,7 @@ def governed_tool_call(
 
 @app.post("/v1/agent-runs")
 def agent_run(
-    request: AgentRunRequest, user: dict[str, Any] = Depends(current_user)
+    request: api_schemas.AgentRunRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     require_agent_identity_for_access(request.agent_id, user, "agent:run")
     runner = build_runner(request.agent_id)
@@ -1812,7 +1187,7 @@ def agent_run(
 
 @app.post("/v1/multi-agent-runs")
 def multi_agent_run(
-    request: MultiAgentRunRequest, user: dict[str, Any] = Depends(current_user)
+    request: api_schemas.MultiAgentRunRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     from intelliguard.evaluation.enforcement import (
         CertificationEnforcementError,
@@ -1985,7 +1360,7 @@ def audit_events(
     environment: str | None = None,
     workflow_only: bool = False,
     user: dict[str, Any] = Depends(current_user),
-) -> list[AuditEventResponse]:
+) -> list[api_schemas.AuditEventResponse]:
     return store.list_audit_events(
         limit=limit,
         environment=visible_environment(environment, user),
@@ -1999,7 +1374,7 @@ def review_queue(
     limit: int = 100,
     environment: str = "all",
     user: dict[str, Any] = Depends(current_user),
-) -> list[ReviewQueueItemResponse]:
+) -> list[api_schemas.ReviewQueueItemResponse]:
     return store.list_review_queue(
         limit=limit,
         environment=visible_environment(environment, user),
@@ -2009,7 +1384,9 @@ def review_queue(
 
 @app.post("/v1/review-queue/{review_id}/resolve")
 def resolve_review(
-    review_id: str, request: ResolveReviewRequest, user: dict[str, Any] = Depends(current_user)
+    review_id: str,
+    request: api_schemas.ResolveReviewRequest,
+    user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     environment = store.review_environment(review_id)
     if environment is None:
@@ -2084,7 +1461,7 @@ def list_guardrail_policies(
 
 @app.post("/v1/guardrail-policies")
 def create_guardrail_policy(
-    request: GuardrailPolicyRequest,
+    request: api_schemas.GuardrailPolicyRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     require_environment_access(user, request.environment, "agent:create")
@@ -2106,7 +1483,7 @@ def get_guardrail_policy(
 @app.put("/v1/guardrail-policies/{policy_id}")
 def update_guardrail_policy(
     policy_id: str,
-    request: GuardrailPolicyRequest,
+    request: api_schemas.GuardrailPolicyRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     require_environment_access(user, request.environment, "agent:create")
@@ -2127,7 +1504,7 @@ def list_agent_guardrails(
 @app.post("/v1/agents/{agent_id}/guardrails")
 def assign_agent_guardrail(
     agent_id: str,
-    request: AgentGuardrailAssignmentRequest,
+    request: api_schemas.AgentGuardrailAssignmentRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     agent = require_agent_identity_for_access(agent_id, user, "agent:create")
@@ -2153,7 +1530,7 @@ def assign_agent_guardrail(
 def update_agent_guardrail(
     agent_id: str,
     assignment_id: str,
-    request: AgentGuardrailAssignmentUpdateRequest,
+    request: api_schemas.AgentGuardrailAssignmentUpdateRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     require_agent_identity_for_access(agent_id, user, "agent:create")
@@ -2198,7 +1575,7 @@ def list_evaluation_rules(user: dict[str, Any] = Depends(current_user)) -> list[
 
 @app.post("/v1/evaluator-templates")
 def create_evaluator_template(
-    request: EvaluatorTemplateRequest,
+    request: api_schemas.EvaluatorTemplateRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     if not user.get("is_super_admin"):
@@ -2220,7 +1597,7 @@ def list_agent_evaluators(
 @app.post("/v1/agents/{agent_id}/evaluators")
 def assign_agent_evaluator(
     agent_id: str,
-    request: AgentEvaluatorAssignmentRequest,
+    request: api_schemas.AgentEvaluatorAssignmentRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     agent = require_agent_identity_for_access(agent_id, user, "agent:create")
@@ -2317,7 +1694,7 @@ def list_knowledge_bases(
 
 @app.post("/v1/knowledge-bases")
 def create_knowledge_base(
-    body: KnowledgeBaseRequest,
+    body: api_schemas.KnowledgeBaseRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     require_environment_access(user, body.environment, "agent:create")
@@ -2331,7 +1708,7 @@ async def create_knowledge_base_with_files(
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     try:
-        body = KnowledgeBaseCreateWithFilesMetadata.model_validate_json(metadata)
+        body = api_schemas.KnowledgeBaseCreateWithFilesMetadata.model_validate_json(metadata)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     require_environment_access(user, body.environment, "agent:create")
@@ -2443,14 +1820,15 @@ async def create_knowledge_base_with_files(
                 retrieval_mode=body.retrieval_mode,
                 attributes={"agentic.document_count": len(documents)},
             ):
+                index_config = {
+                    "embedding_model": body.embedding_model,
+                    "chunking_strategy": body.chunking_strategy,
+                    "chunk_size": body.chunk_size,
+                    "chunk_overlap": body.chunk_overlap,
+                }
                 index = KnowledgeIngestionService(
                     store,
-                    LlamaIndexKnowledgeIndexer(
-                        embedding_model=body.embedding_model,
-                        chunking_strategy=body.chunking_strategy,
-                        chunk_size=body.chunk_size,
-                        chunk_overlap=body.chunk_overlap,
-                    ),
+                    api_services.knowledge_indexer_for_config(index_config),
                 ).process_pending_documents(body.kb_id)
         return {
             "knowledge_base": store.get_knowledge_base(body.kb_id) or kb,
@@ -2493,7 +1871,7 @@ def list_knowledge_base_versions(
 @app.post("/v1/knowledge-bases/{kb_id}/versions")
 def create_knowledge_base_version(
     kb_id: str,
-    body: KnowledgeBaseVersionRequest,
+    body: api_schemas.KnowledgeBaseVersionRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     kb = store.get_knowledge_base(kb_id)
@@ -2570,7 +1948,7 @@ def list_knowledge_sources(
 @app.post("/v1/knowledge-bases/{kb_id}/sources")
 def create_knowledge_source(
     kb_id: str,
-    body: KnowledgeSourceRequest,
+    body: api_schemas.KnowledgeSourceRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     kb = store.get_knowledge_base(kb_id)
@@ -2656,7 +2034,7 @@ def list_knowledge_documents(
 @app.post("/v1/knowledge-bases/{kb_id}/sync")
 def create_knowledge_sync_status(
     kb_id: str,
-    body: KnowledgeSyncRequest,
+    body: api_schemas.KnowledgeSyncRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     kb = store.get_knowledge_base(kb_id)
@@ -2681,7 +2059,7 @@ def create_knowledge_sync_status(
         ):
             return KnowledgeIngestionService(
                 store,
-                knowledge_indexer_for_config(index_config),
+                api_services.knowledge_indexer_for_config(index_config),
             ).process_pending_documents(kb_id, force_reindex=body.force_reindex)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2699,7 +2077,7 @@ def list_agent_kb_assignments(
 @app.post("/v1/agents/{agent_id}/knowledge-bases")
 def assign_kb_to_agent(
     agent_id: str,
-    body: AgentKBAssignmentRequest,
+    body: api_schemas.AgentKBAssignmentRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     agent = require_agent_identity_for_access(agent_id, user, "agent:create")
@@ -2742,7 +2120,7 @@ def delete_agent_kb_assignment(
 @app.post("/v1/knowledge-bases/{kb_id}/query")
 def query_knowledge_base(
     kb_id: str,
-    body: KBQueryRequest,
+    body: api_schemas.KBQueryRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
     kb = store.get_knowledge_base(kb_id)

@@ -16,7 +16,7 @@ spec:
       containers:
         - name: workflow-runner
           image: ghcr.io/example/intelliguard-api:latest
-          command: ["python", "-m", "intelliguard.runtime.worker"]
+          command: ["python", "-m", "intelliguard.workers.runtime"]
           ports:
             - containerPort: 8010
           envFrom:

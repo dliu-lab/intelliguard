@@ -30,7 +30,7 @@ services:
       dockerfile: Dockerfile.api
       args:
         UV_EXTRAS: "--extra temporal"
-    command: ["python", "-m", "intelliguard.temporal.worker"]
+    command: ["python", "-m", "intelliguard.workers.temporal"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       POLICY_PATH: policies/policy.yaml

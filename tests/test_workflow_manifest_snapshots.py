@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import api.main as api_main
+from intelliguard.api import services as api_services
 
 
 class FakeStore:
@@ -52,10 +52,8 @@ class FakeStore:
         ]
 
 
-def test_workflow_manifest_snapshots_only_include_assigned_evaluators(monkeypatch) -> None:
-    monkeypatch.setattr(api_main, "store", FakeStore())
-
-    snapshots = api_main.workflow_manifest_snapshots(
+def test_workflow_manifest_snapshots_only_include_assigned_evaluators() -> None:
+    snapshots = api_services.workflow_manifest_snapshots(
         {
             "workflow_definition_id": "workflow-1",
             "environment": "staging",
@@ -68,7 +66,8 @@ def test_workflow_manifest_snapshots_only_include_assigned_evaluators(monkeypatc
                     "allowed_tools": [],
                 }
             ],
-        }
+        },
+        FakeStore(),
     )
 
     assert snapshots["evaluators"] == {"assigned-workflow-evaluator": "assigned-eval-hash"}

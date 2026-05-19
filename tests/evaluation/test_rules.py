@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import api.main as api_main
+import intelliguard.api.main as api_main
 from intelliguard.evaluation.rules import evaluation_rule_catalog
 from intelliguard.store import GovernanceStore
 
