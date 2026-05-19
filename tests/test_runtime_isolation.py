@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.runtime.isolation import (
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.runtime.isolation import (
     determine_worker_pool,
     validate_manifest_has_no_secret_values,
 )

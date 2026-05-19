@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.runtime.contracts import (
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.runtime.contracts import (
     RuntimeExecutionRequest,
     RuntimeExecutionResult,
     RuntimeRunner,

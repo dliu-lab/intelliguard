@@ -12,10 +12,10 @@
 
 ## File Structure
 
-- Modify: `agent_governance/models.py`
+- Modify: `intelliguard/models.py`
   - Extend `KnowledgeBase` and `AgentKBAssignment`.
   - Add `KnowledgeSource` and `KnowledgeIndexVersion`.
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/store.py`
   - Add KB source/index CRUD and richer KB summaries.
   - Update KB assignment upsert/dict methods.
 - Modify: `api/main.py`
@@ -38,7 +38,7 @@
 ### Task 1: Backend Models
 
 **Files:**
-- Modify: `agent_governance/models.py`
+- Modify: `intelliguard/models.py`
 - Test: `tests/test_knowledge_bases.py`
 
 - [ ] **Step 1: Write failing model tests**
@@ -48,7 +48,7 @@ Add this file:
 ```python
 from __future__ import annotations
 
-from agent_governance.models import AgentKBAssignment, KnowledgeBase, KnowledgeIndexVersion, KnowledgeSource
+from intelliguard.models import AgentKBAssignment, KnowledgeBase, KnowledgeIndexVersion, KnowledgeSource
 
 
 def test_knowledge_models_are_declared() -> None:
@@ -70,7 +70,7 @@ Expected: import fails because `KnowledgeSource` and `KnowledgeIndexVersion` do 
 
 - [ ] **Step 3: Add model fields and tables**
 
-In `agent_governance/models.py`, extend `KnowledgeBase` with:
+In `intelliguard/models.py`, extend `KnowledgeBase` with:
 
 ```python
     owner: Mapped[str] = mapped_column(String(120), nullable=False, default="Unassigned")
@@ -147,7 +147,7 @@ Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent_governance/models.py tests/test_knowledge_bases.py
+git add intelliguard/models.py tests/test_knowledge_bases.py
 git commit -m "feat: add knowledge source models"
 ```
 
@@ -156,7 +156,7 @@ git commit -m "feat: add knowledge source models"
 ### Task 2: Store Lifecycle Methods
 
 **Files:**
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/store.py`
 - Modify: `tests/test_knowledge_bases.py`
 
 - [ ] **Step 1: Add failing store lifecycle tests**
@@ -164,7 +164,7 @@ git commit -m "feat: add knowledge source models"
 Append:
 
 ```python
-from agent_governance.store import GovernanceStore
+from intelliguard.store import GovernanceStore
 
 
 def test_knowledge_base_source_and_index_lifecycle(store: GovernanceStore) -> None:
@@ -230,7 +230,7 @@ Expected: fail because the new store methods are undefined.
 
 - [ ] **Step 3: Implement store methods**
 
-In `agent_governance/store.py`, import `KnowledgeSource` and `KnowledgeIndexVersion`.
+In `intelliguard/store.py`, import `KnowledgeSource` and `KnowledgeIndexVersion`.
 
 Update `_kb_to_dict` so it includes the new KB fields:
 
@@ -393,7 +393,7 @@ Expected: all tests in the file pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent_governance/store.py tests/test_knowledge_bases.py
+git add intelliguard/store.py tests/test_knowledge_bases.py
 git commit -m "feat: add knowledge source store lifecycle"
 ```
 
@@ -402,7 +402,7 @@ git commit -m "feat: add knowledge source store lifecycle"
 ### Task 3: Rich Agent KB Assignment Settings
 
 **Files:**
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/store.py`
 - Modify: `api/main.py`
 - Modify: `tests/test_knowledge_bases.py`
 
@@ -523,7 +523,7 @@ Expected: pass. Agent evaluator config hashes should continue to include `kb_id`
 - [ ] **Step 6: Commit**
 
 ```bash
-git add agent_governance/store.py api/main.py tests/test_knowledge_bases.py
+git add intelliguard/store.py api/main.py tests/test_knowledge_bases.py
 git commit -m "feat: store agent knowledge retrieval policy"
 ```
 

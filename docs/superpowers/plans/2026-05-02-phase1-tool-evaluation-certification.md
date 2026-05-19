@@ -4,7 +4,7 @@
 
 **Goal:** Build the tool evaluation and certification system — DB-backed Tool Registry, deterministic tool evaluators, certification state machine, enforcement at the tool-grant API boundary, and Tool Registry UI with Evaluators and Certification tabs.
 
-**Architecture:** Tools move from the in-memory `ToolRegistry` to a Postgres-backed `tool_records` table. A new `agent_governance/evaluation/` sub-package holds evaluator logic, the certification state machine, and enforcement checks. The tool-grant API handler calls `enforcement.py` synchronously before granting — production environments hard-block uncertified tools.
+**Architecture:** Tools move from the in-memory `ToolRegistry` to a Postgres-backed `tool_records` table. A new `intelliguard/evaluation/` sub-package holds evaluator logic, the certification state machine, and enforcement checks. The tool-grant API handler calls `enforcement.py` synchronously before granting — production environments hard-block uncertified tools.
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy 2 (Mapped), PostgreSQL, pytest, Next.js 14 App Router, TypeScript, Tailwind CSS
 
@@ -13,18 +13,18 @@
 ## File Map
 
 **Create (backend):**
-- `agent_governance/evaluation/__init__.py`
-- `agent_governance/evaluation/tool_evaluators.py`
-- `agent_governance/evaluation/certification.py`
-- `agent_governance/evaluation/enforcement.py`
+- `intelliguard/evaluation/__init__.py`
+- `intelliguard/evaluation/tool_evaluators.py`
+- `intelliguard/evaluation/certification.py`
+- `intelliguard/evaluation/enforcement.py`
 - `tests/evaluation/__init__.py`
 - `tests/evaluation/test_tool_evaluators.py`
 - `tests/evaluation/test_certification.py`
 - `tests/evaluation/test_enforcement.py`
 
 **Modify (backend):**
-- `agent_governance/models.py` — add `ToolRecord`, `ToolCertification`, `EvaluationRun`, `EvaluationCriterionResult`
-- `agent_governance/store.py` — add tool record and certification store methods
+- `intelliguard/models.py` — add `ToolRecord`, `ToolCertification`, `EvaluationRun`, `EvaluationCriterionResult`
+- `intelliguard/store.py` — add tool record and certification store methods
 - `api/main.py` — replace `/v1/tool-marketplace` with DB-backed `/v1/tools`, add evaluate/certification endpoints, enforce certification in tool-grant
 
 **Create (frontend):**
@@ -41,10 +41,10 @@
 ## Task 1: Add DB Models
 
 **Files:**
-- Modify: `agent_governance/models.py`
+- Modify: `intelliguard/models.py`
 - Test: `tests/evaluation/test_tool_evaluators.py` (fixture setup only in this task)
 
-- [ ] **Step 1: Add four new models to `agent_governance/models.py`**
+- [ ] **Step 1: Add four new models to `intelliguard/models.py`**
 
 Add after the `KnowledgeBase` model at the end of the file:
 
@@ -127,8 +127,8 @@ class EvaluationCriterionResult(Base):
 - [ ] **Step 2: Verify models import correctly**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance
-python -c "from agent_governance.models import ToolRecord, ToolCertification, EvaluationRun, EvaluationCriterionResult; print('OK')"
+cd /Users/dliu520/AIYA/Git/intelliguard
+python -c "from intelliguard.models import ToolRecord, ToolCertification, EvaluationRun, EvaluationCriterionResult; print('OK')"
 ```
 
 Expected: `OK`
@@ -136,7 +136,7 @@ Expected: `OK`
 - [ ] **Step 3: Commit**
 
 ```bash
-git add agent_governance/models.py
+git add intelliguard/models.py
 git commit -m "feat(evaluation): add ToolRecord, ToolCertification, EvaluationRun, EvaluationCriterionResult models"
 ```
 
@@ -145,12 +145,12 @@ git commit -m "feat(evaluation): add ToolRecord, ToolCertification, EvaluationRu
 ## Task 2: Create Evaluation Package And Tool Evaluators
 
 **Files:**
-- Create: `agent_governance/evaluation/__init__.py`
-- Create: `agent_governance/evaluation/tool_evaluators.py`
+- Create: `intelliguard/evaluation/__init__.py`
+- Create: `intelliguard/evaluation/tool_evaluators.py`
 - Create: `tests/evaluation/__init__.py`
 - Create: `tests/evaluation/test_tool_evaluators.py`
 
-- [ ] **Step 1: Create `agent_governance/evaluation/__init__.py`**
+- [ ] **Step 1: Create `intelliguard/evaluation/__init__.py`**
 
 ```python
 ```
@@ -172,7 +172,7 @@ Create `tests/evaluation/test_tool_evaluators.py`:
 from __future__ import annotations
 
 import pytest
-from agent_governance.evaluation.tool_evaluators import (
+from intelliguard.evaluation.tool_evaluators import (
     CriterionResult,
     compute_config_hash,
     run_tool_evaluators,
@@ -270,13 +270,13 @@ def test_compute_config_hash_changes_on_schema_change():
 - [ ] **Step 4: Run tests to confirm they fail**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance
+cd /Users/dliu520/AIYA/Git/intelliguard
 pytest tests/evaluation/test_tool_evaluators.py -v 2>&1 | head -20
 ```
 
 Expected: `ImportError` or `ModuleNotFoundError` — `tool_evaluators` does not exist yet.
 
-- [ ] **Step 5: Create `agent_governance/evaluation/tool_evaluators.py`**
+- [ ] **Step 5: Create `intelliguard/evaluation/tool_evaluators.py`**
 
 ```python
 from __future__ import annotations
@@ -415,7 +415,7 @@ Expected: 9 tests passing.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add agent_governance/evaluation/__init__.py agent_governance/evaluation/tool_evaluators.py tests/evaluation/__init__.py tests/evaluation/test_tool_evaluators.py
+git add intelliguard/evaluation/__init__.py intelliguard/evaluation/tool_evaluators.py tests/evaluation/__init__.py tests/evaluation/test_tool_evaluators.py
 git commit -m "feat(evaluation): tool evaluators with 6 deterministic criteria"
 ```
 
@@ -424,7 +424,7 @@ git commit -m "feat(evaluation): tool evaluators with 6 deterministic criteria"
 ## Task 3: Certification State Machine
 
 **Files:**
-- Create: `agent_governance/evaluation/certification.py`
+- Create: `intelliguard/evaluation/certification.py`
 - Create: `tests/evaluation/test_certification.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -435,7 +435,7 @@ Create `tests/evaluation/test_certification.py`:
 from __future__ import annotations
 
 import pytest
-from agent_governance.evaluation.certification import (
+from intelliguard.evaluation.certification import (
     CertificationDecision,
     CertificationError,
     decide_certification,
@@ -503,7 +503,7 @@ pytest tests/evaluation/test_certification.py -v 2>&1 | head -10
 
 Expected: `ImportError`
 
-- [ ] **Step 3: Create `agent_governance/evaluation/certification.py`**
+- [ ] **Step 3: Create `intelliguard/evaluation/certification.py`**
 
 ```python
 from __future__ import annotations
@@ -558,7 +558,7 @@ Expected: 8 tests passing.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent_governance/evaluation/certification.py tests/evaluation/test_certification.py
+git add intelliguard/evaluation/certification.py tests/evaluation/test_certification.py
 git commit -m "feat(evaluation): certification state machine and decision logic"
 ```
 
@@ -567,7 +567,7 @@ git commit -m "feat(evaluation): certification state machine and decision logic"
 ## Task 4: Enforcement Module
 
 **Files:**
-- Create: `agent_governance/evaluation/enforcement.py`
+- Create: `intelliguard/evaluation/enforcement.py`
 - Create: `tests/evaluation/test_enforcement.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -579,7 +579,7 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import MagicMock
-from agent_governance.evaluation.enforcement import (
+from intelliguard.evaluation.enforcement import (
     CertificationEnforcementError,
     check_tool_certification,
 )
@@ -639,7 +639,7 @@ pytest tests/evaluation/test_enforcement.py -v 2>&1 | head -10
 
 Expected: `ImportError`
 
-- [ ] **Step 3: Create `agent_governance/evaluation/enforcement.py`**
+- [ ] **Step 3: Create `intelliguard/evaluation/enforcement.py`**
 
 ```python
 from __future__ import annotations
@@ -693,7 +693,7 @@ Expected: all existing tests still pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add agent_governance/evaluation/enforcement.py tests/evaluation/test_enforcement.py
+git add intelliguard/evaluation/enforcement.py tests/evaluation/test_enforcement.py
 git commit -m "feat(evaluation): enforcement module — hard-block uncertified tools in production"
 ```
 
@@ -702,11 +702,11 @@ git commit -m "feat(evaluation): enforcement module — hard-block uncertified t
 ## Task 5: Store Methods For Tool Records And Certifications
 
 **Files:**
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/store.py`
 
 - [ ] **Step 1: Add imports for new models at the top of `store.py`**
 
-Add to the existing import block from `agent_governance.models`:
+Add to the existing import block from `intelliguard.models`:
 
 ```python
     EvaluationCriterionResult,
@@ -721,7 +721,7 @@ Add after the existing `deleteAgentKnowledgeBase`-equivalent methods in `store.p
 
 ```python
     def create_tool_record(self, payload: dict[str, Any]) -> dict[str, Any]:
-        from agent_governance.evaluation.tool_evaluators import compute_config_hash
+        from intelliguard.evaluation.tool_evaluators import compute_config_hash
         tool_id = payload.get("tool_id") or new_id("tool")
         config_hash = compute_config_hash(payload)
         with self.session() as db:
@@ -945,9 +945,9 @@ Add after the existing `deleteAgentKnowledgeBase`-equivalent methods in `store.p
 - [ ] **Step 5: Verify imports and basic usage**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance
+cd /Users/dliu520/AIYA/Git/intelliguard
 python -c "
-from agent_governance.store import GovernanceStore
+from intelliguard.store import GovernanceStore
 print('store imports OK')
 "
 ```
@@ -965,7 +965,7 @@ Expected: all tests pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add agent_governance/store.py
+git add intelliguard/store.py
 git commit -m "feat(evaluation): store methods for tool records, certifications, and evaluation runs"
 ```
 
@@ -1029,8 +1029,8 @@ def get_tool_registry(tool_id: str, user: dict[str, Any] = Depends(current_user)
 @app.post("/v1/tool-registry/{tool_id}/evaluate")
 def evaluate_tool(tool_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     from time import monotonic
-    from agent_governance.evaluation.tool_evaluators import run_tool_evaluators
-    from agent_governance.evaluation.certification import decide_certification, validate_transition
+    from intelliguard.evaluation.tool_evaluators import run_tool_evaluators
+    from intelliguard.evaluation.certification import decide_certification, validate_transition
 
     tool = store.get_tool_record(tool_id)
     if not tool:
@@ -1099,7 +1099,7 @@ def evaluate_tool(tool_id: str, user: dict[str, Any] = Depends(current_user)) ->
     }
 ```
 
-Note: add `from agent_governance.models import utc_now` to the top of `api/main.py` if not already imported.
+Note: add `from intelliguard.models import utc_now` to the top of `api/main.py` if not already imported.
 
 - [ ] **Step 4: Add tool certification GET endpoint**
 
@@ -1137,7 +1137,7 @@ Replace the existing `grant_agent_tool` function body:
 def grant_agent_tool(
     agent_id: str, request: AgentToolGrantRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
-    from agent_governance.evaluation.enforcement import (
+    from intelliguard.evaluation.enforcement import (
         CertificationEnforcementError,
         check_tool_certification,
     )
@@ -1163,7 +1163,7 @@ def grant_agent_tool(
 - [ ] **Step 6: Start the API and verify endpoints exist**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance
+cd /Users/dliu520/AIYA/Git/intelliguard
 uvicorn api.main:app --reload --port 8000 &
 sleep 2
 curl -s http://localhost:8000/v1/tool-registry | python -m json.tool
@@ -1316,7 +1316,7 @@ export function listEvaluationCriteriaResults(token: string, runId: string) {
 - [ ] **Step 2: Verify TypeScript compiles**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance/dashboard
+cd /Users/dliu520/AIYA/Git/intelliguard/dashboard
 npx tsc --noEmit
 ```
 
@@ -1747,7 +1747,7 @@ import { ToolRegistryWorkspace } from "./ToolRegistryWorkspace";
 - [ ] **Step 6: TypeScript check**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance/dashboard
+cd /Users/dliu520/AIYA/Git/intelliguard/dashboard
 npx tsc --noEmit
 ```
 
@@ -1756,7 +1756,7 @@ Expected: no errors.
 - [ ] **Step 7: Start dev server and verify Tool Registry nav item appears and renders**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance/dashboard
+cd /Users/dliu520/AIYA/Git/intelliguard/dashboard
 npm run dev
 ```
 

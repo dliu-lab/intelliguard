@@ -4,9 +4,9 @@ import importlib.util
 
 import pytest
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.adapters.langgraph import LangGraphBuildAdapter
-from agent_governance.runtime.tool_gateway import ToolGatewayRequest
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.adapters.langgraph import LangGraphBuildAdapter
+from intelliguard.runtime.tool_gateway import ToolGatewayRequest
 
 
 def _manifest() -> RuntimeManifest:

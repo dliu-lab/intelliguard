@@ -8,11 +8,11 @@ from examples.review_trigger_workflow import (
     install_review_trigger_workflow,
     run_review_trigger_workflow,
 )
-from agent_governance.runner import GovernedToolRunner
-from agent_governance.policy import PolicyConfig
-from agent_governance.models import new_id
-from agent_governance.multi_agent import run_customer_support_workflow
-from agent_governance.tools import build_customer_tool_registry
+from intelliguard.runner import GovernedToolRunner
+from intelliguard.policy import PolicyConfig
+from intelliguard.models import new_id
+from intelliguard.multi_agent import run_customer_support_workflow
+from intelliguard.tools import build_customer_tool_registry
 
 
 def _make_runner(store):

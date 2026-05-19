@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.runtime.contracts import RuntimeExecutionRequest, RuntimeExecutionResult
-from agent_governance.runtime import native_runner
-from agent_governance.runtime.native_runner import NativeRuntimeRunner
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.runtime.contracts import RuntimeExecutionRequest, RuntimeExecutionResult
+from intelliguard.runtime import native_runner
+from intelliguard.runtime.native_runner import NativeRuntimeRunner
 
 
 def _manifest() -> RuntimeManifest:

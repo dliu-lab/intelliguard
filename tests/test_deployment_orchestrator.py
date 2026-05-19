@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 
-from agent_governance.runtime.deployment_orchestrator import (
+from intelliguard.runtime.deployment_orchestrator import (
     DeploymentJobRequest,
     DeploymentOrchestrator,
     KubernetesDeploymentBackend,

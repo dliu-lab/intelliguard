@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from agent_governance.store import GovernanceStore
+from intelliguard.store import GovernanceStore
 
 
 def _workflow_payload(workflow_definition_id: str) -> dict:

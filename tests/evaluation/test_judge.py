@@ -4,7 +4,7 @@ import asyncio
 import json
 from urllib.error import URLError
 
-from agent_governance.evaluation.judge import run_judge
+from intelliguard.evaluation.judge import run_judge
 
 
 def test_judge_returns_review_when_not_configured(monkeypatch) -> None:
@@ -60,7 +60,7 @@ def test_judge_calls_openai_compatible_endpoint(monkeypatch) -> None:
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr("agent_governance.evaluation.judge.urlopen", fake_urlopen)
+    monkeypatch.setattr("intelliguard.evaluation.judge.urlopen", fake_urlopen)
 
     result = asyncio.run(
         run_judge(
@@ -121,7 +121,7 @@ def test_judge_calls_local_ollama_chat_endpoint(monkeypatch) -> None:
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr("agent_governance.evaluation.judge.urlopen", fake_urlopen)
+    monkeypatch.setattr("intelliguard.evaluation.judge.urlopen", fake_urlopen)
 
     result = asyncio.run(
         run_judge(
@@ -156,7 +156,7 @@ def test_judge_network_error_returns_review(monkeypatch) -> None:
         _ = timeout
         raise URLError("connection refused")
 
-    monkeypatch.setattr("agent_governance.evaluation.judge.urlopen", fake_urlopen)
+    monkeypatch.setattr("intelliguard.evaluation.judge.urlopen", fake_urlopen)
 
     result = asyncio.run(
         run_judge(

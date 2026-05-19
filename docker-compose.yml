@@ -29,7 +29,7 @@ services:
       KB_UPLOAD_DIR: /app/data/kb_uploads
       KB_EMBED_DIMENSION: "768"
       OTEL_ENABLED: "false"
-      OTEL_SERVICE_NAME: agent-governance-api
+      OTEL_SERVICE_NAME: intelliguard-api
       OTEL_SERVICE_VERSION: "0.1.0"
       OTEL_TRACES_EXPORTER: otlp
       DEPLOYMENT_ENVIRONMENT: local
@@ -46,7 +46,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: ["python", "-m", "agent_governance.knowledge_worker"]
+    command: ["python", "-m", "intelliguard.knowledge_worker"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       OLLAMA_BASE_URL: http://host.docker.internal:11434
@@ -54,7 +54,7 @@ services:
       KB_UPLOAD_DIR: /app/data/kb_uploads
       KB_EMBED_DIMENSION: "768"
       OTEL_ENABLED: "false"
-      OTEL_SERVICE_NAME: agent-governance-kb-worker
+      OTEL_SERVICE_NAME: intelliguard-kb-worker
       OTEL_SERVICE_VERSION: "0.1.0"
       OTEL_TRACES_EXPORTER: otlp
       DEPLOYMENT_ENVIRONMENT: local
@@ -68,7 +68,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: ["python", "-m", "agent_governance.runtime.worker"]
+    command: ["python", "-m", "intelliguard.runtime.worker"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       POLICY_PATH: policies/policy.yaml
@@ -81,7 +81,7 @@ services:
       WORKFLOW_RUNNER_POLL_SECONDS: "2"
       WORKFLOW_RUNNER_HEALTH_PORT: "8010"
       OTEL_ENABLED: "false"
-      OTEL_SERVICE_NAME: agent-governance-workflow-runner
+      OTEL_SERVICE_NAME: intelliguard-workflow-runner
       OTEL_SERVICE_VERSION: "0.1.0"
       OTEL_TRACES_EXPORTER: otlp
       DEPLOYMENT_ENVIRONMENT: local
@@ -97,14 +97,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: ["python", "-m", "agent_governance.runtime.evaluator_worker"]
+    command: ["python", "-m", "intelliguard.runtime.evaluator_worker"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       POLICY_PATH: policies/policy.yaml
       AUTO_INIT_DB: "true"
       SEED_DEMO_DATA: "false"
       OTEL_ENABLED: "false"
-      OTEL_SERVICE_NAME: agent-governance-evaluator-worker
+      OTEL_SERVICE_NAME: intelliguard-evaluator-worker
       OTEL_SERVICE_VERSION: "0.1.0"
       OTEL_TRACES_EXPORTER: otlp
       DEPLOYMENT_ENVIRONMENT: local
@@ -116,13 +116,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: ["python", "-m", "agent_governance.runtime.event_worker"]
+    command: ["python", "-m", "intelliguard.runtime.event_worker"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       AUTO_INIT_DB: "true"
       SEED_DEMO_DATA: "false"
       OTEL_ENABLED: "false"
-      OTEL_SERVICE_NAME: agent-governance-event-worker
+      OTEL_SERVICE_NAME: intelliguard-event-worker
       OTEL_SERVICE_VERSION: "0.1.0"
       OTEL_TRACES_EXPORTER: otlp
       DEPLOYMENT_ENVIRONMENT: local

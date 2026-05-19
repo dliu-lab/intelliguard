@@ -4,11 +4,11 @@ import inspect
 
 from pydantic import TypeAdapter
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.runtime.dispatcher import RuntimeWorkItem
-from agent_governance.runtime.native_runner import _workflow_definition_from_manifest
-from agent_governance.temporal import activities, workflows
-from agent_governance.temporal.starter import (
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.runtime.dispatcher import RuntimeWorkItem
+from intelliguard.runtime.native_runner import _workflow_definition_from_manifest
+from intelliguard.temporal import activities, workflows
+from intelliguard.temporal.starter import (
     temporal_input_for_item,
     temporal_workflow_id_for_run,
 )

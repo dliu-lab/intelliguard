@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.runtime.hooks import (
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.runtime.hooks import (
     RuntimeHookContext,
     RuntimeHookManager,
     RuntimeReviewResumeService,

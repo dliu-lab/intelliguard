@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.runtime.contracts import RuntimeExecutionResult
-from agent_governance.runtime.dispatcher import (
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.runtime.contracts import RuntimeExecutionResult
+from intelliguard.runtime.dispatcher import (
     DuplicateActiveRunError,
     InMemoryRunQueue,
     QueueSaturatedError,
     RuntimeRunDispatcher,
     StoreBackedRunQueue,
 )
-from agent_governance.runtime.worker import RuntimeWorker
-from agent_governance.temporal.starter import TemporalStartResult
+from intelliguard.runtime.worker import RuntimeWorker
+from intelliguard.temporal.starter import TemporalStartResult
 
 
 def _manifest(runtime_type: str = "native") -> dict:

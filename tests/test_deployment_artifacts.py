@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.runtime.codegen import generate_runtime_artifacts, persist_runtime_artifacts
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.runtime.codegen import generate_runtime_artifacts, persist_runtime_artifacts
 
 
 def _manifest(runtime_type: str = "langgraph") -> RuntimeManifest:

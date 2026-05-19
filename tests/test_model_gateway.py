@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_governance.runtime.model_gateway import (
+from intelliguard.runtime.model_gateway import (
     ModelGateway,
     ModelGatewayPolicy,
     ModelGatewayRequest,

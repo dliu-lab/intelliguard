@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent_governance.monitoring import build_monitoring_metrics
-from agent_governance.store import GovernanceStore
+from intelliguard.monitoring import build_monitoring_metrics
+from intelliguard.store import GovernanceStore
 
 
 def test_monitoring_metrics_include_certification_and_review_health(

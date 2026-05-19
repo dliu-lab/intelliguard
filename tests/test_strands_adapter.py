@@ -4,9 +4,9 @@ import importlib.util
 
 import pytest
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.adapters.strands import StrandsBuildAdapter
-from agent_governance.runner import GovernedToolResult
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.adapters.strands import StrandsBuildAdapter
+from intelliguard.runner import GovernedToolResult
 
 
 class FakeStrandsAgent:

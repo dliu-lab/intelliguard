@@ -25,7 +25,7 @@
   - Add multipart create-with-files endpoint.
   - Add KB evaluation endpoint.
   - Add confirmed delete endpoint.
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/store.py`
   - Add optional delayed initial version creation for orchestrated create.
   - Add persisted KB evaluation summary in `source_config`.
   - Add safe KB deletion that blocks assigned KBs.
@@ -46,7 +46,7 @@
 ### Task 1: Backend Orchestrated Create Endpoint
 
 **Files:**
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/store.py`
 - Modify: `api/main.py`
 - Modify: `tests/test_knowledge_bases.py`
 
@@ -356,7 +356,7 @@ Expected: pass after Task 1 endpoint is complete.
 ### Task 3: Evaluation And Delete Backend
 
 **Files:**
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/store.py`
 - Modify: `api/main.py`
 - Modify: `tests/test_knowledge_bases.py`
 
@@ -908,8 +908,8 @@ Expected: all tests pass.
 Run:
 
 ```bash
-uv run --extra dev ruff format --check agent_governance/store.py api/main.py tests/test_knowledge_bases.py tests/test_knowledge_ingestion.py
-uv run --extra dev ruff check agent_governance/store.py api/main.py tests/test_knowledge_bases.py tests/test_knowledge_ingestion.py
+uv run --extra dev ruff format --check intelliguard/store.py api/main.py tests/test_knowledge_bases.py tests/test_knowledge_ingestion.py
+uv run --extra dev ruff check intelliguard/store.py api/main.py tests/test_knowledge_bases.py tests/test_knowledge_ingestion.py
 ```
 
 Expected: both commands pass. If format check fails, run `uv run --extra dev ruff format ...` and rerun checks.

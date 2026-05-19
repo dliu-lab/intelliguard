@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_governance.runtime.audit_completeness import check_runtime_audit_completeness
+from intelliguard.runtime.audit_completeness import check_runtime_audit_completeness
 
 
 class FakeStore:

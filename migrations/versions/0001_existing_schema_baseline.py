@@ -3,7 +3,7 @@ from __future__ import annotations
 from alembic import op
 from sqlalchemy import text
 
-from agent_governance.models import Base
+from intelliguard.models import Base
 
 revision = "0001_existing_schema_baseline"
 down_revision = None

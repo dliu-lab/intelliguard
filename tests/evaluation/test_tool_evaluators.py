@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_governance.evaluation.tool_evaluators import (
+from intelliguard.evaluation.tool_evaluators import (
     compute_config_hash,
     run_tool_evaluators,
 )

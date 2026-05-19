@@ -5,8 +5,8 @@ import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from agent_governance.models import Base
-from agent_governance.settings import DEFAULT_DATABASE_URL
+from intelliguard.models import Base
+from intelliguard.settings import DEFAULT_DATABASE_URL
 
 config = context.config
 target_metadata = Base.metadata

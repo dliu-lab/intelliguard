@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.runtime.contracts import RuntimeExecutionResult
-from agent_governance.runtime.scenario_evaluator import (
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.runtime.contracts import RuntimeExecutionResult
+from intelliguard.runtime.scenario_evaluator import (
     ScenarioSuiteEvaluator,
     assert_production_activation_allowed,
 )

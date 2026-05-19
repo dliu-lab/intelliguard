@@ -4,7 +4,7 @@ WORKDIR /app
 ARG UV_EXTRAS=""
 
 COPY pyproject.toml uv.lock README.md ./
-COPY agent_governance ./agent_governance
+COPY intelliguard ./intelliguard
 COPY api ./api
 COPY examples ./examples
 COPY mockups ./mockups

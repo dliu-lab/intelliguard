@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.runtime.manifest_compiler import (
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.runtime.manifest_compiler import (
     ManifestCompileError,
     build_manifest_snapshots,
     compile_workflow_manifest,
     compute_kb_version_snapshot,
 )
-from agent_governance.workflow_graph import workflow_graph_hash
+from intelliguard.workflow_graph import workflow_graph_hash
 
 
 def _workflow(edges: list[dict] | None = None) -> dict:

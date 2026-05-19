@@ -22,15 +22,15 @@ from starlette.datastructures import Headers, UploadFile
 
 import api.main as api_main
 
-from agent_governance.knowledge import KnowledgeRetrievalService
-from agent_governance.knowledge_indexing import (
+from intelliguard.knowledge import KnowledgeRetrievalService
+from intelliguard.knowledge_indexing import (
     DeterministicEmbeddingProvider,
     KnowledgeIngestionService,
     LlamaIndexKnowledgeIndexer,
 )
-from agent_governance.knowledge_storage import KnowledgeFileStorage
-from agent_governance.models import KnowledgeIndexVersion
-from agent_governance.store import GovernanceStore
+from intelliguard.knowledge_storage import KnowledgeFileStorage
+from intelliguard.models import KnowledgeIndexVersion
+from intelliguard.store import GovernanceStore
 
 CODE_SPLITTER_AVAILABLE = bool(
     importlib.util.find_spec("tree_sitter")
@@ -501,7 +501,7 @@ def test_retrieval_service_uses_latest_ready_index_only(store: GovernanceStore) 
 
 
 def test_worker_process_once_invokes_ingestion(monkeypatch: pytest.MonkeyPatch) -> None:
-    import agent_governance.knowledge_worker as knowledge_worker
+    import intelliguard.knowledge_worker as knowledge_worker
 
     calls: list[str] = []
     captured_kwargs: dict[str, object] = {}

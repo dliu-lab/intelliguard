@@ -4,12 +4,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from agent_governance.runtime.budgets import (
+from intelliguard.runtime.budgets import (
     RuntimeBudget,
     RuntimeBudgetExceeded,
     assert_db_connection_budget,
 )
-from agent_governance.runtime.dispatcher import InMemoryRunQueue, QueueSaturatedError
+from intelliguard.runtime.dispatcher import InMemoryRunQueue, QueueSaturatedError
 from tests.test_runtime_dispatcher import FakeStore
 
 
@@ -52,7 +52,7 @@ def test_budget_stops_after_deadline() -> None:
 
 
 def test_dispatcher_rejects_saturated_queue() -> None:
-    from agent_governance.runtime.dispatcher import RuntimeRunDispatcher
+    from intelliguard.runtime.dispatcher import RuntimeRunDispatcher
 
     queue = InMemoryRunQueue()
     dispatcher = RuntimeRunDispatcher(store=FakeStore(), queue=queue, max_queue_depth=0)

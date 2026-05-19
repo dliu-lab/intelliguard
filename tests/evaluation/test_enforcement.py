@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent_governance.evaluation.enforcement import (
+from intelliguard.evaluation.enforcement import (
     CertificationEnforcementError,
     check_agent_certification,
     check_tool_certification,

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from agent_governance.adapters.http_service import (
+from intelliguard.adapters.http_service import (
     ConnectorPolicyError,
     HttpServiceConnector,
     connector_tool_metadata,
     validate_connector_record,
 )
-from agent_governance.adapters.mcp_service import McpServiceConnector
+from intelliguard.adapters.mcp_service import McpServiceConnector
 
 
 def _connector_record() -> dict:

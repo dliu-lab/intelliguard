@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_governance.evaluation.certification import (
+from intelliguard.evaluation.certification import (
     CertificationError,
     decide_certification,
     validate_transition,

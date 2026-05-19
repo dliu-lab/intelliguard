@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_governance.evaluation.workflow_evaluators import (
+from intelliguard.evaluation.workflow_evaluators import (
     compute_workflow_config_hash,
     run_workflow_evaluators,
 )

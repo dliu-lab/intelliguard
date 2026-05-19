@@ -11,29 +11,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from agent_governance.customer_agent import run_customer_support_agent
-from agent_governance.db import init_db
-from agent_governance.knowledge import KnowledgeRetrievalService, RetrievedDoc as RetrievedDoc
-from agent_governance.knowledge_indexing import (
+from intelliguard.customer_agent import run_customer_support_agent
+from intelliguard.db import init_db
+from intelliguard.knowledge import KnowledgeRetrievalService, RetrievedDoc as RetrievedDoc
+from intelliguard.knowledge_indexing import (
     KnowledgeIngestionService,
     LlamaIndexKnowledgeIndexer,
     OllamaEmbeddingProvider,
 )
-from agent_governance.knowledge_storage import KnowledgeFileStorage, is_image_file
-from agent_governance.models import utc_now
-from agent_governance.multi_agent import run_customer_support_workflow
-from agent_governance.policy import load_policy, policy_to_dict
-from agent_governance.runner import GovernedToolRunner
-from agent_governance.settings import DEFAULT_KB_UPLOAD_DIR, load_settings
-from agent_governance.store import GovernanceStore
-from agent_governance.telemetry import (
+from intelliguard.knowledge_storage import KnowledgeFileStorage, is_image_file
+from intelliguard.models import utc_now
+from intelliguard.multi_agent import run_customer_support_workflow
+from intelliguard.policy import load_policy, policy_to_dict
+from intelliguard.runner import GovernedToolRunner
+from intelliguard.settings import DEFAULT_KB_UPLOAD_DIR, load_settings
+from intelliguard.store import GovernanceStore
+from intelliguard.telemetry import (
     current_trace_id,
     instrument_fastapi,
     telemetry_status,
     trace_kb_operation,
 )
-from agent_governance.tools import build_customer_tool_registry
-from agent_governance.workflow_graph import WorkflowGraphError
+from intelliguard.tools import build_customer_tool_registry
+from intelliguard.workflow_graph import WorkflowGraphError
 
 
 settings = load_settings()
@@ -81,7 +81,7 @@ def build_runner(agent_id: str) -> GovernedToolRunner:
 
 
 def workflow_manifest_snapshots(workflow: dict[str, Any]) -> dict[str, dict[str, str]]:
-    from agent_governance.runtime.manifest_compiler import build_manifest_snapshots
+    from intelliguard.runtime.manifest_compiler import build_manifest_snapshots
 
     workflow_agent_ids = {
         str(node.get("agent_id"))
@@ -750,7 +750,7 @@ def health() -> dict[str, str]:
 
 @app.get("/v1/telemetry/status")
 def get_telemetry_status() -> dict[str, Any]:
-    return telemetry_status(default_service_name="agent-governance-api").to_dict()
+    return telemetry_status(default_service_name="intelliguard-api").to_dict()
 
 
 @app.get("/v1/auth/bootstrap-status")
@@ -892,11 +892,11 @@ def delete_agent(agent_id: str, user: dict[str, Any] = Depends(current_user)) ->
 def evaluate_agent(agent_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     from time import monotonic
 
-    from agent_governance.evaluation.agent_evaluators import (
+    from intelliguard.evaluation.agent_evaluators import (
         compute_agent_config_hash,
         run_agent_evaluators,
     )
-    from agent_governance.evaluation.certification import (
+    from intelliguard.evaluation.certification import (
         CertificationError,
         decide_certification,
         validate_transition,
@@ -1069,7 +1069,7 @@ def test_service_connector(
     request: ServiceConnectorTestRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    from agent_governance.adapters.http_service import ConnectorPolicyError, HttpServiceConnector
+    from intelliguard.adapters.http_service import ConnectorPolicyError, HttpServiceConnector
 
     connector = store.get_service_connector(connector_id)
     if not connector:
@@ -1115,8 +1115,8 @@ def run_scenario_suite(
     request: ScenarioRunRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    from agent_governance.runtime.native_runner import NativeRuntimeRunner
-    from agent_governance.runtime.scenario_evaluator import ScenarioSuiteEvaluator
+    from intelliguard.runtime.native_runner import NativeRuntimeRunner
+    from intelliguard.runtime.scenario_evaluator import ScenarioSuiteEvaluator
 
     suite = store.get_scenario_suite(suite_id)
     if not suite:
@@ -1169,12 +1169,12 @@ def get_tool(tool_id: str, user: dict[str, Any] = Depends(current_user)) -> dict
 def evaluate_tool(tool_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     from time import monotonic
 
-    from agent_governance.evaluation.certification import (
+    from intelliguard.evaluation.certification import (
         CertificationError,
         decide_certification,
         validate_transition,
     )
-    from agent_governance.evaluation.tool_evaluators import run_tool_evaluators
+    from intelliguard.evaluation.tool_evaluators import run_tool_evaluators
 
     tool = store.get_tool_record(tool_id)
     if not tool:
@@ -1291,7 +1291,7 @@ def monitoring_metrics(
     environment: str | None = None,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    from agent_governance.monitoring import build_monitoring_metrics
+    from intelliguard.monitoring import build_monitoring_metrics
 
     return build_monitoring_metrics(store, visible_environment(environment, user))
 
@@ -1309,7 +1309,7 @@ def create_workflow_definition(
     request: WorkflowDefinitionRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    from agent_governance.evaluation.enforcement import (
+    from intelliguard.evaluation.enforcement import (
         CertificationEnforcementError,
         check_agent_certification,
     )
@@ -1405,7 +1405,7 @@ def create_workflow_deployment(
     request: WorkflowDeploymentRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    from agent_governance.runtime.manifest_compiler import (
+    from intelliguard.runtime.manifest_compiler import (
         ManifestCompileError,
         ManifestCompileOptions,
         compile_workflow_manifest,
@@ -1473,7 +1473,7 @@ def activate_workflow_deployment(
     deployment_id: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    from agent_governance.runtime.scenario_evaluator import (
+    from intelliguard.runtime.scenario_evaluator import (
         assert_production_activation_allowed,
     )
 
@@ -1494,8 +1494,8 @@ def generate_workflow_deployment_artifacts(
     request: WorkflowDeploymentJobRequest | None = None,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    from agent_governance.adk.manifest import RuntimeManifest
-    from agent_governance.runtime.codegen import (
+    from intelliguard.adk.manifest import RuntimeManifest
+    from intelliguard.runtime.codegen import (
         generate_runtime_artifacts,
         persist_runtime_artifacts,
     )
@@ -1534,7 +1534,7 @@ def deploy_workflow_deployment(
     request: WorkflowDeploymentJobRequest,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    from agent_governance.runtime.deployment_orchestrator import (
+    from intelliguard.runtime.deployment_orchestrator import (
         DeploymentJobRequest,
         DeploymentOrchestrator,
         KubernetesDeploymentBackend,
@@ -1605,12 +1605,12 @@ def evaluate_workflow_definition(
 ) -> dict[str, Any]:
     from time import monotonic
 
-    from agent_governance.evaluation.certification import (
+    from intelliguard.evaluation.certification import (
         CertificationError,
         decide_certification,
         validate_transition,
     )
-    from agent_governance.evaluation.workflow_evaluators import (
+    from intelliguard.evaluation.workflow_evaluators import (
         compute_workflow_config_hash,
         run_workflow_evaluators,
     )
@@ -1717,7 +1717,7 @@ def list_workflow_evaluation_runs(
 def grant_agent_tool(
     agent_id: str, request: AgentToolGrantRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
-    from agent_governance.evaluation.enforcement import (
+    from intelliguard.evaluation.enforcement import (
         CertificationEnforcementError,
         check_tool_certification,
     )
@@ -1814,11 +1814,11 @@ def agent_run(
 def multi_agent_run(
     request: MultiAgentRunRequest, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
-    from agent_governance.evaluation.enforcement import (
+    from intelliguard.evaluation.enforcement import (
         CertificationEnforcementError,
         check_workflow_certification,
     )
-    from agent_governance.runtime.dispatcher import (
+    from intelliguard.runtime.dispatcher import (
         DuplicateActiveRunError,
         RuntimeRunDispatcher,
         StoreBackedRunQueue,
@@ -1939,7 +1939,7 @@ def runtime_run_events(
     stream: bool = False,
     user: dict[str, Any] = Depends(current_user),
 ) -> Any:
-    from agent_governance.runtime.event_bus import RuntimeEventBus
+    from intelliguard.runtime.event_bus import RuntimeEventBus
 
     run = store.get_workflow_runtime_run(run_id)
     if not run:
@@ -1969,7 +1969,7 @@ def runtime_run_audit_completeness(
     run_id: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    from agent_governance.runtime.audit_completeness import check_runtime_audit_completeness
+    from intelliguard.runtime.audit_completeness import check_runtime_audit_completeness
 
     run = store.get_workflow_runtime_run(run_id)
     if not run:
@@ -2026,8 +2026,8 @@ def resolve_review(
     temporal_signal_sent = False
     runtime_resume: dict[str, Any] = {"applied": False}
     if review:
-        from agent_governance.runtime.hooks import RuntimeReviewResumeService
-        from agent_governance.temporal.review import signal_review_resolution
+        from intelliguard.runtime.hooks import RuntimeReviewResumeService
+        from intelliguard.temporal.review import signal_review_resolution
 
         resume_result = RuntimeReviewResumeService(store=store).resolve_review(
             review=review,
@@ -2190,7 +2190,7 @@ def list_evaluator_templates(user: dict[str, Any] = Depends(current_user)) -> li
 
 @app.get("/v1/evaluation-rules")
 def list_evaluation_rules(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
-    from agent_governance.evaluation.rules import evaluation_rule_catalog
+    from intelliguard.evaluation.rules import evaluation_rule_catalog
 
     _ = user
     return evaluation_rule_catalog(store.list_evaluator_templates())
@@ -2281,7 +2281,7 @@ def trigger_session_evaluation(
     session_id: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    from agent_governance.evaluators import EvaluatorEngine
+    from intelliguard.evaluators import EvaluatorEngine
 
     environment = store.session_environment(session_id)
     if environment is None:

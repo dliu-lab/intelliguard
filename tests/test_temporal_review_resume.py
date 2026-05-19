@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_governance.temporal.review import signal_review_resolution
+from intelliguard.temporal.review import signal_review_resolution
 
 
 class FakeTemporalClient:

@@ -15,15 +15,15 @@
 ## File Map
 
 **Create (backend):**
-- `agent_governance/evaluation/agent_evaluators.py`
-- `agent_governance/evaluation/judge.py`
+- `intelliguard/evaluation/agent_evaluators.py`
+- `intelliguard/evaluation/judge.py`
 - `tests/evaluation/test_agent_evaluators.py`
 - `tests/evaluation/test_judge.py`
 
 **Modify (backend):**
-- `agent_governance/models.py` — add `AgentCertification`
-- `agent_governance/store.py` — add agent cert methods + invalidation hooks in 7 existing methods
-- `agent_governance/evaluation/enforcement.py` — add `check_agent_certification`
+- `intelliguard/models.py` — add `AgentCertification`
+- `intelliguard/store.py` — add agent cert methods + invalidation hooks in 7 existing methods
+- `intelliguard/evaluation/enforcement.py` — add `check_agent_certification`
 - `tests/evaluation/test_enforcement.py` — add agent enforcement tests
 - `api/main.py` — add `POST /v1/agents/{id}/evaluate`, `GET /v1/agents/{id}/certification`, `GET /v1/agents/{id}/evaluation-runs`
 
@@ -39,9 +39,9 @@
 ## Task 1: Add AgentCertification Model
 
 **Files:**
-- Modify: `agent_governance/models.py`
+- Modify: `intelliguard/models.py`
 
-- [ ] **Step 1: Add `AgentCertification` to `agent_governance/models.py`**
+- [ ] **Step 1: Add `AgentCertification` to `intelliguard/models.py`**
 
 Add after the `KnowledgeBase` model (or after Phase 1's `EvaluationCriterionResult`):
 
@@ -68,8 +68,8 @@ class AgentCertification(Base):
 - [ ] **Step 2: Verify import**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance
-python -c "from agent_governance.models import AgentCertification; print('OK')"
+cd /Users/dliu520/AIYA/Git/intelliguard
+python -c "from intelliguard.models import AgentCertification; print('OK')"
 ```
 
 Expected: `OK`
@@ -77,7 +77,7 @@ Expected: `OK`
 - [ ] **Step 3: Commit**
 
 ```bash
-git add agent_governance/models.py
+git add intelliguard/models.py
 git commit -m "feat(evaluation): add AgentCertification model"
 ```
 
@@ -86,7 +86,7 @@ git commit -m "feat(evaluation): add AgentCertification model"
 ## Task 2: Create judge.py Stub
 
 **Files:**
-- Create: `agent_governance/evaluation/judge.py`
+- Create: `intelliguard/evaluation/judge.py`
 - Create: `tests/evaluation/test_judge.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -98,7 +98,7 @@ from __future__ import annotations
 
 import asyncio
 import pytest
-from agent_governance.evaluation.judge import JudgeResult, run_judge
+from intelliguard.evaluation.judge import JudgeResult, run_judge
 
 
 def test_judge_stub_returns_review():
@@ -124,7 +124,7 @@ pytest tests/evaluation/test_judge.py -v 2>&1 | head -10
 
 Expected: `ImportError`
 
-- [ ] **Step 3: Create `agent_governance/evaluation/judge.py`**
+- [ ] **Step 3: Create `intelliguard/evaluation/judge.py`**
 
 ```python
 from __future__ import annotations
@@ -173,7 +173,7 @@ Expected: 3 tests passing.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent_governance/evaluation/judge.py tests/evaluation/test_judge.py
+git add intelliguard/evaluation/judge.py tests/evaluation/test_judge.py
 git commit -m "feat(evaluation): judge.py stub — async interface, REVIEW until Phase 5 calibration"
 ```
 
@@ -182,7 +182,7 @@ git commit -m "feat(evaluation): judge.py stub — async interface, REVIEW until
 ## Task 3: Create Agent Evaluators
 
 **Files:**
-- Create: `agent_governance/evaluation/agent_evaluators.py`
+- Create: `intelliguard/evaluation/agent_evaluators.py`
 - Create: `tests/evaluation/test_agent_evaluators.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -193,7 +193,7 @@ Create `tests/evaluation/test_agent_evaluators.py`:
 from __future__ import annotations
 
 import pytest
-from agent_governance.evaluation.agent_evaluators import (
+from intelliguard.evaluation.agent_evaluators import (
     CriterionResult,
     compute_agent_config_hash,
     run_agent_evaluators,
@@ -296,7 +296,7 @@ pytest tests/evaluation/test_agent_evaluators.py -v 2>&1 | head -10
 
 Expected: `ImportError`
 
-- [ ] **Step 3: Create `agent_governance/evaluation/agent_evaluators.py`**
+- [ ] **Step 3: Create `intelliguard/evaluation/agent_evaluators.py`**
 
 ```python
 from __future__ import annotations
@@ -307,7 +307,7 @@ from dataclasses import dataclass
 from typing import Any
 
 # Re-export CriterionResult from tool_evaluators so tests can import from one place
-from agent_governance.evaluation.tool_evaluators import CriterionResult
+from intelliguard.evaluation.tool_evaluators import CriterionResult
 
 VALID_AGENT_TYPES = frozenset({
     "task_agent", "gate_agent", "review_agent", "lead_agent", "custom_agent",
@@ -409,7 +409,7 @@ Expected: 9 tests passing.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent_governance/evaluation/agent_evaluators.py tests/evaluation/test_agent_evaluators.py
+git add intelliguard/evaluation/agent_evaluators.py tests/evaluation/test_agent_evaluators.py
 git commit -m "feat(evaluation): agent evaluators with 5 deterministic criteria"
 ```
 
@@ -418,11 +418,11 @@ git commit -m "feat(evaluation): agent evaluators with 5 deterministic criteria"
 ## Task 4: Agent Certification Store Methods And Invalidation Hooks
 
 **Files:**
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/store.py`
 
 - [ ] **Step 1: Add `AgentCertification` to the imports block in `store.py`**
 
-In the `from agent_governance.models import (...)` block, add:
+In the `from intelliguard.models import (...)` block, add:
 
 ```python
     AgentCertification,
@@ -565,8 +565,8 @@ In `delete_agent_kb_assignment`, before `db.delete(row)`, add:
 - [ ] **Step 7: Verify imports and run full tests**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance
-python -c "from agent_governance.store import GovernanceStore; print('OK')"
+cd /Users/dliu520/AIYA/Git/intelliguard
+python -c "from intelliguard.store import GovernanceStore; print('OK')"
 pytest tests/ -v
 ```
 
@@ -575,7 +575,7 @@ Expected: all tests pass.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add agent_governance/store.py
+git add intelliguard/store.py
 git commit -m "feat(evaluation): agent certification store methods + invalidation on config change"
 ```
 
@@ -584,7 +584,7 @@ git commit -m "feat(evaluation): agent certification store methods + invalidatio
 ## Task 5: Add check_agent_certification To Enforcement
 
 **Files:**
-- Modify: `agent_governance/evaluation/enforcement.py`
+- Modify: `intelliguard/evaluation/enforcement.py`
 - Modify: `tests/evaluation/test_enforcement.py`
 
 - [ ] **Step 1: Add agent enforcement tests to `tests/evaluation/test_enforcement.py`**
@@ -592,7 +592,7 @@ git commit -m "feat(evaluation): agent certification store methods + invalidatio
 Add to the existing test file:
 
 ```python
-from agent_governance.evaluation.enforcement import (
+from intelliguard.evaluation.enforcement import (
     CertificationEnforcementError,
     check_agent_certification,
     check_tool_certification,
@@ -642,7 +642,7 @@ pytest tests/evaluation/test_enforcement.py -v -k "agent" 2>&1 | head -15
 
 Expected: `ImportError` for `check_agent_certification`
 
-- [ ] **Step 3: Add `check_agent_certification` to `agent_governance/evaluation/enforcement.py`**
+- [ ] **Step 3: Add `check_agent_certification` to `intelliguard/evaluation/enforcement.py`**
 
 ```python
 def check_agent_certification(store: object, agent_id: str, environment: str) -> None:
@@ -678,7 +678,7 @@ Expected: all tests passing (including original tool enforcement tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent_governance/evaluation/enforcement.py tests/evaluation/test_enforcement.py
+git add intelliguard/evaluation/enforcement.py tests/evaluation/test_enforcement.py
 git commit -m "feat(evaluation): check_agent_certification enforcement for production environments"
 ```
 
@@ -699,12 +699,12 @@ def evaluate_agent(
     agent_id: str, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
     from time import monotonic
-    from agent_governance.evaluation.agent_evaluators import (
+    from intelliguard.evaluation.agent_evaluators import (
         compute_agent_config_hash,
         run_agent_evaluators,
     )
-    from agent_governance.evaluation.certification import decide_certification, validate_transition
-    from agent_governance.models import utc_now
+    from intelliguard.evaluation.certification import decide_certification, validate_transition
+    from intelliguard.models import utc_now
 
     agent = store.get_agent_identity(agent_id)
     if not agent.get("agent_id"):
@@ -808,7 +808,7 @@ def list_agent_evaluation_runs(
 - [ ] **Step 3: Start API and smoke-test**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance
+cd /Users/dliu520/AIYA/Git/intelliguard
 uvicorn api.main:app --reload --port 8000 &
 sleep 2
 curl -s -X POST http://localhost:8000/v1/auth/login \
@@ -890,7 +890,7 @@ export function listAgentEvaluationRuns(token: string, agentId: string) {
 - [ ] **Step 3: TypeScript check**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance/dashboard
+cd /Users/dliu520/AIYA/Git/intelliguard/dashboard
 npx tsc --noEmit
 ```
 
@@ -1152,7 +1152,7 @@ import { AgentCertificationPanel } from "./AgentCertificationPanel";
 - [ ] **Step 3: TypeScript check**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance/dashboard
+cd /Users/dliu520/AIYA/Git/intelliguard/dashboard
 npx tsc --noEmit
 ```
 
@@ -1161,7 +1161,7 @@ Expected: no errors.
 - [ ] **Step 4: Start dev server and verify**
 
 ```bash
-cd /Users/dliu520/AIYA/Git/agent_governance/dashboard
+cd /Users/dliu520/AIYA/Git/intelliguard/dashboard
 npm run dev
 ```
 

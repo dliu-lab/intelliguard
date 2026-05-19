@@ -3,12 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 
-from agent_governance.customer_agent import run_customer_support_agent
-from agent_governance.db import init_db
-from agent_governance.runner import GovernedToolRunner
-from agent_governance.settings import load_settings
-from agent_governance.store import GovernanceStore
-from agent_governance.tools import build_customer_tool_registry
+from intelliguard.customer_agent import run_customer_support_agent
+from intelliguard.db import init_db
+from intelliguard.runner import GovernedToolRunner
+from intelliguard.settings import load_settings
+from intelliguard.store import GovernanceStore
+from intelliguard.tools import build_customer_tool_registry
 
 
 def main() -> None:

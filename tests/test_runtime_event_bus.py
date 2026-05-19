@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_governance.runtime.event_bus import RuntimeEventBus
+from intelliguard.runtime.event_bus import RuntimeEventBus
 
 
 class FakeStore:

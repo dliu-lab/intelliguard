@@ -16,7 +16,7 @@ spec:
       containers:
         - name: kb-worker
           image: ghcr.io/example/intelliguard-api:latest
-          command: ["python", "-m", "agent_governance.knowledge_worker"]
+          command: ["python", "-m", "intelliguard.knowledge_worker"]
           envFrom:
             - configMapRef:
                 name: intelliguard-runtime-config

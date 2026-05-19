@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_governance.adk.manifest import RuntimeManifest
+from intelliguard.adk.manifest import RuntimeManifest
 
 
 def _manifest_payload() -> dict:

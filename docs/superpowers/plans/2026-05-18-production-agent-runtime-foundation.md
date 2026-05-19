@@ -230,31 +230,31 @@ flowchart TB
 
 Create these new modules:
 
-- `agent_governance/adk/__init__.py`: public ADK exports.
-- `agent_governance/adk/manifest.py`: Pydantic manifest schema used by adapters and runtime.
-- `agent_governance/adk/client.py`: Python client for registration, certification lookup, and run submission.
-- `agent_governance/adk/decorators.py`: `@guarded_agent` and `@guarded_tool` helpers for Python developers.
-- `agent_governance/runtime/__init__.py`: runtime package exports.
-- `agent_governance/runtime/contracts.py`: runner interfaces, execution request/result models, runtime errors.
-- `agent_governance/runtime/manifest_compiler.py`: compiles DB workflow definitions into immutable runtime manifests.
-- `agent_governance/runtime/deployment_revisions.py`: creates and reads deployment revision records.
-- `agent_governance/runtime/native_runner.py`: first-class runtime extracted from current custom multi-agent logic.
-- `agent_governance/runtime/tool_gateway.py`: governed tool invocation path for all runtimes.
-- `agent_governance/runtime/model_gateway.py`: model invocation policy wrapper and trace metadata.
-- `agent_governance/runtime/dispatcher.py`: async run dispatch abstraction for local queue and production queue.
-- `agent_governance/runtime/event_bus.py`: workflow event outbox and live event stream abstraction.
-- `agent_governance/runtime/scenario_evaluator.py`: real-world scenario suite execution.
-- `agent_governance/runtime/codegen.py`: generates reviewed runtime artifacts from certified manifests.
-- `agent_governance/runtime/deployment_orchestrator.py`: creates deployment jobs and hands them to Docker Compose, Kubernetes, or external CI/CD backends.
-- `agent_governance/adapters/langgraph.py`: LangGraph build adapter.
-- `agent_governance/adapters/strands.py`: Strands build adapter.
-- `agent_governance/adapters/http_service.py`: REST/gRPC-style service connector contract.
-- `agent_governance/adapters/mcp_service.py`: MCP service connector contract.
-- `agent_governance/temporal/workflows.py`: Temporal workflow definitions.
-- `agent_governance/temporal/activities.py`: Temporal activities for agent steps, tools, evaluators, and review waits.
-- `agent_governance/temporal/worker.py`: Temporal worker entry point.
+- `intelliguard/adk/__init__.py`: public ADK exports.
+- `intelliguard/adk/manifest.py`: Pydantic manifest schema used by adapters and runtime.
+- `intelliguard/adk/client.py`: Python client for registration, certification lookup, and run submission.
+- `intelliguard/adk/decorators.py`: `@guarded_agent` and `@guarded_tool` helpers for Python developers.
+- `intelliguard/runtime/__init__.py`: runtime package exports.
+- `intelliguard/runtime/contracts.py`: runner interfaces, execution request/result models, runtime errors.
+- `intelliguard/runtime/manifest_compiler.py`: compiles DB workflow definitions into immutable runtime manifests.
+- `intelliguard/runtime/deployment_revisions.py`: creates and reads deployment revision records.
+- `intelliguard/runtime/native_runner.py`: first-class runtime extracted from current custom multi-agent logic.
+- `intelliguard/runtime/tool_gateway.py`: governed tool invocation path for all runtimes.
+- `intelliguard/runtime/model_gateway.py`: model invocation policy wrapper and trace metadata.
+- `intelliguard/runtime/dispatcher.py`: async run dispatch abstraction for local queue and production queue.
+- `intelliguard/runtime/event_bus.py`: workflow event outbox and live event stream abstraction.
+- `intelliguard/runtime/scenario_evaluator.py`: real-world scenario suite execution.
+- `intelliguard/runtime/codegen.py`: generates reviewed runtime artifacts from certified manifests.
+- `intelliguard/runtime/deployment_orchestrator.py`: creates deployment jobs and hands them to Docker Compose, Kubernetes, or external CI/CD backends.
+- `intelliguard/adapters/langgraph.py`: LangGraph build adapter.
+- `intelliguard/adapters/strands.py`: Strands build adapter.
+- `intelliguard/adapters/http_service.py`: REST/gRPC-style service connector contract.
+- `intelliguard/adapters/mcp_service.py`: MCP service connector contract.
+- `intelliguard/temporal/workflows.py`: Temporal workflow definitions.
+- `intelliguard/temporal/activities.py`: Temporal activities for agent steps, tools, evaluators, and review waits.
+- `intelliguard/temporal/worker.py`: Temporal worker entry point.
 - `alembic.ini`: Alembic configuration for durable schema migrations.
-- `migrations/env.py`: Alembic migration environment using `agent_governance.models.Base.metadata`.
+- `migrations/env.py`: Alembic migration environment using `intelliguard.models.Base.metadata`.
 - `migrations/versions/0001_existing_schema_baseline.py`: baseline migration for the current schema.
 - `migrations/versions/0002_workflow_runtime_foundation.py`: migration for workflow SDLC, deployment, runtime, connector, scenario, and artifact tables.
 - `deploy/k8s/base/*.yaml`: production deployment foundations.
@@ -263,8 +263,8 @@ Create these new modules:
 
 Modify these existing modules:
 
-- `agent_governance/models.py`: add workflow SDLC fields, deployment revisions, runtime runs, event outbox, connector records, scenario suites.
-- `agent_governance/store.py`: persistence methods for workflow versions, lifecycle transitions, the new tables, and manifest compilation reads.
+- `intelliguard/models.py`: add workflow SDLC fields, deployment revisions, runtime runs, event outbox, connector records, scenario suites.
+- `intelliguard/store.py`: persistence methods for workflow versions, lifecycle transitions, the new tables, and manifest compilation reads.
 - `api/main.py`: add workflow version/lifecycle, artifact generation, deployment, run, event stream, deployment job, and scenario endpoints.
 - `docker-compose.yml`: add workflow runner, evaluator worker, event worker, optional Temporal services.
 - `pyproject.toml`: add optional extras for LangGraph, Strands, Temporal, and production runtime.
@@ -287,7 +287,7 @@ Extend existing `workflow_definitions` records with first-class SDLC fields. The
 - `locked_at`, `locked_by`: set when a definition is certified or packaged and should no longer be edited in place.
 - `created_from_deployment_id`: optional rollback/fork source.
 
-Add these tables to `agent_governance/models.py`:
+Add these tables to `intelliguard/models.py`:
 
 - `workflow_definition_versions`
   - `version_id`, `workflow_root_id`, `workflow_definition_id`, `version`, `version_number`
@@ -339,7 +339,7 @@ Add these tables to `agent_governance/models.py`:
 - Create: `migrations/env.py`
 - Create: `migrations/versions/0001_existing_schema_baseline.py`
 - Modify: `pyproject.toml`
-- Modify: `agent_governance/db.py`
+- Modify: `intelliguard/db.py`
 - Test: `tests/test_schema_migrations.py`
 
 The current database boot path calls `Base.metadata.create_all(engine)` and then `ensure_runtime_schema(engine)`. That works for fresh test databases but does not safely evolve existing databases when tables or columns are added. This task introduces Alembic as the production migration path while keeping `ensure_runtime_schema()` as a conservative local/dev compatibility fallback during the transition.
@@ -370,7 +370,7 @@ Create `tests/test_schema_migrations.py` with tests that:
 
 Create `alembic.ini` pointing `script_location` to `migrations`.
 
-Create `migrations/env.py` that imports `Base.metadata` from `agent_governance.models`, reads `DATABASE_URL`, and supports offline and online migrations.
+Create `migrations/env.py` that imports `Base.metadata` from `intelliguard.models`, reads `DATABASE_URL`, and supports offline and online migrations.
 
 - [ ] **Step 4: Add baseline migration**
 
@@ -388,7 +388,7 @@ alembic upgrade head
 
 - [ ] **Step 5: Update `init_db()` migration behavior**
 
-Update `agent_governance/db.py` so production deployments can require migrations before startup:
+Update `intelliguard/db.py` so production deployments can require migrations before startup:
 
 - If `DB_MIGRATIONS_REQUIRED=true`, do not rely on `create_all()` for missing tables.
 - Always keep `ensure_runtime_schema(engine)` idempotent for local/dev compatibility.
@@ -416,15 +416,15 @@ Expected: PASS.
 Run:
 
 ```bash
-git add alembic.ini migrations pyproject.toml agent_governance/db.py tests/test_schema_migrations.py
+git add alembic.ini migrations pyproject.toml intelliguard/db.py tests/test_schema_migrations.py
 git commit -m "chore: add durable schema migration foundation"
 ```
 
 ### Task 1: Add Runtime Manifest Schema
 
 **Files:**
-- Create: `agent_governance/adk/__init__.py`
-- Create: `agent_governance/adk/manifest.py`
+- Create: `intelliguard/adk/__init__.py`
+- Create: `intelliguard/adk/manifest.py`
 - Test: `tests/test_runtime_manifest.py`
 
 - [ ] **Step 1: Write manifest tests**
@@ -432,7 +432,7 @@ git commit -m "chore: add durable schema migration foundation"
 Create `tests/test_runtime_manifest.py` with tests that validate a minimal certified workflow manifest, reject missing runtime limits, and produce a stable hash.
 
 ```python
-from agent_governance.adk.manifest import RuntimeManifest
+from intelliguard.adk.manifest import RuntimeManifest
 
 
 def _manifest_payload() -> dict:
@@ -513,11 +513,11 @@ def test_runtime_manifest_hash_includes_node_metadata_but_excludes_top_level_met
 
 Run: `pytest tests/test_runtime_manifest.py -v`
 
-Expected: FAIL because `agent_governance.adk.manifest` does not exist.
+Expected: FAIL because `intelliguard.adk.manifest` does not exist.
 
 - [ ] **Step 3: Implement manifest schema**
 
-Create `agent_governance/adk/manifest.py` with Pydantic models:
+Create `intelliguard/adk/manifest.py` with Pydantic models:
 
 ```python
 from __future__ import annotations
@@ -580,10 +580,10 @@ class RuntimeManifest(BaseModel):
         return hashlib.sha256(encoded).hexdigest()[:24]
 ```
 
-Create `agent_governance/adk/__init__.py`:
+Create `intelliguard/adk/__init__.py`:
 
 ```python
-from agent_governance.adk.manifest import RuntimeManifest, RuntimeLimits
+from intelliguard.adk.manifest import RuntimeManifest, RuntimeLimits
 
 __all__ = ["RuntimeManifest", "RuntimeLimits"]
 ```
@@ -599,15 +599,15 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/adk tests/test_runtime_manifest.py
+git add intelliguard/adk tests/test_runtime_manifest.py
 git commit -m "feat: add runtime manifest schema"
 ```
 
 ### Task 2: Add Workflow Definition SDLC And Versioning
 
 **Files:**
-- Modify: `agent_governance/models.py`
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/models.py`
+- Modify: `intelliguard/store.py`
 - Modify: `api/main.py`
 - Modify: `dashboard/app/platform/_components/WorkflowBuilderWorkspace.tsx`
 - Test: `tests/test_workflow_sdlc.py`
@@ -619,7 +619,7 @@ Workflow definitions are stored in Postgres in the existing `workflow_definition
 Run impact analysis for symbols that will be edited:
 
 ```text
-gitnexus_impact(target="WorkflowDefinition", direction="upstream", repo="intelliguard", file_path="agent_governance/models.py")
+gitnexus_impact(target="WorkflowDefinition", direction="upstream", repo="intelliguard", file_path="intelliguard/models.py")
 gitnexus_impact(target="upsert_workflow_definition", direction="upstream", repo="intelliguard")
 ```
 
@@ -644,7 +644,7 @@ Expected: FAIL because lifecycle fields and methods do not exist.
 
 - [ ] **Step 4: Add workflow SDLC fields**
 
-Add these fields to `WorkflowDefinition` in `agent_governance/models.py`:
+Add these fields to `WorkflowDefinition` in `intelliguard/models.py`:
 
 ```python
 workflow_root_id: Mapped[str | None] = mapped_column(String(120))
@@ -677,7 +677,7 @@ Create an Alembic revision or extend `0002_workflow_runtime_foundation.py` with:
 - `ALTER TABLE workflow_definitions ADD COLUMN IF NOT EXISTS created_from_deployment_id VARCHAR(64)`
 - `CREATE TABLE IF NOT EXISTS workflow_definition_versions` with the columns listed in "Data Model Additions"
 
-Update `ensure_runtime_schema()` in `agent_governance/db.py` with matching conditional `ALTER TABLE` and `CREATE TABLE IF NOT EXISTS` fallback logic.
+Update `ensure_runtime_schema()` in `intelliguard/db.py` with matching conditional `ALTER TABLE` and `CREATE TABLE IF NOT EXISTS` fallback logic.
 
 - [ ] **Step 6: Add store methods**
 
@@ -759,15 +759,15 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/models.py agent_governance/store.py api/main.py dashboard/app/platform/_components/WorkflowBuilderWorkspace.tsx tests/test_workflow_sdlc.py
+git add intelliguard/models.py intelliguard/store.py api/main.py dashboard/app/platform/_components/WorkflowBuilderWorkspace.tsx tests/test_workflow_sdlc.py
 git commit -m "feat: add workflow definition SDLC versioning"
 ```
 
 ### Task 3: Add Deployment Revision Persistence
 
 **Files:**
-- Modify: `agent_governance/models.py`
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/models.py`
+- Modify: `intelliguard/store.py`
 - Test: `tests/test_deployment_revisions.py`
 
 - [ ] **Step 1: Run GitNexus impact analysis before editing symbols**
@@ -791,7 +791,7 @@ Expected: FAIL because the store methods do not exist.
 
 - [ ] **Step 3: Add SQLAlchemy models**
 
-Add `WorkflowDeploymentRevision`, `WorkflowRuntimeRun`, `RuntimeEventOutbox`, `ServiceConnector`, `ScenarioSuite`, and `ScenarioRun` to `agent_governance/models.py` using the columns listed in "Data Model Additions".
+Add `WorkflowDeploymentRevision`, `WorkflowRuntimeRun`, `RuntimeEventOutbox`, `ServiceConnector`, `ScenarioSuite`, and `ScenarioRun` to `intelliguard/models.py` using the columns listed in "Data Model Additions".
 
 - [ ] **Step 4: Add migration coverage**
 
@@ -808,7 +808,7 @@ The migration must be safe on existing databases and must not depend on `Base.me
 
 - [ ] **Step 5: Add store methods**
 
-Add these methods to `GovernanceStore` in `agent_governance/store.py`:
+Add these methods to `GovernanceStore` in `intelliguard/store.py`:
 
 ```python
 def create_workflow_deployment_revision(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -846,15 +846,15 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/models.py agent_governance/store.py tests/test_deployment_revisions.py
+git add intelliguard/models.py intelliguard/store.py tests/test_deployment_revisions.py
 git commit -m "feat: persist workflow deployment revisions"
 ```
 
 ### Task 4: Compile Certified Workflow Definitions Into Runtime Manifests
 
 **Files:**
-- Create: `agent_governance/runtime/manifest_compiler.py`
-- Create: `agent_governance/runtime/__init__.py`
+- Create: `intelliguard/runtime/manifest_compiler.py`
+- Create: `intelliguard/runtime/__init__.py`
 - Modify: `api/main.py`
 - Test: `tests/test_manifest_compiler.py`
 
@@ -909,7 +909,7 @@ Snapshot rules:
 
 - [ ] **Step 4: Implement compiler**
 
-Create `agent_governance/runtime/manifest_compiler.py` with:
+Create `intelliguard/runtime/manifest_compiler.py` with:
 
 ```python
 from __future__ import annotations
@@ -917,8 +917,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from agent_governance.adk.manifest import RuntimeManifest
-from agent_governance.workflow_graph import workflow_graph_hash
+from intelliguard.adk.manifest import RuntimeManifest
+from intelliguard.workflow_graph import workflow_graph_hash
 
 
 class ManifestCompileError(ValueError):
@@ -996,7 +996,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime api/main.py tests/test_manifest_compiler.py
+git add intelliguard/runtime api/main.py tests/test_manifest_compiler.py
 git commit -m "feat: compile certified workflow manifests"
 ```
 
@@ -1005,7 +1005,7 @@ git commit -m "feat: compile certified workflow manifests"
 ### Task 5: Add Runtime Runner Interface
 
 **Files:**
-- Create: `agent_governance/runtime/contracts.py`
+- Create: `intelliguard/runtime/contracts.py`
 - Test: `tests/test_runtime_contracts.py`
 
 - [ ] **Step 1: Write contract tests**
@@ -1022,7 +1022,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from agent_governance.adk.manifest import RuntimeManifest
+from intelliguard.adk.manifest import RuntimeManifest
 
 
 @dataclass(frozen=True)
@@ -1064,15 +1064,15 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/contracts.py tests/test_runtime_contracts.py
+git add intelliguard/runtime/contracts.py tests/test_runtime_contracts.py
 git commit -m "feat: define workflow runtime contracts"
 ```
 
 ### Task 6: Extract Native Runner From Current Multi-Agent Runtime
 
 **Files:**
-- Create: `agent_governance/runtime/native_runner.py`
-- Modify: `agent_governance/multi_agent.py`
+- Create: `intelliguard/runtime/native_runner.py`
+- Modify: `intelliguard/multi_agent.py`
 - Modify: `api/main.py`
 - Test: `tests/test_native_runtime_runner.py`
 - Test: `tests/test_runner_guardrails.py`
@@ -1127,16 +1127,16 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/native_runner.py agent_governance/multi_agent.py api/main.py tests/test_native_runtime_runner.py
+git add intelliguard/runtime/native_runner.py intelliguard/multi_agent.py api/main.py tests/test_native_runtime_runner.py
 git commit -m "feat: execute workflow deployments with native runner"
 ```
 
 ### Task 7: Centralize Tool Execution Through Tool Gateway
 
 **Files:**
-- Create: `agent_governance/runtime/tool_gateway.py`
-- Modify: `agent_governance/runner.py`
-- Modify: `agent_governance/tools.py`
+- Create: `intelliguard/runtime/tool_gateway.py`
+- Modify: `intelliguard/runner.py`
+- Modify: `intelliguard/tools.py`
 - Test: `tests/test_tool_gateway.py`
 
 - [ ] **Step 1: Run impact analysis**
@@ -1160,7 +1160,7 @@ Verify:
 
 - [ ] **Step 3: Thread idempotency through `GovernedToolRunner`**
 
-Update `GovernedToolRunner.evaluate_tool_call()` and `GovernedToolRunner.call_tool()` in `agent_governance/runner.py` to accept:
+Update `GovernedToolRunner.evaluate_tool_call()` and `GovernedToolRunner.call_tool()` in `intelliguard/runner.py` to accept:
 
 ```python
 idempotency_key: str | None = None
@@ -1187,7 +1187,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from agent_governance.runner import GovernedToolResult, GovernedToolRunner
+from intelliguard.runner import GovernedToolResult, GovernedToolRunner
 
 
 @dataclass(frozen=True)
@@ -1237,7 +1237,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/tool_gateway.py agent_governance/runner.py agent_governance/tools.py tests/test_tool_gateway.py
+git add intelliguard/runtime/tool_gateway.py intelliguard/runner.py intelliguard/tools.py tests/test_tool_gateway.py
 git commit -m "feat: centralize governed tool execution"
 ```
 
@@ -1247,8 +1247,8 @@ git commit -m "feat: centralize governed tool execution"
 
 **Files:**
 - Modify: `pyproject.toml`
-- Create: `agent_governance/adapters/__init__.py`
-- Create: `agent_governance/adapters/langgraph.py`
+- Create: `intelliguard/adapters/__init__.py`
+- Create: `intelliguard/adapters/langgraph.py`
 - Test: `tests/test_langgraph_adapter.py`
 
 - [ ] **Step 1: Add optional dependency extra**
@@ -1306,7 +1306,7 @@ Expected: PASS when `langgraph` extra is installed; skip adapter tests with a cl
 Run:
 
 ```bash
-git add pyproject.toml agent_governance/adapters tests/test_langgraph_adapter.py
+git add pyproject.toml intelliguard/adapters tests/test_langgraph_adapter.py
 git commit -m "feat: add LangGraph build adapter"
 ```
 
@@ -1314,7 +1314,7 @@ git commit -m "feat: add LangGraph build adapter"
 
 **Files:**
 - Modify: `pyproject.toml`
-- Create: `agent_governance/adapters/strands.py`
+- Create: `intelliguard/adapters/strands.py`
 - Test: `tests/test_strands_adapter.py`
 
 - [ ] **Step 1: Add optional dependency extra**
@@ -1367,7 +1367,7 @@ Expected: PASS when Strands is installed; skip with a clear message when it is n
 Run:
 
 ```bash
-git add pyproject.toml agent_governance/adapters/strands.py tests/test_strands_adapter.py
+git add pyproject.toml intelliguard/adapters/strands.py tests/test_strands_adapter.py
 git commit -m "feat: add Strands build adapter"
 ```
 
@@ -1376,8 +1376,8 @@ git commit -m "feat: add Strands build adapter"
 ### Task 10: Add Service Connector Contracts
 
 **Files:**
-- Create: `agent_governance/adapters/http_service.py`
-- Create: `agent_governance/adapters/mcp_service.py`
+- Create: `intelliguard/adapters/http_service.py`
+- Create: `intelliguard/adapters/mcp_service.py`
 - Modify: `api/main.py`
 - Test: `tests/test_service_connectors.py`
 
@@ -1419,15 +1419,15 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/adapters api/main.py tests/test_service_connectors.py
+git add intelliguard/adapters api/main.py tests/test_service_connectors.py
 git commit -m "feat: add governed service connectors"
 ```
 
 ### Task 11: Add Model Gateway
 
 **Files:**
-- Create: `agent_governance/runtime/model_gateway.py`
-- Modify: `agent_governance/store.py`
+- Create: `intelliguard/runtime/model_gateway.py`
+- Modify: `intelliguard/store.py`
 - Test: `tests/test_model_gateway.py`
 
 - [ ] **Step 1: Write model gateway tests**
@@ -1461,7 +1461,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/model_gateway.py agent_governance/store.py tests/test_model_gateway.py
+git add intelliguard/runtime/model_gateway.py intelliguard/store.py tests/test_model_gateway.py
 git commit -m "feat: add governed model gateway"
 ```
 
@@ -1470,8 +1470,8 @@ git commit -m "feat: add governed model gateway"
 ### Task 12: Add Run Dispatcher
 
 **Files:**
-- Create: `agent_governance/runtime/dispatcher.py`
-- Create: `agent_governance/runtime/worker.py`
+- Create: `intelliguard/runtime/dispatcher.py`
+- Create: `intelliguard/runtime/worker.py`
 - Modify: `api/main.py`
 - Modify: `docker-compose.yml`
 - Test: `tests/test_runtime_dispatcher.py`
@@ -1506,7 +1506,7 @@ workflow-runner:
   build:
     context: .
     dockerfile: Dockerfile.api
-  command: ["python", "-m", "agent_governance.runtime.worker"]
+  command: ["python", "-m", "intelliguard.runtime.worker"]
 ```
 
 - [ ] **Step 5: Run tests**
@@ -1520,15 +1520,15 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/dispatcher.py agent_governance/runtime/worker.py api/main.py docker-compose.yml tests/test_runtime_dispatcher.py
+git add intelliguard/runtime/dispatcher.py intelliguard/runtime/worker.py api/main.py docker-compose.yml tests/test_runtime_dispatcher.py
 git commit -m "feat: add async workflow run dispatcher"
 ```
 
 ### Task 13: Add Runtime Event Outbox And Streaming
 
 **Files:**
-- Create: `agent_governance/runtime/event_bus.py`
-- Modify: `agent_governance/store.py`
+- Create: `intelliguard/runtime/event_bus.py`
+- Modify: `intelliguard/store.py`
 - Modify: `api/main.py`
 - Test: `tests/test_runtime_event_bus.py`
 
@@ -1560,7 +1560,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/event_bus.py agent_governance/store.py api/main.py tests/test_runtime_event_bus.py
+git add intelliguard/runtime/event_bus.py intelliguard/store.py api/main.py tests/test_runtime_event_bus.py
 git commit -m "feat: stream runtime workflow events"
 ```
 
@@ -1569,7 +1569,7 @@ git commit -m "feat: stream runtime workflow events"
 ### Task 14: Add Scenario Suite Engine
 
 **Files:**
-- Create: `agent_governance/runtime/scenario_evaluator.py`
+- Create: `intelliguard/runtime/scenario_evaluator.py`
 - Modify: `api/main.py`
 - Test: `tests/test_scenario_evaluator.py`
 
@@ -1625,7 +1625,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/scenario_evaluator.py api/main.py tests/test_scenario_evaluator.py
+git add intelliguard/runtime/scenario_evaluator.py api/main.py tests/test_scenario_evaluator.py
 git commit -m "feat: evaluate deployments with business scenarios"
 ```
 
@@ -1635,10 +1635,10 @@ git commit -m "feat: evaluate deployments with business scenarios"
 
 **Files:**
 - Modify: `pyproject.toml`
-- Create: `agent_governance/temporal/__init__.py`
-- Create: `agent_governance/temporal/workflows.py`
-- Create: `agent_governance/temporal/activities.py`
-- Create: `agent_governance/temporal/worker.py`
+- Create: `intelliguard/temporal/__init__.py`
+- Create: `intelliguard/temporal/workflows.py`
+- Create: `intelliguard/temporal/activities.py`
+- Create: `intelliguard/temporal/worker.py`
 - Test: `tests/test_temporal_runtime_contracts.py`
 
 - [ ] **Step 1: Add optional dependency extra**
@@ -1673,15 +1673,15 @@ Workflow responsibilities:
 
 - [ ] **Step 4: Add process-level activity dependencies**
 
-Create a module-level dependency container in `agent_governance/temporal/activities.py`:
+Create a module-level dependency container in `intelliguard/temporal/activities.py`:
 
 ```python
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent_governance.db import build_engine
-from agent_governance.store import GovernanceStore
+from intelliguard.db import build_engine
+from intelliguard.store import GovernanceStore
 
 
 @dataclass(frozen=True)
@@ -1710,7 +1710,7 @@ def activity_dependencies() -> TemporalActivityDependencies:
     return _dependencies
 ```
 
-Configure this once in `agent_governance/temporal/worker.py` before registering activities. Add worker environment variables for database pool size and max overflow.
+Configure this once in `intelliguard/temporal/worker.py` before registering activities. Add worker environment variables for database pool size and max overflow.
 
 - [ ] **Step 5: Implement activities**
 
@@ -1726,7 +1726,7 @@ Activities:
 
 - [ ] **Step 6: Add worker entry point**
 
-Create `agent_governance.temporal.worker` that connects to Temporal and registers workflow and activities.
+Create `intelliguard.temporal.worker` that connects to Temporal and registers workflow and activities.
 
 - [ ] **Step 7: Run tests**
 
@@ -1739,16 +1739,16 @@ Expected: PASS.
 Run:
 
 ```bash
-git add pyproject.toml agent_governance/temporal tests/test_temporal_runtime_contracts.py
+git add pyproject.toml intelliguard/temporal tests/test_temporal_runtime_contracts.py
 git commit -m "feat: add Temporal durable runtime foundation"
 ```
 
 ### Task 16: Add Review Signals And Resume Semantics
 
 **Files:**
-- Modify: `agent_governance/temporal/workflows.py`
+- Modify: `intelliguard/temporal/workflows.py`
 - Modify: `api/main.py`
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/store.py`
 - Test: `tests/test_temporal_review_resume.py`
 
 - [ ] **Step 1: Write review resume tests**
@@ -1782,7 +1782,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/temporal/workflows.py api/main.py agent_governance/store.py tests/test_temporal_review_resume.py
+git add intelliguard/temporal/workflows.py api/main.py intelliguard/store.py tests/test_temporal_review_resume.py
 git commit -m "feat: resume durable workflows from review decisions"
 ```
 
@@ -1791,10 +1791,10 @@ git commit -m "feat: resume durable workflows from review decisions"
 ### Task 17: Add Deployment Artifact Generation And Container Orchestration Jobs
 
 **Files:**
-- Create: `agent_governance/runtime/codegen.py`
-- Create: `agent_governance/runtime/deployment_orchestrator.py`
-- Modify: `agent_governance/models.py`
-- Modify: `agent_governance/store.py`
+- Create: `intelliguard/runtime/codegen.py`
+- Create: `intelliguard/runtime/deployment_orchestrator.py`
+- Modify: `intelliguard/models.py`
+- Modify: `intelliguard/store.py`
 - Modify: `api/main.py`
 - Test: `tests/test_deployment_artifacts.py`
 - Test: `tests/test_deployment_orchestrator.py`
@@ -1825,7 +1825,7 @@ Verify:
 
 - [ ] **Step 3: Implement artifact generator**
 
-Create `agent_governance/runtime/codegen.py` with:
+Create `intelliguard/runtime/codegen.py` with:
 
 ```python
 from __future__ import annotations
@@ -1835,7 +1835,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from agent_governance.adk.manifest import RuntimeManifest
+from intelliguard.adk.manifest import RuntimeManifest
 
 
 @dataclass(frozen=True)
@@ -1870,8 +1870,8 @@ def _langgraph_module(manifest: RuntimeManifest) -> GeneratedArtifact:
         artifact_type="langgraph_module",
         artifact_name=f"{manifest.deployment_id}_langgraph.py",
         content=(
-            "from agent_governance.adapters.langgraph import LangGraphBuildAdapter\n"
-            "from agent_governance.adk.manifest import RuntimeManifest\n\n"
+            "from intelliguard.adapters.langgraph import LangGraphBuildAdapter\n"
+            "from intelliguard.adk.manifest import RuntimeManifest\n\n"
             f"MANIFEST = {manifest.model_dump_json()!r}\n\n"
             "def build_graph():\n"
             "    return LangGraphBuildAdapter().build(RuntimeManifest.model_validate_json(MANIFEST))\n"
@@ -1884,8 +1884,8 @@ def _strands_module(manifest: RuntimeManifest) -> GeneratedArtifact:
         artifact_type="strands_module",
         artifact_name=f"{manifest.deployment_id}_strands.py",
         content=(
-            "from agent_governance.adapters.strands import StrandsBuildAdapter\n"
-            "from agent_governance.adk.manifest import RuntimeManifest\n\n"
+            "from intelliguard.adapters.strands import StrandsBuildAdapter\n"
+            "from intelliguard.adk.manifest import RuntimeManifest\n\n"
             f"MANIFEST = {manifest.model_dump_json()!r}\n\n"
             "def build_agent_runtime():\n"
             "    return StrandsBuildAdapter().build(RuntimeManifest.model_validate_json(MANIFEST))\n"
@@ -1934,7 +1934,7 @@ Add indexes on `workflow_generated_artifacts.deployment_id`, `deployment_jobs.de
 
 - [ ] **Step 5: Implement deployment orchestrator**
 
-Create `agent_governance/runtime/deployment_orchestrator.py` with a backend interface:
+Create `intelliguard/runtime/deployment_orchestrator.py` with a backend interface:
 
 ```python
 from __future__ import annotations
@@ -2024,7 +2024,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/codegen.py agent_governance/runtime/deployment_orchestrator.py agent_governance/models.py agent_governance/store.py api/main.py tests/test_deployment_artifacts.py tests/test_deployment_orchestrator.py
+git add intelliguard/runtime/codegen.py intelliguard/runtime/deployment_orchestrator.py intelliguard/models.py intelliguard/store.py api/main.py tests/test_deployment_artifacts.py tests/test_deployment_orchestrator.py
 git commit -m "feat: generate and deploy runtime artifacts"
 ```
 
@@ -2139,8 +2139,8 @@ git commit -m "chore: add Kubernetes runtime deployment base"
 ### Task 20: Enforce Runtime Isolation Policy
 
 **Files:**
-- Create: `agent_governance/runtime/isolation.py`
-- Modify: `agent_governance/runtime/manifest_compiler.py`
+- Create: `intelliguard/runtime/isolation.py`
+- Modify: `intelliguard/runtime/manifest_compiler.py`
 - Test: `tests/test_runtime_isolation.py`
 
 - [ ] **Step 1: Write isolation tests**
@@ -2184,16 +2184,16 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/isolation.py agent_governance/runtime/manifest_compiler.py tests/test_runtime_isolation.py
+git add intelliguard/runtime/isolation.py intelliguard/runtime/manifest_compiler.py tests/test_runtime_isolation.py
 git commit -m "feat: enforce runtime isolation policy"
 ```
 
 ### Task 21: Add Audit Completeness Checks
 
 **Files:**
-- Create: `agent_governance/runtime/audit_completeness.py`
+- Create: `intelliguard/runtime/audit_completeness.py`
 - Modify: `api/main.py`
-- Modify: `agent_governance/runtime/scenario_evaluator.py`
+- Modify: `intelliguard/runtime/scenario_evaluator.py`
 - Test: `tests/test_audit_completeness.py`
 
 - [ ] **Step 1: Write audit completeness tests**
@@ -2233,7 +2233,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/audit_completeness.py agent_governance/runtime/scenario_evaluator.py api/main.py tests/test_audit_completeness.py
+git add intelliguard/runtime/audit_completeness.py intelliguard/runtime/scenario_evaluator.py api/main.py tests/test_audit_completeness.py
 git commit -m "feat: verify runtime audit completeness"
 ```
 
@@ -2242,9 +2242,9 @@ git commit -m "feat: verify runtime audit completeness"
 ### Task 22: Add Runtime Budgets And Backpressure
 
 **Files:**
-- Create: `agent_governance/runtime/budgets.py`
-- Modify: `agent_governance/runtime/native_runner.py`
-- Modify: `agent_governance/runtime/dispatcher.py`
+- Create: `intelliguard/runtime/budgets.py`
+- Modify: `intelliguard/runtime/native_runner.py`
+- Modify: `intelliguard/runtime/dispatcher.py`
 - Test: `tests/test_runtime_budgets.py`
 
 - [ ] **Step 1: Write budget tests**
@@ -2306,7 +2306,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/runtime/budgets.py agent_governance/runtime/native_runner.py agent_governance/runtime/dispatcher.py tests/test_runtime_budgets.py
+git add intelliguard/runtime/budgets.py intelliguard/runtime/native_runner.py intelliguard/runtime/dispatcher.py tests/test_runtime_budgets.py
 git commit -m "feat: enforce runtime budgets"
 ```
 

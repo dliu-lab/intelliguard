@@ -14,7 +14,7 @@
 
 GitNexus checks already run before writing this plan:
 
-- `KnowledgeBase`: MEDIUM risk, 6 direct imports, no affected execution flows. Direct files include `tests/test_knowledge_bases.py`, `tests/conftest.py`, and `agent_governance/tools.py`.
+- `KnowledgeBase`: MEDIUM risk, 6 direct imports, no affected execution flows. Direct files include `tests/test_knowledge_bases.py`, `tests/conftest.py`, and `intelliguard/tools.py`.
 - `GovernanceStore`: LOW risk, no indexed upstream dependents.
 - `KBRetrieval`: LOW risk, no indexed upstream dependents.
 - `KnowledgeBasesWorkspace`: LOW risk, no indexed upstream dependents.
@@ -28,14 +28,14 @@ Implementation workers must still run GitNexus impact immediately before editing
 - Modify `pyproject.toml`: add LlamaIndex, pgvector, multipart upload, and document parser dependencies.
 - Modify `docker-compose.yml`: switch Postgres to pgvector image, add upload volume, environment variables, and `kb-worker`.
 - Modify `Dockerfile.api`: copy worker modules and install runtime dependencies once for API and worker.
-- Modify `agent_governance/settings.py`: add KB/Ollama settings helpers.
-- Modify `agent_governance/models.py`: add `KnowledgeDocument` and `KnowledgeChunk` SQLAlchemy models.
-- Modify `agent_governance/db.py`: create pgvector extension before table creation and patch new runtime tables.
-- Modify `agent_governance/store.py`: add document/chunk CRUD, status transitions, and aggregate count refresh.
-- Create `agent_governance/knowledge_storage.py`: file validation, checksum, safe path creation, and storage.
-- Create `agent_governance/knowledge_indexing.py`: LlamaIndex parser/chunker, Ollama embedding adapter, fake test embedding adapter, ingestion service.
-- Modify `agent_governance/knowledge.py`: replace old `AdvisorRAG` wrapper path with pgvector-backed retrieval service.
-- Create `agent_governance/knowledge_worker.py`: command entry point for queued ingestion processing.
+- Modify `intelliguard/settings.py`: add KB/Ollama settings helpers.
+- Modify `intelliguard/models.py`: add `KnowledgeDocument` and `KnowledgeChunk` SQLAlchemy models.
+- Modify `intelliguard/db.py`: create pgvector extension before table creation and patch new runtime tables.
+- Modify `intelliguard/store.py`: add document/chunk CRUD, status transitions, and aggregate count refresh.
+- Create `intelliguard/knowledge_storage.py`: file validation, checksum, safe path creation, and storage.
+- Create `intelliguard/knowledge_indexing.py`: LlamaIndex parser/chunker, Ollama embedding adapter, fake test embedding adapter, ingestion service.
+- Modify `intelliguard/knowledge.py`: replace old `AdvisorRAG` wrapper path with pgvector-backed retrieval service.
+- Create `intelliguard/knowledge_worker.py`: command entry point for queued ingestion processing.
 - Modify `api/main.py`: add file upload/documents endpoints, wire sync/query to ingestion and retrieval services.
 - Modify `dashboard/lib/api.ts`: add upload and document-list client helpers.
 - Modify `dashboard/app/platform/_components/KnowledgeBasesWorkspace.tsx`: show file input, upload files, display documents, and show citation metadata.
@@ -48,7 +48,7 @@ Implementation workers must still run GitNexus impact immediately before editing
 - Modify: `pyproject.toml`
 - Modify: `docker-compose.yml`
 - Modify: `Dockerfile.api`
-- Modify: `agent_governance/settings.py`
+- Modify: `intelliguard/settings.py`
 
 - [ ] **Step 1: Run impact/context checks**
 
@@ -76,7 +76,7 @@ In `pyproject.toml`, extend `[project].dependencies` with these exact packages:
 
 - [ ] **Step 3: Add KB settings helpers**
 
-Append to `agent_governance/settings.py`:
+Append to `intelliguard/settings.py`:
 
 ```python
 import os
@@ -137,7 +137,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: ["python", "-m", "agent_governance.knowledge_worker"]
+    command: ["python", "-m", "intelliguard.knowledge_worker"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       OLLAMA_BASE_URL: http://host.docker.internal:11434
@@ -182,7 +182,7 @@ Expected: both commands exit 0. If `uv lock` rewrites `uv.lock`, include it in t
 Run:
 
 ```bash
-git add pyproject.toml uv.lock docker-compose.yml Dockerfile.api agent_governance/settings.py
+git add pyproject.toml uv.lock docker-compose.yml Dockerfile.api intelliguard/settings.py
 git commit -m "chore: add llamaindex pgvector runtime"
 ```
 
@@ -191,8 +191,8 @@ Before the commit, run GitNexus MCP `detect_changes({"repo":"intelliguard","scop
 ## Task 2: Knowledge Document And Chunk Schema
 
 **Files:**
-- Modify: `agent_governance/models.py`
-- Modify: `agent_governance/db.py`
+- Modify: `intelliguard/models.py`
+- Modify: `intelliguard/db.py`
 - Modify: `tests/conftest.py`
 - Modify: `tests/test_knowledge_bases.py`
 
@@ -268,7 +268,7 @@ Expected: FAIL with import or name error for `KnowledgeDocument`.
 
 - [ ] **Step 4: Add models**
 
-In `agent_governance/models.py`, import `os` and `Vector`:
+In `intelliguard/models.py`, import `os` and `Vector`:
 
 ```python
 import os
@@ -325,7 +325,7 @@ class KnowledgeChunk(Base):
 
 - [ ] **Step 5: Ensure pgvector extension before creating tables**
 
-In `agent_governance/db.py`, update `init_db`:
+In `intelliguard/db.py`, update `init_db`:
 
 ```python
 def init_db(database_url: str = DEFAULT_DATABASE_URL) -> None:
@@ -361,7 +361,7 @@ Inside `ensure_runtime_schema`, add table creation for existing databases that d
         KnowledgeChunk.__table__.create(engine, checkfirst=True)
 ```
 
-Also import `KnowledgeDocument` and `KnowledgeChunk` from `agent_governance.models`.
+Also import `KnowledgeDocument` and `KnowledgeChunk` from `intelliguard.models`.
 
 - [ ] **Step 7: Update schema patch test**
 
@@ -393,7 +393,7 @@ In `test_runtime_schema_patches_existing_knowledge_tables`, add `"knowledge_sour
 In `tests/conftest.py`, import `ensure_vector_extension`:
 
 ```python
-from agent_governance.db import ensure_vector_extension, seed_demo_data
+from intelliguard.db import ensure_vector_extension, seed_demo_data
 ```
 
 Before `Base.metadata.create_all(engine)`, add:
@@ -426,7 +426,7 @@ Expected: all KB tests pass.
 Run:
 
 ```bash
-git add agent_governance/models.py agent_governance/db.py tests/conftest.py tests/test_knowledge_bases.py
+git add intelliguard/models.py intelliguard/db.py tests/conftest.py tests/test_knowledge_bases.py
 git commit -m "feat: add knowledge document chunk schema"
 ```
 
@@ -437,7 +437,7 @@ Expected GitNexus risk: MEDIUM because `KnowledgeBase` model imports are broad. 
 ## Task 3: Store Methods For Documents, Chunks, And Counts
 
 **Files:**
-- Modify: `agent_governance/store.py`
+- Modify: `intelliguard/store.py`
 - Modify: `tests/test_knowledge_bases.py`
 
 - [ ] **Step 1: Run impact analysis**
@@ -545,7 +545,7 @@ Expected: FAIL because store methods do not exist.
 
 - [ ] **Step 4: Import new models**
 
-In `agent_governance/store.py`, add `KnowledgeDocument` and `KnowledgeChunk` to the model import list.
+In `intelliguard/store.py`, add `KnowledgeDocument` and `KnowledgeChunk` to the model import list.
 
 - [ ] **Step 5: Add document store methods**
 
@@ -767,7 +767,7 @@ Expected: all KB tests pass.
 Run:
 
 ```bash
-git add agent_governance/store.py tests/test_knowledge_bases.py
+git add intelliguard/store.py tests/test_knowledge_bases.py
 git commit -m "feat: store knowledge documents and chunks"
 ```
 
@@ -776,7 +776,7 @@ Run GitNexus MCP `detect_changes({"repo":"intelliguard","scope":"staged"})` afte
 ## Task 4: File Upload Storage
 
 **Files:**
-- Create: `agent_governance/knowledge_storage.py`
+- Create: `intelliguard/knowledge_storage.py`
 - Modify: `tests/test_knowledge_ingestion.py`
 
 - [ ] **Step 1: Write failing storage tests**
@@ -790,7 +790,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_governance.knowledge_storage import KnowledgeFileStorage
+from intelliguard.knowledge_storage import KnowledgeFileStorage
 
 
 def test_file_storage_writes_safe_upload(tmp_path: Path) -> None:
@@ -842,11 +842,11 @@ Run:
 uv run pytest tests/test_knowledge_ingestion.py -q
 ```
 
-Expected: FAIL because `agent_governance.knowledge_storage` does not exist.
+Expected: FAIL because `intelliguard.knowledge_storage` does not exist.
 
 - [ ] **Step 3: Implement file storage**
 
-Create `agent_governance/knowledge_storage.py`:
+Create `intelliguard/knowledge_storage.py`:
 
 ```python
 from __future__ import annotations
@@ -938,7 +938,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/knowledge_storage.py tests/test_knowledge_ingestion.py
+git add intelliguard/knowledge_storage.py tests/test_knowledge_ingestion.py
 git commit -m "feat: store uploaded knowledge files"
 ```
 
@@ -947,7 +947,7 @@ Run GitNexus MCP `detect_changes({"repo":"intelliguard","scope":"staged"})` afte
 ## Task 5: LlamaIndex Ingestion Service
 
 **Files:**
-- Create: `agent_governance/knowledge_indexing.py`
+- Create: `intelliguard/knowledge_indexing.py`
 - Modify: `tests/test_knowledge_ingestion.py`
 
 - [ ] **Step 1: Write failing ingestion service test**
@@ -955,12 +955,12 @@ Run GitNexus MCP `detect_changes({"repo":"intelliguard","scope":"staged"})` afte
 Append to `tests/test_knowledge_ingestion.py`:
 
 ```python
-from agent_governance.knowledge_indexing import (
+from intelliguard.knowledge_indexing import (
     DeterministicEmbeddingProvider,
     KnowledgeIngestionService,
     LlamaIndexKnowledgeIndexer,
 )
-from agent_governance.store import GovernanceStore
+from intelliguard.store import GovernanceStore
 
 
 def test_ingestion_service_indexes_text_file(store: GovernanceStore, tmp_path: Path) -> None:
@@ -1026,7 +1026,7 @@ Expected: FAIL because `knowledge_indexing` does not exist.
 
 - [ ] **Step 3: Implement embedding providers and indexer**
 
-Create `agent_governance/knowledge_indexing.py` with:
+Create `intelliguard/knowledge_indexing.py` with:
 
 ```python
 from __future__ import annotations
@@ -1040,13 +1040,13 @@ from llama_index.core import SimpleDirectoryReader
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.ollama import OllamaEmbedding
 
-from agent_governance.settings import (
+from intelliguard.settings import (
     DEFAULT_KB_CHUNK_OVERLAP,
     DEFAULT_KB_CHUNK_SIZE,
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_EMBED_MODEL,
 )
-from agent_governance.store import GovernanceStore
+from intelliguard.store import GovernanceStore
 
 
 class EmbeddingProvider(Protocol):
@@ -1158,7 +1158,7 @@ class LlamaIndexKnowledgeIndexer:
 
 - [ ] **Step 4: Implement ingestion service**
 
-Append to `agent_governance/knowledge_indexing.py`:
+Append to `intelliguard/knowledge_indexing.py`:
 
 ```python
 class KnowledgeIngestionService:
@@ -1232,7 +1232,7 @@ Expected: all ingestion tests pass.
 Run:
 
 ```bash
-git add agent_governance/knowledge_indexing.py tests/test_knowledge_ingestion.py
+git add intelliguard/knowledge_indexing.py tests/test_knowledge_ingestion.py
 git commit -m "feat: index knowledge files with llamaindex"
 ```
 
@@ -1241,7 +1241,7 @@ Run GitNexus MCP `detect_changes({"repo":"intelliguard","scope":"staged"})` afte
 ## Task 6: Pgvector Retrieval Service
 
 **Files:**
-- Modify: `agent_governance/knowledge.py`
+- Modify: `intelliguard/knowledge.py`
 - Modify: `tests/test_knowledge_ingestion.py`
 
 - [ ] **Step 1: Run impact analysis**
@@ -1259,7 +1259,7 @@ Expected baseline: LOW.
 Append to `tests/test_knowledge_ingestion.py`:
 
 ```python
-from agent_governance.knowledge import KnowledgeRetrievalService
+from intelliguard.knowledge import KnowledgeRetrievalService
 
 
 def test_retrieval_service_filters_by_kb(store: GovernanceStore, tmp_path: Path) -> None:
@@ -1332,7 +1332,7 @@ Expected: FAIL because `KnowledgeRetrievalService` does not exist.
 
 - [ ] **Step 4: Implement retrieval service**
 
-Replace `agent_governance/knowledge.py` with a pgvector-backed service while preserving `RetrievedDoc`:
+Replace `intelliguard/knowledge.py` with a pgvector-backed service while preserving `RetrievedDoc`:
 
 ```python
 from __future__ import annotations
@@ -1342,9 +1342,9 @@ from typing import Any
 
 from sqlalchemy import select
 
-from agent_governance.knowledge_indexing import EmbeddingProvider, OllamaEmbeddingProvider
-from agent_governance.models import KnowledgeChunk
-from agent_governance.store import GovernanceStore
+from intelliguard.knowledge_indexing import EmbeddingProvider, OllamaEmbeddingProvider
+from intelliguard.models import KnowledgeChunk
+from intelliguard.store import GovernanceStore
 
 
 @dataclass
@@ -1437,7 +1437,7 @@ Expected: all tests pass.
 Run:
 
 ```bash
-git add agent_governance/knowledge.py tests/test_knowledge_ingestion.py
+git add intelliguard/knowledge.py tests/test_knowledge_ingestion.py
 git commit -m "feat: retrieve knowledge chunks from pgvector"
 ```
 
@@ -1560,10 +1560,10 @@ In `api/main.py`, import:
 
 ```python
 from fastapi import File, UploadFile
-from agent_governance.knowledge import KnowledgeRetrievalService, RetrievedDoc
-from agent_governance.knowledge_indexing import KnowledgeIngestionService, LlamaIndexKnowledgeIndexer
-from agent_governance.knowledge_storage import KnowledgeFileStorage
-from agent_governance.settings import DEFAULT_KB_UPLOAD_DIR
+from intelliguard.knowledge import KnowledgeRetrievalService, RetrievedDoc
+from intelliguard.knowledge_indexing import KnowledgeIngestionService, LlamaIndexKnowledgeIndexer
+from intelliguard.knowledge_storage import KnowledgeFileStorage
+from intelliguard.settings import DEFAULT_KB_UPLOAD_DIR
 ```
 
 Add endpoint near other KB endpoints:
@@ -1681,7 +1681,7 @@ Run GitNexus MCP `detect_changes({"repo":"intelliguard","scope":"staged"})` afte
 ## Task 8: Worker Command
 
 **Files:**
-- Create: `agent_governance/knowledge_worker.py`
+- Create: `intelliguard/knowledge_worker.py`
 - Modify: `tests/test_knowledge_ingestion.py`
 
 - [ ] **Step 1: Write worker unit test**
@@ -1689,7 +1689,7 @@ Run GitNexus MCP `detect_changes({"repo":"intelliguard","scope":"staged"})` afte
 Append to `tests/test_knowledge_ingestion.py`:
 
 ```python
-import agent_governance.knowledge_worker as knowledge_worker
+import intelliguard.knowledge_worker as knowledge_worker
 
 
 def test_worker_process_once_invokes_ingestion(monkeypatch) -> None:
@@ -1719,7 +1719,7 @@ def test_worker_process_once_invokes_ingestion(monkeypatch) -> None:
 
 - [ ] **Step 2: Create worker module**
 
-Create `agent_governance/knowledge_worker.py`:
+Create `intelliguard/knowledge_worker.py`:
 
 ```python
 from __future__ import annotations
@@ -1727,10 +1727,10 @@ from __future__ import annotations
 import os
 import time
 
-from agent_governance.db import init_db
-from agent_governance.knowledge_indexing import KnowledgeIngestionService, LlamaIndexKnowledgeIndexer
-from agent_governance.settings import DEFAULT_DATABASE_URL
-from agent_governance.store import GovernanceStore
+from intelliguard.db import init_db
+from intelliguard.knowledge_indexing import KnowledgeIngestionService, LlamaIndexKnowledgeIndexer
+from intelliguard.settings import DEFAULT_DATABASE_URL
+from intelliguard.store import GovernanceStore
 
 
 def process_once(database_url: str = DEFAULT_DATABASE_URL) -> int:
@@ -1772,7 +1772,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add agent_governance/knowledge_worker.py tests/test_knowledge_ingestion.py
+git add intelliguard/knowledge_worker.py tests/test_knowledge_ingestion.py
 git commit -m "feat: add knowledge ingestion worker"
 ```
 

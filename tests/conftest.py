@@ -8,9 +8,9 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql import text
 
-from agent_governance.db import ensure_vector_extension, seed_demo_data
-from agent_governance.models import Base
-from agent_governance.store import GovernanceStore
+from intelliguard.db import ensure_vector_extension, seed_demo_data
+from intelliguard.models import Base
+from intelliguard.store import GovernanceStore
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",

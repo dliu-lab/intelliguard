@@ -375,7 +375,7 @@ internal dashboard and future external tools consume the same data source.
 Now (internal dashboard only):
 
 ```text
-agent_governance/monitoring.py
+intelliguard/monitoring.py
   → aggregation queries over audit_events, review_queue, evaluation_results
   → GET /v1/monitoring/metrics  → JSON metrics consumed by the platform dashboard
 ```
@@ -709,12 +709,12 @@ review_type:
 ## 8. Backend Module Structure
 
 The evaluator system lives as a focused sub-package inside the existing
-`agent_governance/` codebase. This keeps enforcement tightly coupled to the
+`intelliguard/` codebase. This keeps enforcement tightly coupled to the
 data models that need it while isolating evaluation concerns from the API
 routing layer.
 
 ```text
-agent_governance/
+intelliguard/
   evaluation/
     __init__.py
     engine.py              # orchestrates runs: selects evaluators, aggregates results
@@ -731,7 +731,7 @@ agent_governance/
   monitoring.py            # metric aggregation for dashboard and Prometheus/Grafana export
 ```
 
-The existing `agent_governance/evaluators.py` is replaced by this package.
+The existing `intelliguard/evaluators.py` is replaced by this package.
 Deterministic evaluator logic moves into `tool_evaluators.py` and
 `agent_evaluators.py`. The `EvaluatorEngine` class moves into `engine.py`.
 

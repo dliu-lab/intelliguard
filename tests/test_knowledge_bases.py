@@ -13,7 +13,7 @@ from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, select
 from sqlalchemy.dialects.postgresql import JSONB
 from starlette.datastructures import Headers, UploadFile
 
-import agent_governance.db as runtime_db
+import intelliguard.db as runtime_db
 import api.main as api_main
 from api.main import (
     AgentKBAssignmentRequest,
@@ -22,7 +22,7 @@ from api.main import (
     KnowledgeSourceRequest,
     KnowledgeSyncRequest,
 )
-from agent_governance.models import (
+from intelliguard.models import (
     AgentKBAssignment,
     KnowledgeBase,
     KnowledgeBaseVersion,
@@ -31,7 +31,7 @@ from agent_governance.models import (
     KnowledgeIndexVersion,
     KnowledgeSource,
 )
-from agent_governance.store import GovernanceStore
+from intelliguard.store import GovernanceStore
 
 
 def _column(model: type, name: str):

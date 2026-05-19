@@ -16,7 +16,7 @@ spec:
       containers:
         - name: temporal-worker
           image: ghcr.io/example/intelliguard-api:latest
-          command: ["python", "-m", "agent_governance.temporal.worker"]
+          command: ["python", "-m", "intelliguard.temporal.worker"]
           envFrom:
             - configMapRef:
                 name: intelliguard-runtime-config

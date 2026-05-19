@@ -30,14 +30,14 @@ services:
       dockerfile: Dockerfile.api
       args:
         UV_EXTRAS: "--extra temporal"
-    command: ["python", "-m", "agent_governance.temporal.worker"]
+    command: ["python", "-m", "intelliguard.temporal.worker"]
     environment:
       DATABASE_URL: postgresql+psycopg://governance:governance@postgres:5432/governance
       POLICY_PATH: policies/policy.yaml
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_TASK_QUEUE: intelliguard-runtime
       OTEL_ENABLED: "false"
-      OTEL_SERVICE_NAME: agent-governance-temporal-worker
+      OTEL_SERVICE_NAME: intelliguard-temporal-worker
       OTEL_SERVICE_VERSION: "0.1.0"
       OTEL_TRACES_EXPORTER: otlp
       DEPLOYMENT_ENVIRONMENT: local

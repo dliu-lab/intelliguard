@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import api.main as api_main
-from agent_governance.evaluation.rules import evaluation_rule_catalog
-from agent_governance.store import GovernanceStore
+from intelliguard.evaluation.rules import evaluation_rule_catalog
+from intelliguard.store import GovernanceStore
 
 
 def _super_admin_user() -> dict:
