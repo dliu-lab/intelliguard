@@ -8,7 +8,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql import text
 
-from intelliguard.persistence.db import ensure_vector_extension, seed_demo_data
+from intelliguard.persistence.db import (
+    ensure_runtime_schema,
+    ensure_vector_extension,
+    seed_demo_data,
+)
 from intelliguard.persistence.models import Base
 from intelliguard.persistence.store import GovernanceStore
 
@@ -44,6 +48,7 @@ def db_url() -> str:
     engine = create_engine(TEST_DATABASE_URL)
     ensure_vector_extension(engine)
     Base.metadata.create_all(engine)
+    ensure_runtime_schema(engine)
     engine.dispose()
     yield TEST_DATABASE_URL
     engine2 = create_engine(TEST_DATABASE_URL)

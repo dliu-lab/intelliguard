@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRight, Building2, LockKeyhole, Mail, ShieldCheck, UserCog, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useState } from "react";
-import { bootstrapStatus, login, register, saveSession } from "@/lib/api";
+import { bootstrapStatus, fetchLoginRoleOptions, login, register, saveSession } from "@/lib/api";
 
 type AuthMode = "login" | "signup";
 
@@ -23,7 +23,8 @@ const copy = {
   },
 };
 
-const loginRoles = ["Governance Lead", "Governance Reviewer", "Support Operations Manager", "Agent Developer"];
+const signupRoleOptions = ["Governance Lead", "Governance Reviewer", "Support Operations Manager", "Agent Developer"];
+const defaultLoginRoleOptions = [""];
 
 export function openAuthModal(mode: AuthMode = "signup") {
   window.dispatchEvent(new CustomEvent<AuthMode>("intelliguard:auth", { detail: mode }));
@@ -36,8 +37,9 @@ export function AuthModal() {
   const [password, setPassword] = useState("");
   const [company, setCompany] = useState("");
   const [requiresInitialAdmin, setRequiresInitialAdmin] = useState(false);
-  const [signupRoles, setSignupRoles] = useState(loginRoles);
-  const [selectedRole, setSelectedRole] = useState("Agent Developer");
+  const [signupRoles, setSignupRoles] = useState(signupRoleOptions);
+  const [loginRoles, setLoginRoles] = useState(defaultLoginRoleOptions);
+  const [selectedRole, setSelectedRole] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const activeCopy = copy[mode];
@@ -71,7 +73,7 @@ export function AuthModal() {
 
     bootstrapStatus()
       .then((status) => {
-        const nextRoles = status.signup_roles.length ? status.signup_roles : loginRoles;
+        const nextRoles = status.signup_roles.length ? status.signup_roles : signupRoleOptions;
 
         setRequiresInitialAdmin(status.requires_initial_admin);
         setSignupRoles(nextRoles);
@@ -81,18 +83,63 @@ export function AuthModal() {
       })
       .catch(() => {
         setRequiresInitialAdmin(false);
-        setSignupRoles(loginRoles.filter((role) => role !== "Governance Lead"));
+        setSignupRoles(signupRoleOptions.filter((role) => role !== "Governance Lead"));
       });
   }, [isOpen]);
 
   useEffect(() => {
     if (mode === "login") {
-      setSelectedRole((currentRole) => (loginRoles.includes(currentRole) ? currentRole : "Agent Developer"));
+      setSelectedRole("");
+      setLoginRoles(defaultLoginRoleOptions);
       return;
     }
 
     setSelectedRole((currentRole) => (signupRoles.includes(currentRole) ? currentRole : signupRoles[0]));
   }, [mode, signupRoles]);
+
+  useEffect(() => {
+    if (!isOpen || mode !== "login") {
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    setSelectedRole("");
+    setLoginRoles(defaultLoginRoleOptions);
+
+    if (!normalizedEmail || password.length < 8) {
+      return;
+    }
+
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      fetchLoginRoleOptions({ email: normalizedEmail, password })
+        .then((response) => {
+          if (cancelled) {
+            return;
+          }
+
+          setLoginRoles(response.roles.length ? response.roles : defaultLoginRoleOptions);
+          setSelectedRole(
+            response.default_role && response.roles.includes(response.default_role)
+              ? response.default_role
+              : response.roles[0] || "",
+          );
+        })
+        .catch(() => {
+          if (cancelled) {
+            return;
+          }
+
+          setLoginRoles(defaultLoginRoleOptions);
+          setSelectedRole("");
+        });
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [email, isOpen, mode, password]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -123,12 +170,20 @@ export function AuthModal() {
       const normalizedEmail = email.trim().toLowerCase();
       const session =
         mode === "login"
-          ? await login({ email: normalizedEmail, password, role: selectedRole })
+          ? await login({
+              email: normalizedEmail,
+              password,
+              ...(selectedRole ? { role: selectedRole } : {}),
+            })
           : await register({
               email: normalizedEmail,
               password,
               display_name: company.trim() || normalizedEmail.split("@")[0] || "IntelliGuard user",
-              role: requiresInitialAdmin ? "Governance Lead" : selectedRole,
+              roles: [
+                requiresInitialAdmin
+                  ? "Governance Lead"
+                  : selectedRole || signupRoles[0] || "Agent Developer",
+              ],
             });
 
       saveSession(session);
@@ -319,8 +374,8 @@ function RoleField({
           className="w-full appearance-none bg-transparent text-sm text-textPrimary outline-none disabled:cursor-not-allowed disabled:text-textSecondary"
         >
           {roles.map((role) => (
-            <option key={role} value={role} className="bg-panel text-textPrimary">
-              {role}
+            <option key={role || "account-default"} value={role} className="bg-panel text-textPrimary">
+              {role || "Account default"}
             </option>
           ))}
         </select>

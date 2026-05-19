@@ -165,3 +165,7 @@ def test_runtime_schema_keeps_compatibility_fallbacks(monkeypatch) -> None:
         "ALTER TABLE users ADD COLUMN password_hash TEXT" in statement
         for statement in engine.connection.statements
     )
+    assert any(
+        "ALTER TABLE users ADD COLUMN roles JSONB" in statement
+        for statement in engine.connection.statements
+    )

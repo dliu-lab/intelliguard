@@ -147,11 +147,16 @@ class LoginRequest(BaseModel):
     role: str | None = None
 
 
+class LoginRoleOptionsRequest(BaseModel):
+    email: str
+    password: str
+
+
 class RegisterRequest(BaseModel):
     email: str
     password: str = Field(min_length=8)
     display_name: str
-    role: str = "Agent Developer"
+    roles: list[str] = Field(default_factory=lambda: ["Agent Developer"], min_length=1)
 
 
 class UserEnvironmentGrant(BaseModel):
@@ -163,7 +168,7 @@ class UserCreateRequest(BaseModel):
     email: str
     password: str = Field(min_length=8)
     display_name: str
-    role: str = "Agent Developer"
+    roles: list[str] = Field(default_factory=lambda: ["Agent Developer"], min_length=1)
     is_super_admin: bool = False
     environment_access: list[UserEnvironmentGrant] = Field(default_factory=list)
 

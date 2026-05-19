@@ -52,6 +52,7 @@ export function WorkspaceShell({
   const controlViews = workspaceViews.filter((view) => view.group === "control");
   const runtimeViews = workspaceViews.filter((view) => view.group === "runtime");
   const environmentOptions = ["all", ...data.environments.filter((environment) => environment !== "all")];
+  const roleSummary = user?.roles?.length ? user.roles.join(" / ") : user?.role;
   const [platformTime, setPlatformTime] = useState(formatPlatformTime);
 
   useEffect(() => {
@@ -80,6 +81,25 @@ export function WorkspaceShell({
             />
           </div>
           <div className="flex flex-wrap items-center justify-start gap-x-3 gap-y-2 text-xs xl:justify-end">
+            {user ? (
+              <div className="inline-flex min-h-9 max-w-full items-center gap-2 rounded-xl border border-white/15 bg-white/[0.055] px-3 text-white/75">
+                <KeyRound size={15} className="shrink-0 text-[#2bd4aa]" aria-hidden="true" />
+                <span className="max-w-[10rem] truncate text-sm font-semibold text-white">
+                  {user.name || user.email}
+                </span>
+                <span
+                  className="max-w-[12rem] truncate rounded-full border border-[#2bd4aa]/35 bg-[#2bd4aa]/12 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9af5df]"
+                  title={roleSummary}
+                >
+                  {user.role}
+                </span>
+                {user.roles && user.roles.length > 1 ? (
+                  <span className="rounded-full border border-white/15 px-2 py-0.5 text-[10px] font-semibold text-white/65">
+                    +{user.roles.length - 1}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             <label className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-white/15 bg-white/[0.055] px-3">
               <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/55">
                 Environment

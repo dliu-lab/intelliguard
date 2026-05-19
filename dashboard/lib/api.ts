@@ -2,6 +2,7 @@ export type AuthUser = {
   email: string;
   name: string;
   role: string;
+  roles?: string[];
   is_super_admin: boolean;
   allowed_environments: string[];
   permissions_by_environment: Record<string, string[]>;
@@ -15,6 +16,11 @@ export type AuthSession = {
 export type BootstrapStatus = {
   requires_initial_admin: boolean;
   signup_roles: string[];
+};
+
+export type LoginRoleOptions = {
+  roles: string[];
+  default_role: string;
 };
 
 export type ApiRecord = Record<string, unknown>;
@@ -221,11 +227,18 @@ export function login(payload: { email: string; password: string; role?: string 
   });
 }
 
+export function fetchLoginRoleOptions(payload: { email: string; password: string }) {
+  return request<LoginRoleOptions>("/v1/auth/login-roles", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function register(payload: {
   email: string;
   password: string;
   display_name: string;
-  role: string;
+  roles: string[];
 }) {
   return request<AuthSession>("/v1/auth/register", {
     method: "POST",

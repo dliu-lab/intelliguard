@@ -178,6 +178,22 @@ SIGNUP_ROLE_ACCESS = {
         },
     },
 }
+GOVERNANCE_LEAD_ROLE = "Governance Lead"
+DEFAULT_AUTH_ROLE = "Agent Developer"
+AUTH_ROLES = (GOVERNANCE_LEAD_ROLE, *SIGNUP_ROLE_ACCESS.keys())
+
+
+def _normalize_auth_roles(
+    roles: list[str] | None = None, *, fallback_role: str | None = None
+) -> list[str]:
+    normalized: list[str] = []
+    for role in [*(roles or []), fallback_role]:
+        if not role:
+            continue
+        clean_role = role.strip()
+        if clean_role and clean_role not in normalized:
+            normalized.append(clean_role)
+    return normalized
 
 
 class GovernanceStore:
@@ -210,39 +226,53 @@ class GovernanceStore:
             )
 
     def register_user(
-        self, *, email: str, password: str, display_name: str, role: str
+        self,
+        *,
+        email: str,
+        password: str,
+        display_name: str,
+        roles: list[str] | None = None,
     ) -> dict[str, Any]:
         email = email.strip().lower()
+        account_roles = _normalize_auth_roles(roles if roles is not None else [DEFAULT_AUTH_ROLE])
         with self.session() as db:
             existing_auth_users = db.scalar(
                 select(func.count()).select_from(User).where(User.password_hash.is_not(None))
             )
             is_initial_admin = not existing_auth_users
-            if is_initial_admin and role != "Governance Lead":
-                raise ValueError("The first account must be the Governance Lead admin")
-            if not is_initial_admin and role == "Governance Lead":
-                raise ValueError("Governance Lead admin can only be created during initial setup")
-            if not is_initial_admin and role not in SIGNUP_ROLE_ACCESS:
+            if not account_roles:
+                raise ValueError("At least one role is required")
+            unknown_roles = sorted(set(account_roles) - set(AUTH_ROLES))
+            if unknown_roles:
                 raise ValueError("Unknown role")
+            if is_initial_admin and GOVERNANCE_LEAD_ROLE not in account_roles:
+                raise ValueError("The first account must be the Governance Lead admin")
+            if not is_initial_admin and GOVERNANCE_LEAD_ROLE in account_roles:
+                raise ValueError("Governance Lead admin can only be created during initial setup")
+            primary_role = (
+                GOVERNANCE_LEAD_ROLE if GOVERNANCE_LEAD_ROLE in account_roles else account_roles[0]
+            )
 
             user = db.get(User, email)
             if user and user.password_hash:
                 raise ValueError("User already exists")
 
-            is_super_admin = is_initial_admin and role == "Governance Lead"
+            is_super_admin = is_initial_admin and GOVERNANCE_LEAD_ROLE in account_roles
             if not user:
                 user = User(
                     user_id=email,
                     email=email,
                     display_name=display_name,
-                    role=role,
+                    role=primary_role,
+                    roles=account_roles,
                     is_super_admin=is_super_admin,
                     password_hash=hash_password(password),
                 )
                 db.add(user)
             else:
                 user.display_name = display_name
-                user.role = role
+                user.role = primary_role
+                user.roles = account_roles
                 user.is_super_admin = is_super_admin
                 user.password_hash = hash_password(password)
                 user.updated_at = utc_now()
@@ -251,30 +281,45 @@ class GovernanceStore:
                 for environment in self._base_environments(db):
                     self._upsert_environment_access(db, email, environment, ["*"])
             else:
-                for environment, permissions in SIGNUP_ROLE_ACCESS[role]["access"].items():
-                    self._upsert_environment_access(db, email, environment, permissions)
+                self._grant_role_access(db, email, account_roles)
 
             db.flush()
-            return self._user_context_from_row(db, user)
+            return self._user_context_from_row(db, user, active_role=primary_role)
 
-    def authenticate_user(self, *, email: str, password: str) -> tuple[dict[str, Any], str]:
+    def authenticate_user(
+        self, *, email: str, password: str, role: str | None = None
+    ) -> tuple[dict[str, Any], str]:
         email = email.strip().lower()
         with self.session() as db:
             user = db.get(User, email)
             if not user or not verify_password(password, user.password_hash):
                 raise ValueError("Invalid email or password")
+            active_role = self._resolve_active_role(user, role)
 
             token = new_session_token()
             session = UserSession(
                 session_id=new_id("usr_sess"),
                 user_id=user.user_id,
                 token_hash=hash_token(token),
+                active_role=active_role,
                 expires_at=utc_now() + timedelta(hours=12),
             )
             db.add(session)
             user.updated_at = utc_now()
             db.flush()
-            return self._user_context_from_row(db, user), token
+            return self._user_context_from_row(db, user, active_role=active_role), token
+
+    def login_role_options(self, *, email: str, password: str) -> dict[str, Any]:
+        email = email.strip().lower()
+        with self.session() as db:
+            user = db.get(User, email)
+            if not user or not verify_password(password, user.password_hash):
+                raise ValueError("Invalid email or password")
+            roles = self._roles_for_user(user)
+            return {
+                "roles": roles,
+                "default_role": self._resolve_active_role(user, None),
+            }
 
     def user_context_for_token(self, token: str) -> dict[str, Any] | None:
         with self.session() as db:
@@ -290,7 +335,7 @@ class GovernanceStore:
             user = db.get(User, session.user_id)
             if not user or not user.password_hash:
                 return None
-            return self._user_context_from_row(db, user)
+            return self._user_context_from_row(db, user, active_role=session.active_role)
 
     def revoke_user_session(self, token: str) -> bool:
         with self.session() as db:
@@ -311,13 +356,19 @@ class GovernanceStore:
         email: str,
         password: str,
         display_name: str,
-        role: str,
-        is_super_admin: bool,
-        environment_access: list[dict[str, Any]],
+        roles: list[str] | None = None,
+        is_super_admin: bool = False,
+        environment_access: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         email = email.strip().lower()
+        account_roles = _normalize_auth_roles(roles if roles is not None else [DEFAULT_AUTH_ROLE])
         with self.session() as db:
-            if is_super_admin or role == "Governance Lead":
+            if not account_roles:
+                raise ValueError("At least one role is required")
+            unknown_roles = sorted(set(account_roles) - set(AUTH_ROLES))
+            if unknown_roles:
+                raise ValueError("Unknown role")
+            if is_super_admin or GOVERNANCE_LEAD_ROLE in account_roles:
                 existing_admins = db.scalar(
                     select(func.count())
                     .select_from(User)
@@ -325,15 +376,20 @@ class GovernanceStore:
                 )
                 if existing_admins:
                     raise ValueError("Governance Lead admin has already been created")
-                role = "Governance Lead"
+                if GOVERNANCE_LEAD_ROLE not in account_roles:
+                    account_roles = [GOVERNANCE_LEAD_ROLE, *account_roles]
                 is_super_admin = True
+            primary_role = (
+                GOVERNANCE_LEAD_ROLE if GOVERNANCE_LEAD_ROLE in account_roles else account_roles[0]
+            )
 
             user = db.get(User, email)
             if user and user.password_hash:
                 raise ValueError("User already exists")
             if user:
                 user.display_name = display_name
-                user.role = role
+                user.role = primary_role
+                user.roles = account_roles
                 user.is_super_admin = is_super_admin
                 user.password_hash = hash_password(password)
                 user.updated_at = utc_now()
@@ -342,22 +398,29 @@ class GovernanceStore:
                     user_id=email,
                     email=email,
                     display_name=display_name,
-                    role=role,
+                    role=primary_role,
+                    roles=account_roles,
                     is_super_admin=is_super_admin,
                     password_hash=hash_password(password),
                 )
                 db.add(user)
 
-            for item in environment_access:
-                self._upsert_environment_access(
-                    db,
-                    email,
-                    item["environment"],
-                    item.get("permissions") or ["read"],
-                )
+            if is_super_admin:
+                for environment in self._base_environments(db):
+                    self._upsert_environment_access(db, email, environment, ["*"])
+            elif environment_access:
+                for item in environment_access:
+                    self._upsert_environment_access(
+                        db,
+                        email,
+                        item["environment"],
+                        item.get("permissions") or ["read"],
+                    )
+            else:
+                self._grant_role_access(db, email, account_roles)
 
             db.flush()
-            return self._user_context_from_row(db, user)
+            return self._user_context_from_row(db, user, active_role=primary_role)
 
     def list_users(self) -> list[dict[str, Any]]:
         with self.session() as db:
@@ -3120,7 +3183,9 @@ class GovernanceStore:
             "created_at": row.created_at.isoformat(),
         }
 
-    def _user_context_from_row(self, db: Session, user: User) -> dict[str, Any]:
+    def _user_context_from_row(
+        self, db: Session, user: User, *, active_role: str | None = None
+    ) -> dict[str, Any]:
         rows = db.scalars(
             select(UserEnvironmentAccess)
             .where(UserEnvironmentAccess.user_id == user.user_id)
@@ -3130,10 +3195,15 @@ class GovernanceStore:
             row.environment: sorted(row.permissions or []) for row in rows
         }
         allowed_environments = sorted(permissions_by_environment)
+        roles = self._roles_for_user(user)
+        session_role = active_role if active_role in roles else user.role
+        if session_role not in roles:
+            session_role = roles[0] if roles else ""
         return {
             "email": user.email,
             "name": user.display_name,
-            "role": user.role,
+            "role": session_role,
+            "roles": roles,
             "is_super_admin": bool(user.is_super_admin),
             "allowed_environments": allowed_environments,
             "default_environment": "all"
@@ -3147,6 +3217,39 @@ class GovernanceStore:
         agent_envs = db.scalars(select(AgentIdentity.environment).distinct()).all()
         access_envs = db.scalars(select(UserEnvironmentAccess.environment).distinct()).all()
         return sorted(set(agent_envs) | set(access_envs) | {"local", "staging", "production"})
+
+    @staticmethod
+    def _roles_for_user(user: User) -> list[str]:
+        return _normalize_auth_roles(
+            user.roles if isinstance(user.roles, list) else [], fallback_role=user.role
+        )
+
+    @classmethod
+    def _resolve_active_role(cls, user: User, requested_role: str | None) -> str:
+        roles = cls._roles_for_user(user)
+        if requested_role:
+            role = requested_role.strip()
+            if role not in roles:
+                raise ValueError("Selected role does not match this account")
+            return role
+        if user.role in roles:
+            return user.role
+        if roles:
+            return roles[0]
+        raise ValueError("Selected role does not match this account")
+
+    @staticmethod
+    def _grant_role_access(db: Session, user_id: str, roles: list[str]) -> None:
+        permissions_by_environment: dict[str, set[str]] = {}
+        for role in roles:
+            for environment, permissions in (
+                SIGNUP_ROLE_ACCESS.get(role, {}).get("access", {}).items()
+            ):
+                permissions_by_environment.setdefault(environment, set()).update(permissions)
+        for environment, permissions in permissions_by_environment.items():
+            GovernanceStore._upsert_environment_access(
+                db, user_id, environment, sorted(permissions)
+            )
 
     @staticmethod
     def _upsert_environment_access(

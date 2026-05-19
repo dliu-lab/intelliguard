@@ -149,24 +149,33 @@ def register(request: api_schemas.RegisterRequest) -> dict[str, Any]:
             email=request.email,
             password=request.password,
             display_name=request.display_name,
-            role=request.role,
+            roles=request.roles,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    user, token = store.authenticate_user(email=request.email, password=request.password)
+    user, token = store.authenticate_user(
+        email=request.email, password=request.password, role=user["role"]
+    )
     return {"user": user, "token": token}
 
 
 @app.post("/v1/auth/login")
 def login(request: api_schemas.LoginRequest) -> dict[str, Any]:
     try:
-        user, token = store.authenticate_user(email=request.email, password=request.password)
+        user, token = store.authenticate_user(
+            email=request.email, password=request.password, role=request.role
+        )
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
-    if request.role and request.role != user["role"]:
-        store.revoke_user_session(token)
-        raise HTTPException(status_code=401, detail="Selected role does not match this account")
     return {"user": user, "token": token}
+
+
+@app.post("/v1/auth/login-roles")
+def login_role_options(request: api_schemas.LoginRoleOptionsRequest) -> dict[str, Any]:
+    try:
+        return store.login_role_options(email=request.email, password=request.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 @app.post("/v1/auth/logout")
@@ -191,7 +200,7 @@ def create_user(
             email=request.email,
             password=request.password,
             display_name=request.display_name,
-            role=request.role,
+            roles=request.roles,
             is_super_admin=request.is_super_admin,
             environment_access=[item.model_dump() for item in request.environment_access],
         )

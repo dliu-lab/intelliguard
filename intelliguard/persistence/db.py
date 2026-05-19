@@ -102,9 +102,26 @@ def ensure_runtime_schema(engine) -> None:
             table.create(engine, checkfirst=True)
     if "users" in table_names:
         columns = {column["name"] for column in inspector.get_columns("users")}
-        if "password_hash" not in columns:
-            with engine.begin() as connection:
+        with engine.begin() as connection:
+            if "password_hash" not in columns:
                 connection.execute(text("ALTER TABLE users ADD COLUMN password_hash TEXT"))
+            if "roles" not in columns:
+                connection.execute(
+                    text("ALTER TABLE users ADD COLUMN roles JSONB NOT NULL DEFAULT '[]'::jsonb")
+                )
+                connection.execute(
+                    text(
+                        "UPDATE users SET roles = jsonb_build_array(role) "
+                        "WHERE roles = '[]'::jsonb AND role IS NOT NULL"
+                    )
+                )
+    if "user_sessions" in table_names:
+        columns = {column["name"] for column in inspector.get_columns("user_sessions")}
+        if "active_role" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE user_sessions ADD COLUMN active_role VARCHAR(80)")
+                )
     if "audit_events" in table_names:
         cols = {c["name"] for c in inspector.get_columns("audit_events")}
         with engine.begin() as connection:
