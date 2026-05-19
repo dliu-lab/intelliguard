@@ -5,7 +5,7 @@ from fastapi import HTTPException
 
 import intelliguard.api.main as api_main
 from intelliguard.api.schemas import AgentKBAssignmentRequest, AgentToolGrantRequest
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 
 
 def _super_admin_user() -> dict:

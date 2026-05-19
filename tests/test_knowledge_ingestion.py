@@ -23,15 +23,15 @@ from starlette.datastructures import Headers, UploadFile
 import intelliguard.api.main as api_main
 from intelliguard.api import services as api_services
 
-from intelliguard.knowledge import KnowledgeRetrievalService
-from intelliguard.knowledge_indexing import (
+from intelliguard.knowledge.retrieval import KnowledgeRetrievalService
+from intelliguard.knowledge.indexing import (
     DeterministicEmbeddingProvider,
     KnowledgeIngestionService,
     LlamaIndexKnowledgeIndexer,
 )
-from intelliguard.knowledge_storage import KnowledgeFileStorage
-from intelliguard.models import KnowledgeIndexVersion
-from intelliguard.store import GovernanceStore
+from intelliguard.knowledge.storage import KnowledgeFileStorage
+from intelliguard.persistence.models import KnowledgeIndexVersion
+from intelliguard.persistence.store import GovernanceStore
 
 CODE_SPLITTER_AVAILABLE = bool(
     importlib.util.find_spec("tree_sitter")

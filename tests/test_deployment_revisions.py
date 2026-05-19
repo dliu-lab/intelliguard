@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 
 
 def _id(prefix: str) -> str:

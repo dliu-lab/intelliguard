@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import intelliguard.api.main as api_main
 from intelliguard.evaluation.rules import evaluation_rule_catalog
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 
 
 def _super_admin_user() -> dict:

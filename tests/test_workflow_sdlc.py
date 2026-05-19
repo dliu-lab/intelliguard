@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 
 
 def _workflow_payload(workflow_definition_id: str) -> dict:

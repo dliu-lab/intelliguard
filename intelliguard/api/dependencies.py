@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import Header, HTTPException
 
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 
 
 def bearer_token(authorization: str | None = Header(default=None, alias="Authorization")) -> str:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from intelliguard.evaluation.judge import JudgeResult
-from intelliguard.models import new_id
-from intelliguard.evaluators import EvaluatorEngine
+from intelliguard.persistence.models import new_id
+from intelliguard.governance.evaluators import EvaluatorEngine
 
 
 def _make_session(store, agent_id="customer-support-agent"):
@@ -198,7 +198,7 @@ def test_llm_enabled_response_quality_uses_judge(monkeypatch, store):
             raw_response='{"status":"PASS","score":91}',
         )
 
-    monkeypatch.setattr("intelliguard.evaluators.run_judge_sync", fake_run_judge_sync)
+    monkeypatch.setattr("intelliguard.governance.evaluators.run_judge_sync", fake_run_judge_sync)
 
     engine = EvaluatorEngine(store)
     template = {

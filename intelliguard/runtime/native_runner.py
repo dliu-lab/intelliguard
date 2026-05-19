@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from intelliguard.adk.manifest import RuntimeManifest
-from intelliguard.multi_agent import run_customer_support_workflow
+from intelliguard.workflows.customer_support import run_customer_support_workflow
 from intelliguard.runtime.contracts import RuntimeExecutionRequest, RuntimeExecutionResult
-from intelliguard.tools import ToolRegistry
+from intelliguard.tools.registry import ToolRegistry
 
 
 class NativeRuntimeRunner:

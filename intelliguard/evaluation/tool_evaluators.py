@@ -112,7 +112,10 @@ def _check_input_schema(tool: dict[str, Any]) -> CriterionResult:
             score=0,
             evidence_sentence="Input schema must be an object schema with a properties map.",
             input_snapshot=snapshot,
-            observed_value={"type": schema.get("type"), "properties_type": type(schema.get("properties")).__name__},
+            observed_value={
+                "type": schema.get("type"),
+                "properties_type": type(schema.get("properties")).__name__,
+            },
             expected_value={"type": "object", "properties_type": "dict"},
         )
     return CriterionResult(
@@ -247,7 +250,9 @@ def _check_permission_model(tool: dict[str, Any]) -> CriterionResult:
             observed_value={"present": bool(permissions)},
             expected_value={"permissions": "non-empty object"},
         )
-    if not any(key in permissions for key in ("requires_grant", "access_model", "scope", "data_scope")):
+    if not any(
+        key in permissions for key in ("requires_grant", "access_model", "scope", "data_scope")
+    ):
         return CriterionResult(
             criterion_name="permission_model_validation",
             status="REVIEW",
@@ -268,7 +273,9 @@ def _check_permission_model(tool: dict[str, Any]) -> CriterionResult:
 
 def _check_pii_field_leakage(tool: dict[str, Any]) -> CriterionResult:
     output_schema = tool.get("output_schema") if isinstance(tool.get("output_schema"), dict) else {}
-    properties = output_schema.get("properties") if isinstance(output_schema.get("properties"), dict) else {}
+    properties = (
+        output_schema.get("properties") if isinstance(output_schema.get("properties"), dict) else {}
+    )
     field_names = sorted(str(name) for name in properties.keys())
     pii_fields = [
         field_name
@@ -285,7 +292,9 @@ def _check_pii_field_leakage(tool: dict[str, Any]) -> CriterionResult:
             input_snapshot=snapshot,
             observed_value={"sensitive_fields": pii_fields},
             expected_value={"sensitive_fields": []},
-            metadata={"recommended_control": "Bind response redaction or human-review policy before production use."},
+            metadata={
+                "recommended_control": "Bind response redaction or human-review policy before production use."
+            },
         )
     return CriterionResult(
         criterion_name="pii_field_leakage",
@@ -294,4 +303,3 @@ def _check_pii_field_leakage(tool: dict[str, Any]) -> CriterionResult:
         evidence_sentence="No potential sensitive output fields were detected.",
         input_snapshot=snapshot,
     )
-

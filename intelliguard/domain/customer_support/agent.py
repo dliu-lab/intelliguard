@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from uuid import uuid4
 
-from intelliguard.runner import GovernedToolResult, GovernedToolRunner
+from intelliguard.governance.runner import GovernedToolResult, GovernedToolRunner
 
 
 CUSTOMER_ID_RE = re.compile(r"\bC\d{3,}\b", re.IGNORECASE)

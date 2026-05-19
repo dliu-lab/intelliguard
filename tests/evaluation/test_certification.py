@@ -12,8 +12,16 @@ from intelliguard.evaluation.certification import (
 def test_review_without_fail_certifies() -> None:
     decision = decide_certification(
         [
-            {"criterion_name": "input_schema_validation", "status": "PASS", "evidence_sentence": "ok"},
-            {"criterion_name": "pii_field_leakage", "status": "REVIEW", "evidence_sentence": "review"},
+            {
+                "criterion_name": "input_schema_validation",
+                "status": "PASS",
+                "evidence_sentence": "ok",
+            },
+            {
+                "criterion_name": "pii_field_leakage",
+                "status": "REVIEW",
+                "evidence_sentence": "review",
+            },
         ]
     )
     assert decision.status == "CERTIFIED"
@@ -44,4 +52,3 @@ def test_valid_transitions() -> None:
 def test_invalid_transition_raises() -> None:
     with pytest.raises(CertificationError, match="DRAFT -> CERTIFIED"):
         validate_transition("DRAFT", "CERTIFIED")
-

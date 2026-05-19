@@ -5,9 +5,9 @@ from typing import Any
 
 from sqlalchemy import select
 
-from intelliguard.knowledge_indexing import EmbeddingProvider, OllamaEmbeddingProvider
-from intelliguard.models import KnowledgeChunk
-from intelliguard.store import GovernanceStore
+from intelliguard.knowledge.indexing import EmbeddingProvider, OllamaEmbeddingProvider
+from intelliguard.persistence.models import KnowledgeChunk
+from intelliguard.persistence.store import GovernanceStore
 
 
 @dataclass

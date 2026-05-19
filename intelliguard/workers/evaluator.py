@@ -4,8 +4,8 @@ import os
 import time
 
 from intelliguard.settings import load_settings
-from intelliguard.db import init_db
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.db import init_db
+from intelliguard.persistence.store import GovernanceStore
 
 
 def main() -> None:

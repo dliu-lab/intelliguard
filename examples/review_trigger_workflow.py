@@ -7,10 +7,10 @@ from typing import Any
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import OperationalError
 
-from intelliguard.multi_agent import run_customer_support_workflow
+from intelliguard.workflows.customer_support import run_customer_support_workflow
 from intelliguard.settings import DEFAULT_DATABASE_URL, load_settings
-from intelliguard.store import GovernanceStore
-from intelliguard.tools import build_customer_tool_registry
+from intelliguard.persistence.store import GovernanceStore
+from intelliguard.domain.customer_support.tools import build_customer_tool_registry
 
 
 WORKFLOW_DEFINITION_ID = "review-trigger-email-search"

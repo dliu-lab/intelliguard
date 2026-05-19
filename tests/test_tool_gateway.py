@@ -3,10 +3,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any
 
-from intelliguard.policy import PolicyConfig
-from intelliguard.runner import GovernedToolResult, GovernedToolRunner
+from intelliguard.governance.policy import PolicyConfig
+from intelliguard.governance.runner import GovernedToolResult, GovernedToolRunner
 from intelliguard.runtime.tool_gateway import ToolGateway, ToolGatewayRequest
-from intelliguard.tools import ToolRegistry
+from intelliguard.tools.registry import ToolRegistry
 
 
 class CapturingRunner:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from intelliguard.models import GuardrailPolicy, EvaluatorTemplate, new_id
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.models import GuardrailPolicy, EvaluatorTemplate, new_id
+from intelliguard.persistence.store import GovernanceStore
 
 
 def test_models_importable():

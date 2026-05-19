@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from intelliguard.models import (
+from intelliguard.persistence.models import (
     AgentIdentity,
     Base,
     Customer,
@@ -32,9 +32,9 @@ from intelliguard.models import (
     WorkflowGeneratedArtifact,
     WorkflowRuntimeRun,
 )
-from intelliguard.policy import load_policy
+from intelliguard.governance.policy import load_policy
 from intelliguard.settings import DEFAULT_DATABASE_URL
-from intelliguard.workflow_graph import workflow_graph_hash
+from intelliguard.workflows.graph import workflow_graph_hash
 
 
 def build_engine(database_url: str = DEFAULT_DATABASE_URL):

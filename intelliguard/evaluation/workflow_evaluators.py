@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from intelliguard.evaluation.tool_evaluators import CriterionResult
-from intelliguard.workflow_graph import LEAD_NODE_ID, NODE_TYPES
+from intelliguard.workflows.graph import LEAD_NODE_ID, NODE_TYPES
 
 
 def run_workflow_evaluators(
@@ -159,11 +159,7 @@ def _check_nodes_certified(
     workflow: dict[str, Any], assignments: dict[str, Any]
 ) -> CriterionResult:
     node_agent_ids = sorted(
-        {
-            str(node.get("agent_id"))
-            for node in _nodes(workflow)
-            if str(node.get("agent_id") or "")
-        }
+        {str(node.get("agent_id")) for node in _nodes(workflow) if str(node.get("agent_id") or "")}
     )
     statuses = {
         str(agent_id): str((cert or {}).get("status") or "DRAFT")
@@ -195,7 +191,9 @@ def _check_nodes_certified(
 
 def _check_review_or_terminal_path(workflow: dict[str, Any]) -> CriterionResult:
     nodes = _nodes(workflow)
-    review_rules = workflow.get("review_rules") if isinstance(workflow.get("review_rules"), dict) else {}
+    review_rules = (
+        workflow.get("review_rules") if isinstance(workflow.get("review_rules"), dict) else {}
+    )
     governance_nodes = [
         node
         for node in nodes

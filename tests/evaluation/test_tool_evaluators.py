@@ -51,4 +51,3 @@ def test_compute_config_hash_is_stable_and_changes_on_contract_change() -> None:
 
     tool["input_schema"]["properties"]["extra_field"] = {"type": "string"}
     assert compute_config_hash(tool) != first
-

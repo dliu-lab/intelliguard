@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from intelliguard.runner import GovernedToolResult, GovernedToolRunner
+from intelliguard.governance.runner import GovernedToolResult, GovernedToolRunner
 
 
 @dataclass(frozen=True)

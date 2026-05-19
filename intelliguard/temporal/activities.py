@@ -7,8 +7,8 @@ from intelliguard.adk.manifest import RuntimeManifest
 from intelliguard.runtime.contracts import RuntimeExecutionRequest
 from intelliguard.runtime.native_runner import NativeRuntimeRunner
 from intelliguard.settings import load_settings
-from intelliguard.store import GovernanceStore
-from intelliguard.tools import build_customer_tool_registry
+from intelliguard.persistence.store import GovernanceStore
+from intelliguard.domain.customer_support.tools import build_customer_tool_registry
 
 try:  # pragma: no cover - optional dependency path
     from temporalio import activity
@@ -94,7 +94,7 @@ async def execute_agent_node(
 @_activity_defn
 async def invoke_governed_tool(payload: dict[str, Any]) -> dict[str, Any]:
     from intelliguard.runtime.tool_gateway import ToolGateway, ToolGatewayRequest
-    from intelliguard.runner import GovernedToolRunner
+    from intelliguard.governance.runner import GovernedToolRunner
 
     deps = activity_dependencies()
     settings = load_settings()

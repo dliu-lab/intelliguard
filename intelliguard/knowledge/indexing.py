@@ -27,7 +27,7 @@ from intelliguard.settings import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_EMBED_MODEL,
 )
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 
 
 class EmbeddingProvider(Protocol):

@@ -4,11 +4,11 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from intelliguard.evaluators import EvaluatorEngine
-from intelliguard.customer_agent import format_tool_response
-from intelliguard.runner import GovernedToolRunner
+from intelliguard.governance.evaluators import EvaluatorEngine
+from intelliguard.domain.customer_support.agent import format_tool_response
+from intelliguard.governance.runner import GovernedToolRunner
 from intelliguard.runtime.tool_gateway import ToolGateway, ToolGatewayRequest
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 from intelliguard.telemetry import (
     add_event,
     current_trace_id,
@@ -18,8 +18,8 @@ from intelliguard.telemetry import (
     trace_tool_call,
     trace_workflow,
 )
-from intelliguard.tools import ToolRegistry
-from intelliguard.workflow_graph import workflow_graph_hash
+from intelliguard.tools.registry import ToolRegistry
+from intelliguard.workflows.graph import workflow_graph_hash
 
 
 CUSTOMER_ID_RE = re.compile(r"\bC\d{3,}\b", re.IGNORECASE)

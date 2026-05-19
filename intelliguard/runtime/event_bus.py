@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from intelliguard.models import utc_now
+from intelliguard.persistence.models import utc_now
 
 
 class RuntimeEventBus:

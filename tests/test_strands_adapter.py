@@ -6,7 +6,7 @@ import pytest
 
 from intelliguard.adk.manifest import RuntimeManifest
 from intelliguard.adapters.strands import StrandsBuildAdapter
-from intelliguard.runner import GovernedToolResult
+from intelliguard.governance.runner import GovernedToolResult
 
 
 class FakeStrandsAgent:

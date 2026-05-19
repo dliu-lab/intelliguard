@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from intelliguard.monitoring import build_monitoring_metrics
-from intelliguard.store import GovernanceStore
+from intelliguard.telemetry.monitoring import build_monitoring_metrics
+from intelliguard.persistence.store import GovernanceStore
 
 
 def test_monitoring_metrics_include_certification_and_review_health(

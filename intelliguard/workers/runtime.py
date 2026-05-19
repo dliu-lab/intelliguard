@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 from intelliguard.adk.manifest import RuntimeManifest
-from intelliguard.db import init_db
+from intelliguard.persistence.db import init_db
 from intelliguard.runtime.budgets import assert_db_connection_budget
 from intelliguard.runtime.contracts import RuntimeExecutionRequest, RuntimeRunner
 from intelliguard.runtime.dispatcher import RunQueue, RuntimeWorkItem, StoreBackedRunQueue
@@ -15,8 +15,8 @@ from intelliguard.runtime.event_bus import RuntimeEventBus
 from intelliguard.runtime.hooks import RuntimeHookContext, RuntimeHookManager
 from intelliguard.runtime.native_runner import NativeRuntimeRunner
 from intelliguard.settings import load_settings
-from intelliguard.store import GovernanceStore
-from intelliguard.tools import build_customer_tool_registry
+from intelliguard.persistence.store import GovernanceStore
+from intelliguard.domain.customer_support.tools import build_customer_tool_registry
 
 
 class RuntimeWorker:

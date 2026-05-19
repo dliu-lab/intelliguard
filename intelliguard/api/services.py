@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from intelliguard.knowledge_indexing import LlamaIndexKnowledgeIndexer
-from intelliguard.runner import GovernedToolRunner
+from intelliguard.knowledge.indexing import LlamaIndexKnowledgeIndexer
+from intelliguard.governance.runner import GovernedToolRunner
 
 
 def config_int(value: object, fallback: int) -> int:

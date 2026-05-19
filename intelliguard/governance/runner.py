@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace as dataclass_replace
 from typing import Any
 
-from intelliguard.detectors import (
+from intelliguard.governance.detectors import (
     DetectorFinding,
     RiskAssessment,
     assess_final_response,
@@ -11,15 +11,15 @@ from intelliguard.detectors import (
     assess_tool_result,
     redact_pii,
 )
-from intelliguard.evaluators import EvaluatorEngine
-from intelliguard.policy import (
+from intelliguard.governance.evaluators import EvaluatorEngine
+from intelliguard.governance.policy import (
     PolicyConfig,
     load_policy,
     policy_from_dict,
     policy_snapshot_hash,
 )
-from intelliguard.store import GovernanceStore
-from intelliguard.tools import ToolRegistry
+from intelliguard.persistence.store import GovernanceStore
+from intelliguard.tools.registry import ToolRegistry
 
 
 @dataclass(frozen=True)

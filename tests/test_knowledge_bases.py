@@ -13,7 +13,7 @@ from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, select
 from sqlalchemy.dialects.postgresql import JSONB
 from starlette.datastructures import Headers, UploadFile
 
-import intelliguard.db as runtime_db
+import intelliguard.persistence.db as runtime_db
 import intelliguard.api.main as api_main
 from intelliguard.api import services as api_services
 from intelliguard.api.schemas import (
@@ -24,7 +24,7 @@ from intelliguard.api.schemas import (
     KnowledgeSourceRequest,
     KnowledgeSyncRequest,
 )
-from intelliguard.models import (
+from intelliguard.persistence.models import (
     AgentKBAssignment,
     KnowledgeBase,
     KnowledgeBaseVersion,
@@ -33,7 +33,7 @@ from intelliguard.models import (
     KnowledgeIndexVersion,
     KnowledgeSource,
 )
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 
 
 def _column(model: type, name: str):

@@ -78,6 +78,4 @@ def test_missing_workflow_certification_allowed_in_lower_environment() -> None:
 
 def test_failed_workflow_blocked_in_lower_environment() -> None:
     with pytest.raises(CertificationEnforcementError, match="FAILED"):
-        check_workflow_certification(
-            _workflow_store_with_cert("FAILED"), "workflow_123", "demo"
-        )
+        check_workflow_certification(_workflow_store_with_cert("FAILED"), "workflow_123", "demo")

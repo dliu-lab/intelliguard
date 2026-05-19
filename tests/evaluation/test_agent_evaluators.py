@@ -38,42 +38,54 @@ def test_all_pass_for_well_formed_agent() -> None:
 def test_missing_domain_fails_identity_check() -> None:
     agent = _base_agent()
     agent["metadata"] = {"llm": {"model": "ollama/qwen3.5:9b"}}
-    results = {result.criterion_name: result for result in run_agent_evaluators(agent, _base_assignments())}
+    results = {
+        result.criterion_name: result for result in run_agent_evaluators(agent, _base_assignments())
+    }
     assert results["identity_declared"].status == "FAIL"
 
 
 def test_missing_model_fails() -> None:
     agent = _base_agent()
     agent["metadata"] = {"domain": "banking", "llm": {}}
-    results = {result.criterion_name: result for result in run_agent_evaluators(agent, _base_assignments())}
+    results = {
+        result.criterion_name: result for result in run_agent_evaluators(agent, _base_assignments())
+    }
     assert results["model_declared"].status == "FAIL"
 
 
 def test_invalid_agent_type_fails() -> None:
     agent = _base_agent()
     agent["agent_type"] = "magic_agent"
-    results = {result.criterion_name: result for result in run_agent_evaluators(agent, _base_assignments())}
+    results = {
+        result.criterion_name: result for result in run_agent_evaluators(agent, _base_assignments())
+    }
     assert results["agent_type_valid"].status == "FAIL"
 
 
 def test_task_agent_empty_tools_triggers_review() -> None:
     agent = _base_agent()
     agent["permissions"] = {"tools": []}
-    results = {result.criterion_name: result for result in run_agent_evaluators(agent, _base_assignments())}
+    results = {
+        result.criterion_name: result for result in run_agent_evaluators(agent, _base_assignments())
+    }
     assert results["tool_scope_defined"].status == "REVIEW"
 
 
 def test_uncertified_attached_tool_fails() -> None:
     assignments = _base_assignments()
     assignments["tools"] = [{"tool_name": "lookup_account", "certification": {"status": "FAILED"}}]
-    results = {result.criterion_name: result for result in run_agent_evaluators(_base_agent(), assignments)}
+    results = {
+        result.criterion_name: result for result in run_agent_evaluators(_base_agent(), assignments)
+    }
     assert results["attached_tools_certified"].status == "FAIL"
 
 
 def test_no_guardrail_fails() -> None:
     assignments = _base_assignments()
     assignments["guardrails"] = []
-    results = {result.criterion_name: result for result in run_agent_evaluators(_base_agent(), assignments)}
+    results = {
+        result.criterion_name: result for result in run_agent_evaluators(_base_agent(), assignments)
+    }
     assert results["guardrail_assigned"].status == "FAIL"
 
 
@@ -85,4 +97,3 @@ def test_compute_config_hash_stable_and_changes_on_guardrail() -> None:
     assignments = _base_assignments()
     assignments["guardrails"] = [{"policy_id": "pol_different"}]
     assert compute_agent_config_hash(_base_agent(), assignments) != first
-

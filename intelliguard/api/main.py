@@ -14,28 +14,28 @@ from intelliguard.api import access_policy
 from intelliguard.api import dependencies as api_dependencies
 from intelliguard.api import schemas as api_schemas
 from intelliguard.api import services as api_services
-from intelliguard.customer_agent import run_customer_support_agent
-from intelliguard.db import init_db
-from intelliguard.knowledge import KnowledgeRetrievalService, RetrievedDoc as RetrievedDoc
-from intelliguard.knowledge_indexing import (
+from intelliguard.domain.customer_support.agent import run_customer_support_agent
+from intelliguard.persistence.db import init_db
+from intelliguard.knowledge.retrieval import KnowledgeRetrievalService, RetrievedDoc as RetrievedDoc
+from intelliguard.knowledge.indexing import (
     KnowledgeIngestionService,
     OllamaEmbeddingProvider,
 )
-from intelliguard.knowledge_storage import KnowledgeFileStorage, is_image_file
-from intelliguard.models import utc_now
-from intelliguard.multi_agent import run_customer_support_workflow
-from intelliguard.policy import load_policy, policy_to_dict
-from intelliguard.runner import GovernedToolRunner
+from intelliguard.knowledge.storage import KnowledgeFileStorage, is_image_file
+from intelliguard.persistence.models import utc_now
+from intelliguard.workflows.customer_support import run_customer_support_workflow
+from intelliguard.governance.policy import load_policy, policy_to_dict
+from intelliguard.governance.runner import GovernedToolRunner
 from intelliguard.settings import DEFAULT_KB_UPLOAD_DIR, load_settings
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 from intelliguard.telemetry import (
     current_trace_id,
     instrument_fastapi,
     telemetry_status,
     trace_kb_operation,
 )
-from intelliguard.tools import build_customer_tool_registry
-from intelliguard.workflow_graph import WorkflowGraphError
+from intelliguard.domain.customer_support.tools import build_customer_tool_registry
+from intelliguard.workflows.graph import WorkflowGraphError
 
 
 settings = load_settings()
@@ -664,7 +664,7 @@ def monitoring_metrics(
     environment: str | None = None,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    from intelliguard.monitoring import build_monitoring_metrics
+    from intelliguard.telemetry.monitoring import build_monitoring_metrics
 
     return build_monitoring_metrics(store, visible_environment(environment, user))
 
@@ -1658,7 +1658,7 @@ def trigger_session_evaluation(
     session_id: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    from intelliguard.evaluators import EvaluatorEngine
+    from intelliguard.governance.evaluators import EvaluatorEngine
 
     environment = store.session_environment(session_id)
     if environment is None:

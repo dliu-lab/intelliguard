@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from intelliguard.store import GovernanceStore
+    from intelliguard.persistence.store import GovernanceStore
 
 
 def _record_status(record: dict[str, Any]) -> str:
@@ -34,18 +34,12 @@ def _certification_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _decision_totals(audit_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     totals = Counter(str(event.get("decision") or "UNKNOWN").upper() for event in audit_events)
-    return [
-        {"decision": decision, "count": count}
-        for decision, count in sorted(totals.items())
-    ]
+    return [{"decision": decision, "count": count} for decision, count in sorted(totals.items())]
 
 
 def _risk_type_distribution(audit_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     totals = Counter(str(event.get("risk_type") or "unknown") for event in audit_events)
-    return [
-        {"risk_type": risk_type, "count": count}
-        for risk_type, count in totals.most_common()
-    ]
+    return [{"risk_type": risk_type, "count": count} for risk_type, count in totals.most_common()]
 
 
 def _agent_leaderboard(audit_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -67,9 +61,7 @@ def _agent_leaderboard(audit_events: list[dict[str, Any]]) -> list[dict[str, Any
             "avg_risk_score": round(stats["risk_score"] / stats["events"], 2)
             if stats["events"]
             else 0,
-            "block_rate": round(stats["blocked"] / stats["events"], 4)
-            if stats["events"]
-            else 0,
+            "block_rate": round(stats["blocked"] / stats["events"], 4) if stats["events"] else 0,
         }
         for agent_id, stats in sorted(
             totals.items(), key=lambda item: item[1]["events"], reverse=True
@@ -79,20 +71,12 @@ def _agent_leaderboard(audit_events: list[dict[str, Any]]) -> list[dict[str, Any
 
 def _evaluation_quality(evaluation_runs: list[dict[str, Any]]) -> dict[str, Any]:
     completed = [
-        run
-        for run in evaluation_runs
-        if str(run.get("status") or "").upper() == "COMPLETED"
+        run for run in evaluation_runs if str(run.get("status") or "").upper() == "COMPLETED"
     ]
     passed = [
-        run
-        for run in completed
-        if str(run.get("overall_result") or "").upper() == "CERTIFIED"
+        run for run in completed if str(run.get("overall_result") or "").upper() == "CERTIFIED"
     ]
-    failed = [
-        run
-        for run in completed
-        if str(run.get("overall_result") or "").upper() == "FAILED"
-    ]
+    failed = [run for run in completed if str(run.get("overall_result") or "").upper() == "FAILED"]
     return {
         "runs_total": len(evaluation_runs),
         "completed": len(completed),
@@ -106,9 +90,7 @@ def build_monitoring_metrics(
     store: GovernanceStore, environment: str | list[str] | None = None
 ) -> dict[str, Any]:
     audit_events = store.list_audit_events(limit=1000, environment=environment)
-    review_items = store.list_review_queue(
-        limit=1000, environment=environment, status="ALL"
-    )
+    review_items = store.list_review_queue(limit=1000, environment=environment, status="ALL")
     tools = store.list_tool_records(environment=environment)
     agents = store.list_agents(environment=environment)
     workflows = store.list_workflow_definitions(environment=environment)

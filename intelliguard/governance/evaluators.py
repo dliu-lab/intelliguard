@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from intelliguard.evaluation.judge import JudgeResult, run_judge_sync
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 
 
 @dataclass

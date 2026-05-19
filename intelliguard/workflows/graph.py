@@ -79,9 +79,7 @@ def normalize_workflow_graph(
         "nodes": nodes,
         "edges": edges,
         "graph_version_hash": graph_version_hash,
-        "policy_bindings": payload.get("policy_bindings")
-        or metadata.get("policy_bindings")
-        or {},
+        "policy_bindings": payload.get("policy_bindings") or metadata.get("policy_bindings") or {},
         "review_rules": payload.get("review_rules") or metadata.get("review_rules") or {},
     }
 

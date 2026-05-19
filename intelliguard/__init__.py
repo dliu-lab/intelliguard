@@ -1,3 +1,1 @@
-from intelliguard.runner import GovernedToolResult, GovernedToolRunner
-
-__all__ = ["GovernedToolResult", "GovernedToolRunner"]
+"""IntelliGuard backend package."""

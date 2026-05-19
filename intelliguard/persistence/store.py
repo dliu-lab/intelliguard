@@ -8,9 +8,9 @@ from typing import Any, Iterator
 from sqlalchemy import desc, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from intelliguard.auth import hash_password, hash_token, new_session_token, verify_password
-from intelliguard.db import build_session_factory, seed_demo_data
-from intelliguard.models import (
+from intelliguard.security.auth import hash_password, hash_token, new_session_token, verify_password
+from intelliguard.persistence.db import build_session_factory, seed_demo_data
+from intelliguard.persistence.models import (
     AgentEvaluatorAssignment,
     AgentGuardrailAssignment,
     AgentIdentity,
@@ -54,10 +54,10 @@ from intelliguard.models import (
     new_id,
     utc_now,
 )
-from intelliguard.knowledge_storage import SUPPORTED_SUFFIXES
+from intelliguard.knowledge.storage import SUPPORTED_SUFFIXES
 from intelliguard.adapters.http_service import validate_connector_record
 from intelliguard.telemetry import with_trace_context
-from intelliguard.workflow_graph import (
+from intelliguard.workflows.graph import (
     WorkflowGraphError,
     normalize_agent_type,
     normalize_workflow_graph,

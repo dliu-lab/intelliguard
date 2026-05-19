@@ -9,7 +9,7 @@ from intelliguard.runtime.manifest_compiler import (
     compile_workflow_manifest,
     compute_kb_version_snapshot,
 )
-from intelliguard.workflow_graph import workflow_graph_hash
+from intelliguard.workflows.graph import workflow_graph_hash
 
 
 def _workflow(edges: list[dict] | None = None) -> dict:

@@ -3,13 +3,13 @@ from __future__ import annotations
 import os
 import time
 
-from intelliguard.db import init_db
-from intelliguard.knowledge_indexing import (
+from intelliguard.persistence.db import init_db
+from intelliguard.knowledge.indexing import (
     KnowledgeIngestionService,
     LlamaIndexKnowledgeIndexer,
 )
 from intelliguard.settings import DEFAULT_DATABASE_URL
-from intelliguard.store import GovernanceStore
+from intelliguard.persistence.store import GovernanceStore
 from intelliguard.telemetry import init_telemetry, set_attribute, trace_kb_operation
 
 

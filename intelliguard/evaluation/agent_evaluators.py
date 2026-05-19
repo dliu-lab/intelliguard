@@ -5,10 +5,12 @@ import json
 from typing import Any
 
 from intelliguard.evaluation.tool_evaluators import CriterionResult
-from intelliguard.workflow_graph import NODE_TYPES
+from intelliguard.workflows.graph import NODE_TYPES
 
 VALID_AGENT_TYPES = frozenset(NODE_TYPES)
-TOOL_OPTIONAL_AGENT_TYPES = frozenset({"lead_agent", "review_agent", "approval_agent", "terminal_agent"})
+TOOL_OPTIONAL_AGENT_TYPES = frozenset(
+    {"lead_agent", "review_agent", "approval_agent", "terminal_agent"}
+)
 
 
 def run_agent_evaluators(

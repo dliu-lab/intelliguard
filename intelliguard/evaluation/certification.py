@@ -49,4 +49,3 @@ def validate_transition(current: str, next_status: str) -> None:
 def _evidence(result: dict[str, Any]) -> str:
     evidence = result.get("evidence_sentence") or result.get("evidence")
     return str(evidence or f"{result.get('criterion_name', 'criterion')} failed")
-

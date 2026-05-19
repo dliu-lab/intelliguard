@@ -10,7 +10,7 @@ from intelliguard.runtime.isolation import (
     determine_worker_pool,
     validate_manifest_has_no_secret_values,
 )
-from intelliguard.workflow_graph import workflow_graph_hash
+from intelliguard.workflows.graph import workflow_graph_hash
 
 
 class ManifestCompileError(ValueError):
